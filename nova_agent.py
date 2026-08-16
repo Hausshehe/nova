@@ -1,8 +1,8 @@
 """Nova's goal-driven Android agent loop.
 
-This is the first foundation for adaptive behavior: Nova receives a goal,
-observes the current UI, chooses an action from generic capabilities, observes
-again, and can re-plan when the state does not match expectations.
+Nova receives a goal, observes the current device, chooses generic
+capabilities, acts, observes again, and re-plans when reality differs from
+its expectations. It deliberately contains no app-specific user commands.
 """
 
 import inspect
@@ -18,8 +18,8 @@ API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
 MAX_STEPS = 12
 
-# These are primitives, not user commands. The model is expected to compose
-# them dynamically to accomplish a goal it has never seen before.
+# These are capabilities, not user commands. The model composes them to solve
+# goals it has never seen before.
 AGENT_TOOLS = {
     "observe_android",
     "find_android_app",
@@ -38,38 +38,43 @@ pre-written command.
 CORE RULES:
 
 1. Treat every request as a goal that may be completely new.
-2. Do not assume a fixed UI path.
-3. Use observe_android() to inspect the CURRENT UI before deciding what to do.
-4. After an action that changes the UI, observe again.
-5. Base the next action on the newest observed state.
-6. If the UI differs from what you expected, re-plan instead of repeating
-   an old sequence.
-7. Use visible text, content descriptions, resource IDs, and UI structure to
-   identify controls. Do not use hard-coded screen coordinates.
-8. You may compose generic primitives in any order.
-9. Never require the user to describe the UI procedure. The user states the
-   goal; you determine the procedure.
-10. Do not claim an action succeeded merely because a command returned.
-    Verify the resulting state with observe_android() whenever possible.
-11. If the goal is destructive, privacy-sensitive, financial, or otherwise
-    consequential, stop and ask the user for confirmation before performing
-    the consequential final action.
-12. If the available primitives are insufficient, explain what capability is
-    missing instead of pretending.
-13. Do not invent UI elements, package names, or Android APIs. Discover them.
-14. Prefer the shortest reliable path, but reliability and verification are
+2. Never assume a fixed UI path. The UI can change between Android versions,
+   app versions, devices, languages, and states.
+3. Observe the CURRENT UI before making UI decisions.
+4. When the user names an application, do not invent or memorize its package
+   name. Use find_android_app(name) first, then launch the discovered package.
+5. After an action that may change the UI, observe again.
+6. Base every next action on the newest observed state.
+7. If the UI differs from what you expected, re-plan instead of repeating an
+   old sequence.
+8. Use visible text, content descriptions, resource IDs, classes, enabled and
+   clickable state, and other observed information to identify controls.
+9. Do not use hard-coded screen coordinates.
+10. Never require the user to describe the UI procedure. The user states the
+    goal; Nova determines the procedure.
+11. Do not claim an action succeeded merely because a command returned.
+    Verify the resulting state whenever possible.
+12. If a requested action is destructive, privacy-sensitive, financial, or
+    otherwise consequential, ask for confirmation before the consequential
+    final action.
+13. If the available capabilities are insufficient, say what is missing
+    instead of pretending the goal was completed.
+14. Never invent UI elements, package names, or Android APIs.
+15. Prefer the shortest reliable route, but reliability and verification are
     more important than speed.
+16. Think in terms of the user's objective and the current device state, not
+    in terms of previously memorized scripts.
 
-AVAILABLE PRIMITIVES:
+AVAILABLE CAPABILITIES:
 - observe_android: inspect the current Android UI.
-- find_android_app: find installed package names matching an app name.
-- launch_android_app: launch an installed package.
+- find_android_app: discover installed package names matching an app name.
+- launch_android_app: launch a discovered Android package.
 - click_text: click a visible UI element by text/content description.
 - type_text: type into the currently focused input field.
 
-Remember: these are building blocks. There is intentionally no tool named
-"clear_chrome_data", "block_facebook", or similar. Solve those goals by
-reasoning over the current device state.
+There is intentionally no tool named "open_spotify", "clear_chrome_data",
+"block_facebook", or similar. Solve those goals using generic capabilities
+and the current observed state.
 """
 
 
@@ -117,13 +122,11 @@ def build_agent_tool_definitions():
             if parameter.default is inspect.Parameter.empty:
                 required.append(parameter_name)
 
-        description = inspect.getdoc(function) or f"Use {name}."
-
         definitions.append({
             "type": "function",
             "function": {
                 "name": name,
-                "description": description,
+                "description": inspect.getdoc(function) or f"Use {name}.",
                 "parameters": {
                     "type": "object",
                     "properties": properties,
@@ -135,21 +138,10 @@ def build_agent_tool_definitions():
     return definitions
 
 
-def _call_groq(messages, tools=True):
+def _call_groq(messages):
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY environment variable is not set.")
-
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": 700,
-    }
-
-    if tools:
-        payload["tools"] = build_agent_tool_definitions()
-        payload["tool_choice"] = "auto"
 
     response = requests.post(
         API_URL,
@@ -157,7 +149,14 @@ def _call_groq(messages, tools=True):
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
         },
-        json=payload,
+        json={
+            "model": MODEL,
+            "messages": messages,
+            "tools": build_agent_tool_definitions(),
+            "tool_choice": "auto",
+            "temperature": 0.2,
+            "max_tokens": 700,
+        },
         timeout=45,
     )
 
@@ -185,37 +184,33 @@ def run_agent(goal):
     verified_after_action = False
 
     for step in range(1, MAX_STEPS + 1):
-        message = _call_groq(messages, tools=True)
+        message = _call_groq(messages)
         messages.append(message)
-
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
             answer = (message.get("content") or "").strip()
 
             if action_seen and not verified_after_action:
-                # Do not let the model finish immediately after an action.
                 messages.append({
                     "role": "system",
                     "content": (
                         "You performed an action but have not verified its "
-                        "result. Call observe_android() now before giving a "
-                        "success claim."
+                        "result. Call observe_android() now before claiming "
+                        "success or failure."
                     ),
                 })
                 continue
 
-            return {
-                "success": True,
-                "message": answer,
-                "steps": step,
-            }
+            return {"success": True, "message": answer, "steps": step}
 
         for tool_call in tool_calls:
             function_name = tool_call["function"]["name"]
 
             try:
-                arguments = json.loads(tool_call["function"].get("arguments") or "{}")
+                arguments = json.loads(
+                    tool_call["function"].get("arguments") or "{}"
+                )
             except json.JSONDecodeError:
                 arguments = {}
 
