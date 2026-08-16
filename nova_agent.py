@@ -188,19 +188,34 @@ def _call_groq(messages):
     return data["choices"][0]["message"]
 
 
+def _unwrap_tool_result(result):
+    """Normalize the executor envelope to the actual tool result."""
+    if not isinstance(result, dict):
+        return result
+
+    if "result" in result and isinstance(result.get("result"), dict):
+        return result["result"]
+
+    return result
+
+
 def _planner_tool_result(result, function_name):
-    """Return the useful planner state without flooding the model with raw XML nodes."""
+    """Return useful planner state without flooding the model with raw XML nodes."""
+    result = _unwrap_tool_result(result)
+
     if not isinstance(result, dict):
         return result
 
     if function_name == "observe_android" and result.get("success"):
+        state = result.get("state") or {}
+        foreground_package = result.get("foreground_package") or state.get("foreground_package", "")
         return {
             "success": True,
             "verified": bool(result.get("verified")),
             "message": result.get("message", ""),
             "summary": result.get("summary", ""),
-            "state": result.get("state", {}),
-            "foreground_package": result.get("foreground_package", ""),
+            "state": state,
+            "foreground_package": foreground_package,
         }
 
     if function_name == "click_node":
@@ -279,6 +294,7 @@ def run_agent(goal):
         raw_arguments = function.get("arguments") or "{}"
 
         result = None
+        arguments = {}
         try:
             arguments = json.loads(raw_arguments)
             if not isinstance(arguments, dict):
@@ -289,7 +305,6 @@ def run_agent(goal):
                 "verified": False,
                 "message": f"Invalid tool arguments: {exc}",
             }
-            arguments = {}
 
         if result is None:
             if function_name not in AGENT_TOOLS:
@@ -300,7 +315,8 @@ def run_agent(goal):
                 }
             else:
                 print(f"🧠 Step {step}: {function_name}({arguments})")
-                result = execute_tool(function_name, function_name, **arguments)
+                execution = execute_tool(function_name, function_name, **arguments)
+                result = _unwrap_tool_result(execution)
                 print("⚙️", result)
 
         if function_name == "launch_android_app" and result.get("success"):
@@ -311,6 +327,9 @@ def run_agent(goal):
                 observed_after_action = bool(result.get("success"))
 
             foreground_package = result.get("foreground_package", "")
+            if not foreground_package:
+                foreground_package = (result.get("state") or {}).get("foreground_package", "")
+
             if (
                 simple_open_app
                 and last_launched_package
