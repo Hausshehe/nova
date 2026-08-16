@@ -1,41 +1,25 @@
-"""Observe the current Android UI without relying on fixed coordinates or app-specific scripts."""
+"""Observe the current Android UI without fixed coordinates or app scripts."""
 
-import subprocess
 import xml.etree.ElementTree as ET
+
+from tools.android_root import run_root
 
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
 
 
-def _run_root(command):
-    process = subprocess.run(
-        ["su", "-c", command],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-
-    if process.returncode != 0:
-        raise RuntimeError(process.stderr.strip() or process.stdout.strip() or "root command failed")
-
-    return process.stdout
-
-
 def observe_android():
     """Return a structured snapshot of the currently visible Android UI."""
     try:
-        _run_root(
+        result = run_root(
             f"uiautomator dump {DUMP_PATH} >/dev/null 2>&1 && cat {DUMP_PATH}"
         )
-
-        xml_text = _run_root(f"cat {DUMP_PATH}")
+        xml_text = result.stdout
         root = ET.fromstring(xml_text)
-
         nodes = []
 
         for node in root.iter("node"):
             attrs = node.attrib
-
             text = attrs.get("text", "").strip()
             description = attrs.get("content-desc", "").strip()
             resource_id = attrs.get("resource-id", "").strip()
