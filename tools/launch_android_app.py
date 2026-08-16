@@ -1,17 +1,21 @@
 """Launch an installed Android application by package name."""
 
+import re
 import subprocess
 
 
+_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$")
+
+
 def launch_android_app(package):
-    """Launch the Android launcher activity for an installed package."""
+    """Launch an installed Android application by its discovered package name."""
     package = str(package or "").strip()
 
-    if not package:
+    if not package or not _PACKAGE_RE.fullmatch(package):
         return {
             "success": False,
             "verified": False,
-            "message": "Package name cannot be empty.",
+            "message": "Invalid Android package name.",
         }
 
     try:
@@ -39,9 +43,9 @@ def launch_android_app(package):
 
         return {
             "success": True,
-            "verified": True,
+            "verified": False,
             "package": package,
-            "message": "Android launch command completed.",
+            "message": "Android launch command completed; verify the resulting UI.",
             "output": output,
         }
 
