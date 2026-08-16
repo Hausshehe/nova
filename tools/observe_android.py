@@ -6,15 +6,30 @@ from tools.android_root import run_root
 
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
+OBSERVE_TIMEOUT_SECONDS = 10
 
 
 def observe_android():
     """Return a structured snapshot of the currently visible Android UI."""
     try:
-        result = run_root(
-            f"uiautomator dump {DUMP_PATH} >/dev/null 2>&1 && cat {DUMP_PATH}"
+        # uiautomator can occasionally hang on a transient Android UI state.
+        # Bound the device-side operation so the persistent root shell cannot
+        # leave the whole agent blocked forever.
+        command = (
+            f"timeout {OBSERVE_TIMEOUT_SECONDS} "
+            f"/system/bin/uiautomator dump {DUMP_PATH} >/dev/null 2>&1 "
+            f"&& cat {DUMP_PATH}"
         )
+        result = run_root(command)
         xml_text = result.stdout
+        if not xml_text.strip():
+            return {
+                "success": False,
+                "verified": False,
+                "nodes": [],
+                "message": "Android UI observation produced no XML snapshot.",
+            }
+
         root = ET.fromstring(xml_text)
         nodes = []
 
