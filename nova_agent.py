@@ -15,11 +15,11 @@ from tools.registry import discover_tools
 
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "llama-3.3-70b-versatile"
+# GPT-OSS 120B is currently supported by Groq for local function/tool calling
+# and is a better fit for this agent's structured tool-use loop.
+MODEL = "openai/gpt-oss-120b"
 MAX_STEPS = 12
 
-# Capabilities, not user commands. The model composes these to solve goals
-# it has never seen before.
 AGENT_TOOLS = {
     "observe_android",
     "find_android_app",
@@ -36,38 +36,28 @@ Your job is to accomplish the user's GOAL, not to match the request to a
 pre-written command.
 
 CORE RULES:
-
-1. Treat every request as a goal that may be completely new.
-2. Never assume a fixed UI path. The UI can change between Android versions,
-   app versions, devices, languages, and states.
+1. Every request may be completely new.
+2. Never assume a fixed UI path. Android and apps can change.
 3. Observe the CURRENT UI before making UI decisions.
-4. When the user names an application, do not invent or memorize its package
-   name. Use find_android_app(name) first, then launch the discovered package.
-5. Perform ONE capability action at a time. After each state-changing action,
-   observe again before deciding the next action.
-6. Base every next action on the newest observed state.
-7. If the UI differs from what you expected, re-plan instead of repeating an
-   old sequence.
-8. Use visible text, content descriptions, resource IDs, classes, enabled and
-   clickable state, and other observed information to identify controls.
-9. Do not use hard-coded screen coordinates.
-10. Never require the user to describe the UI procedure. The user states the
-    goal; Nova determines the procedure.
-11. Do not claim an action succeeded merely because a command returned.
-    Verify the resulting state whenever possible.
-12. Verification must relate to the USER'S GOAL. For example, after opening
-    Spotify, confirm that the observed foreground UI/package corresponds to
-    Spotify rather than merely confirming that a launch command returned.
-13. If a requested action is destructive, privacy-sensitive, financial, or
-    otherwise consequential, ask for confirmation before the consequential
-    final action.
-14. If the available capabilities are insufficient, say what is missing
-    instead of pretending the goal was completed.
-15. Never invent UI elements, package names, or Android APIs.
-16. Prefer the shortest reliable route, but reliability and verification are
-    more important than speed.
-17. Think in terms of the user's objective and the current device state, not
-    previously memorized scripts.
+4. When an app is named, use find_android_app(name) first. Never invent a
+   package name.
+5. Perform ONE capability action at a time. After every state-changing action,
+   observe again before choosing the next action.
+6. Base each next action on the newest device state.
+7. If reality differs from expectations, re-plan instead of repeating a script.
+8. Use visible text, content descriptions, resource IDs, classes, and state to
+   identify controls. Never use fixed screen coordinates.
+9. The user states the goal; Nova determines the procedure.
+10. Never claim success merely because a command returned successfully.
+11. Verification must relate to the user's actual goal. After opening an app,
+    for example, verify the resulting foreground package/UI.
+12. For destructive, privacy-sensitive, financial, or otherwise consequential
+    actions, ask for confirmation before the consequential final action.
+13. If the available capabilities are insufficient, say what is missing.
+14. Never invent UI elements, package names, or Android APIs.
+15. Prefer the shortest reliable route, but prioritize reliability and
+    verification over speed.
+16. Think about the objective and current device state, not memorized scripts.
 
 AVAILABLE CAPABILITIES:
 - observe_android: inspect the current Android UI.
@@ -97,7 +87,7 @@ def build_agent_tool_definitions():
     discovered = discover_tools()
     definitions = []
 
-    for name in AGENT_TOOLS:
+    for name in sorted(AGENT_TOOLS):
         module = discovered.get(name)
         if module is None:
             continue
@@ -134,6 +124,7 @@ def build_agent_tool_definitions():
                     "type": "object",
                     "properties": properties,
                     "required": required,
+                    "additionalProperties": False,
                 },
             },
         })
@@ -157,16 +148,24 @@ def _call_groq(messages):
             "messages": messages,
             "tools": build_agent_tool_definitions(),
             "tool_choice": "auto",
-            "temperature": 0.2,
-            "max_tokens": 700,
+            "temperature": 0.1,
+            "max_completion_tokens": 1200,
         },
-        timeout=45,
+        timeout=60,
     )
 
     if response.status_code != 200:
         raise RuntimeError("Groq error: " + response.text)
 
     return response.json()["choices"][0]["message"]
+
+
+def _tool_result_message(tool_call, result):
+    return {
+        "role": "tool",
+        "tool_call_id": tool_call["id"],
+        "content": json.dumps(result, ensure_ascii=False),
+    }
 
 
 def run_agent(goal):
@@ -184,7 +183,7 @@ def run_agent(goal):
     ]
 
     action_seen = False
-    verified_after_action = False
+    observed_after_action = False
 
     for step in range(1, MAX_STEPS + 1):
         message = _call_groq(messages)
@@ -194,34 +193,37 @@ def run_agent(goal):
         if not tool_calls:
             answer = (message.get("content") or "").strip()
 
-            if action_seen and not verified_after_action:
+            if action_seen and not observed_after_action:
                 messages.append({
                     "role": "system",
                     "content": (
-                        "You performed a state-changing action but have not "
-                        "verified the user's goal. Call observe_android() now "
-                        "and verify the resulting state before claiming "
-                        "success."
+                        "A state-changing action occurred but the resulting "
+                        "state has not been observed yet. Call observe_android "
+                        "before claiming the user's goal is complete."
                     ),
                 })
                 continue
 
             return {"success": True, "message": answer, "steps": step}
 
-        # Execute exactly one tool call per reasoning cycle. This prevents the
-        # model from committing to a long blind sequence before seeing how the
-        # real device responded to the previous action.
+        # Execute only the first call from each model turn. This guarantees
+        # that Nova sees the real device state before committing to another
+        # action, even if a model attempts parallel tool calls.
         tool_call = tool_calls[0]
-        function_name = tool_call["function"]["name"]
+        function_name = tool_call.get("function", {}).get("name", "")
+        raw_arguments = tool_call.get("function", {}).get("arguments") or "{}"
 
         try:
-            arguments = json.loads(
-                tool_call["function"].get("arguments") or "{}"
-            )
-        except json.JSONDecodeError:
-            arguments = {}
-
-        if function_name not in AGENT_TOOLS:
+            arguments = json.loads(raw_arguments)
+            if not isinstance(arguments, dict):
+                raise ValueError("Tool arguments must be a JSON object.")
+        except (json.JSONDecodeError, ValueError) as exc:
+            result = {
+                "success": False,
+                "verified": False,
+                "message": f"Invalid tool arguments: {exc}",
+            }
+        elif function_name not in AGENT_TOOLS:
             result = {
                 "success": False,
                 "verified": False,
@@ -229,24 +231,21 @@ def run_agent(goal):
             }
         else:
             print(f"🧠 Step {step}: {function_name}({arguments})")
-            result = execute_tool(function_name, function_name, **arguments)
+            execution = execute_tool(function_name, function_name, **arguments)
+            # executor.py wraps the capability result. Preserve that structure
+            # so the model receives both the execution status and capability
+            # payload.
+            result = execution
             print("⚙️", result)
 
         if function_name == "observe_android":
             if action_seen:
-                # The observation capability successfully returned a state.
-                # The model itself must determine whether that state proves
-                # the user's goal, so it gets the full observation result.
-                verified_after_action = bool(result.get("success"))
+                observed_after_action = bool(result.get("success"))
         else:
             action_seen = True
-            verified_after_action = False
+            observed_after_action = False
 
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call["id"],
-            "content": json.dumps(result, ensure_ascii=False),
-        })
+        messages.append(_tool_result_message(tool_call, result))
 
     return {
         "success": False,
