@@ -3,6 +3,7 @@
 import inspect
 import json
 import os
+import re
 import requests
 
 from tools.executor import execute_tool
@@ -56,6 +57,12 @@ FUNDAMENTAL RULES:
     of pretending the task succeeded.
 12. Prefer the shortest reliable route, but reliability and verification beat
     speed.
+13. When observe_android reports foreground_package, treat it as authoritative
+    evidence of which app is currently in the foreground. Do not launch an app
+    again merely because the terminal is the environment running Nova.
+14. If the user's goal is simply to open an app and the latest observation shows
+    that app's package as foreground_package, the goal is complete. Stop; do not
+    launch the same package again.
 
 UI INTERACTION:
 - observe_android returns a compact semantic state to you and retains the raw
@@ -193,11 +200,10 @@ def _planner_tool_result(result, function_name):
             "message": result.get("message", ""),
             "summary": result.get("summary", ""),
             "state": result.get("state", {}),
+            "foreground_package": result.get("foreground_package", ""),
         }
 
     if function_name == "click_node":
-        # The matched node is useful for audit/debugging, but the planner mainly
-        # needs the action result and selector. The next observation is ground truth.
         return {
             "success": bool(result.get("success")),
             "verified": bool(result.get("verified")),
@@ -220,6 +226,13 @@ def _tool_result_message(tool_call, result, function_name):
     }
 
 
+def _simple_open_goal(goal):
+    """Recognize the narrow, safe case where opening an app is the entire goal."""
+    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
+    match = re.fullmatch(r"(?:open|launch|start)\s+(.+?)(?:\s+app)?", normalized)
+    return match.group(1).strip() if match else ""
+
+
 def run_agent(goal):
     """Run Nova's adaptive goal/action/observation loop for one goal."""
     goal = str(goal or "").strip()
@@ -236,6 +249,8 @@ def run_agent(goal):
 
     action_seen = False
     observed_after_action = False
+    last_launched_package = ""
+    simple_open_app = _simple_open_goal(goal)
 
     for step in range(1, MAX_STEPS + 1):
         message = _call_groq(messages)
@@ -288,9 +303,26 @@ def run_agent(goal):
                 result = execute_tool(function_name, function_name, **arguments)
                 print("⚙️", result)
 
+        if function_name == "launch_android_app" and result.get("success"):
+            last_launched_package = arguments.get("package", "")
+
         if function_name == "observe_android":
             if action_seen:
                 observed_after_action = bool(result.get("success"))
+
+            foreground_package = result.get("foreground_package", "")
+            if (
+                simple_open_app
+                and last_launched_package
+                and foreground_package == last_launched_package
+            ):
+                messages.append(_tool_result_message(tool_call, result, function_name))
+                return {
+                    "success": True,
+                    "verified": True,
+                    "message": f"Goal completed: {last_launched_package} is in the foreground.",
+                    "steps": step,
+                }
         else:
             action_seen = True
             observed_after_action = False
