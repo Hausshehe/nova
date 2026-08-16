@@ -13,8 +13,6 @@ API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "openai/gpt-oss-120b"
 MAX_STEPS = 16
 
-# Fundamental capabilities only. User goals are deliberately NOT represented
-# as tools, so new requests do not require a new Python function.
 AGENT_TOOLS = {
     "observe_android",
     "find_android_app",
@@ -60,11 +58,12 @@ FUNDAMENTAL RULES:
     speed.
 
 UI INTERACTION:
-- observe_android returns the full current UI node set. Preserve and reason
-  over all available node attributes; do not assume visible text is the only
-  useful signal.
+- observe_android returns a compact semantic state to you and retains the raw
+  hierarchy locally for interaction tools. Use visible text, content
+  descriptions, resource IDs, packages, classes, bounds/centers, and interactive
+  state when selecting controls.
 - click_node is the preferred generic interaction when a specific current UI
-  node can be identified from its semantic attributes.
+  node can be identified from semantic attributes.
 - Use click_node with a selector such as text, content_description,
   resource_id, class_name, and/or package. It resolves the node against the
   CURRENT hierarchy and calculates its current bounds; never supply guessed
@@ -182,11 +181,42 @@ def _call_groq(messages):
     return data["choices"][0]["message"]
 
 
-def _tool_result_message(tool_call, result):
+def _planner_tool_result(result, function_name):
+    """Return the useful planner state without flooding the model with raw XML nodes."""
+    if not isinstance(result, dict):
+        return result
+
+    if function_name == "observe_android" and result.get("success"):
+        return {
+            "success": True,
+            "verified": bool(result.get("verified")),
+            "message": result.get("message", ""),
+            "summary": result.get("summary", ""),
+            "state": result.get("state", {}),
+        }
+
+    if function_name == "click_node":
+        # The matched node is useful for audit/debugging, but the planner mainly
+        # needs the action result and selector. The next observation is ground truth.
+        return {
+            "success": bool(result.get("success")),
+            "verified": bool(result.get("verified")),
+            "selector": result.get("selector"),
+            "message": result.get("message", ""),
+            "error": result.get("error"),
+        }
+
+    return result
+
+
+def _tool_result_message(tool_call, result, function_name):
     return {
         "role": "tool",
         "tool_call_id": tool_call["id"],
-        "content": json.dumps(result, ensure_ascii=False),
+        "content": json.dumps(
+            _planner_tool_result(result, function_name),
+            ensure_ascii=False,
+        ),
     }
 
 
@@ -228,8 +258,6 @@ def run_agent(goal):
 
             return {"success": True, "message": answer, "steps": step}
 
-        # One action per reasoning turn. This forces a fresh observation before
-        # the model can choose another state-changing action.
         tool_call = tool_calls[0]
         function = tool_call.get("function") or {}
         function_name = function.get("name", "")
@@ -267,7 +295,7 @@ def run_agent(goal):
             action_seen = True
             observed_after_action = False
 
-        messages.append(_tool_result_message(tool_call, result))
+        messages.append(_tool_result_message(tool_call, result, function_name))
 
     return {
         "success": False,
