@@ -1,0 +1,24 @@
+{
+  "device": "Android phone running Termux",
+  "verified_capabilities": {
+    "termux_volume": {
+      "command": "termux-volume",
+      "output": "JSON array",
+      "verified": true
+    },
+    "termux_battery_status": {
+      "command": "termux-battery-status",
+      "output": "JSON object",
+      "verified": true,
+      "fields": [
+        "percentage",
+        "level",
+        "scale",
+        "status",
+        "health",
+        "temperature",
+        "voltage"
+      ]
+    }
+  }
+}

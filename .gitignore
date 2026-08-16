@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Secrets / local configuration
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.jks
+*.keystore
+
+# Android generated/build files
+android/build/
+*.apk
+*.idsig
+
+# Android SDK / downloaded packages
+android-sdk/
+*.zip
+
+# Native model/build repository
+llama.cpp/build/
+llama.cpp/.cache/
+
+# Local backups
+backups/
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store
+
+# External llama.cpp source tree
+llama.cpp/
+
+# Historical backups / snapshots
+backups/
+*.bak
+*.backup.py
+infoney_voice.before_*.py
+infoney_voice.working_registry.py
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local Android SDK archives
+*.zip
+
+# Build output
+android/build/
+repository2-3.xml
+*.bak*
+*.backup
+*.pretest
+*.bak*
