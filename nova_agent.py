@@ -20,6 +20,7 @@ AGENT_TOOLS = {
     "find_android_app",
     "launch_android_app",
     "click_text",
+    "click_node",
     "type_text",
     "back_android",
     "scroll_android",
@@ -58,10 +59,27 @@ FUNDAMENTAL RULES:
 12. Prefer the shortest reliable route, but reliability and verification beat
     speed.
 
+UI INTERACTION:
+- observe_android returns the full current UI node set. Preserve and reason
+  over all available node attributes; do not assume visible text is the only
+  useful signal.
+- click_node is the preferred generic interaction when a specific current UI
+  node can be identified from its semantic attributes.
+- Use click_node with a selector such as text, content_description,
+  resource_id, class_name, and/or package. It resolves the node against the
+  CURRENT hierarchy and calculates its current bounds; never supply guessed
+  coordinates.
+- click_text remains available as a simpler text/content-description primitive.
+- After click_node, click_text, type_text, back_android, scroll_android, or any
+  other state-changing action, observe the new UI before acting again.
+- If a selector does not match, do not weaken it blindly. Re-observe and reason
+  from the new state.
+
 AVAILABLE FUNDAMENTAL PRIMITIVES:
 - observe_android: inspect the current Android UI.
 - find_android_app: discover installed package names from a human app name.
 - launch_android_app: launch a discovered Android package.
+- click_node: resolve and tap a current UI node by semantic attributes.
 - click_text: activate a visible UI control by its text/content description.
 - type_text: enter text into the currently focused input field.
 - back_android: press Android Back.
