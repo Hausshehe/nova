@@ -1,6 +1,6 @@
 """Discover installed Android packages without hard-coded app mappings."""
 
-import subprocess
+from tools.android_root import run_root
 
 
 def find_android_app(app_name):
@@ -11,20 +11,7 @@ def find_android_app(app_name):
         return {"success": False, "verified": False, "message": "App name cannot be empty."}
 
     try:
-        result = subprocess.run(
-            ["su", "-c", "/system/bin/pm list packages"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-
-        if result.returncode != 0:
-            return {
-                "success": False,
-                "verified": False,
-                "message": f"Android package manager failed: {result.stderr.strip() or result.stdout.strip() or 'unknown error'}",
-            }
-
+        result = run_root("/system/bin/pm list packages")
         packages = []
         for line in result.stdout.splitlines():
             line = line.strip()
