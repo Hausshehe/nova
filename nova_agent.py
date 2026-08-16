@@ -4,6 +4,8 @@ import inspect
 import json
 import os
 import re
+import time
+
 import requests
 
 from tools.executor import execute_tool
@@ -13,6 +15,9 @@ from tools.registry import discover_tools
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "openai/gpt-oss-120b"
 MAX_STEPS = 16
+MAX_GROQ_RETRIES = 4
+GROQ_BACKOFF_SECONDS = 1.5
+MAX_HISTORY_PAIRS = 3
 
 AGENT_TOOLS = {
     "observe_android",
@@ -29,71 +34,45 @@ AGENT_TOOLS = {
 SYSTEM_PROMPT = """
 You are Nova, a goal-driven Android agent.
 
-The user gives you a GOAL, not a procedure. Your job is to accomplish the goal
-on the real Android phone by observing the current state, choosing a generic
-action, observing the result, and re-planning as necessary.
+The user gives you a GOAL, not a procedure. Accomplish it on the real Android
+phone by observing the current state, choosing a generic action, observing the
+result, and re-planning as necessary.
 
 FUNDAMENTAL RULES:
 1. Every request may be new. Never expect a pre-written command for the goal.
-2. Start by observing the current UI unless a tool result already provides the
-   exact current state needed for the next decision.
+2. Start by observing the current UI unless the current state is already known.
 3. Use generic primitives as building blocks. Do not invent app-specific tools.
-4. After EVERY state-changing action, call observe_android before choosing the
-   next action. Never blindly execute a precomputed sequence.
-5. Treat the newest observation as ground truth. If the UI differs from your
-   expectation, re-plan from what is actually visible.
-6. Identify controls using visible text, content descriptions, resource IDs,
-   class/package information, and current UI structure. Never reason from fixed
-   screen coordinates.
-7. For an app name, discover its installed package dynamically before launching.
-8. Do not claim success because a command returned successfully. Verify the
-   resulting state against the user's actual goal.
-9. You may use back and scrolling when the desired control is not currently
-   visible.
+4. After EVERY state-changing action, observe the new state before acting again.
+5. Treat the newest observation as ground truth and re-plan when it differs.
+6. Identify controls semantically: visible text, content descriptions,
+   resource IDs, class/package information, and current UI structure.
+   Never reason from fixed screen coordinates.
+7. Discover an installed package dynamically from a human app name.
+8. Never claim success merely because a command returned successfully; verify.
+9. Use back and scrolling when needed.
 10. For destructive, privacy-sensitive, financial, account, or otherwise
     consequential final actions, ask the user for confirmation immediately
     before that consequential action.
-11. If a capability is genuinely missing, report the missing primitive instead
-    of pretending the task succeeded.
-12. Prefer the shortest reliable route, but reliability and verification beat
-    speed.
-13. When observe_android reports foreground_package, treat it as authoritative
-    evidence of which app is currently in the foreground. Do not launch an app
-    again merely because the terminal is the environment running Nova.
-14. If the user's goal is simply to open an app and the latest observation shows
-    that app's package as foreground_package, the goal is complete. Stop; do not
-    launch the same package again.
+11. If a capability is genuinely missing, report the missing primitive.
+12. Prefer the shortest reliable route, but reliability and verification win.
+13. foreground_package is authoritative evidence of the current foreground app.
+14. Never relaunch an app merely because Termux is where Nova is running.
 
 UI INTERACTION:
-- observe_android returns a compact semantic state to you and retains the raw
-  hierarchy locally for interaction tools. Use visible text, content
-  descriptions, resource IDs, packages, classes, bounds/centers, and interactive
-  state when selecting controls.
-- click_node is the preferred generic interaction when a specific current UI
-  node can be identified from semantic attributes.
-- Use click_node with a selector such as text, content_description,
-  resource_id, class_name, and/or package. It resolves the node against the
-  CURRENT hierarchy and calculates its current bounds; never supply guessed
-  coordinates.
-- click_text remains available as a simpler text/content-description primitive.
-- After click_node, click_text, type_text, back_android, scroll_android, or any
-  other state-changing action, observe the new UI before acting again.
-- If a selector does not match, do not weaken it blindly. Re-observe and reason
-  from the new state.
+- observe_android gives a compact semantic state. Raw hierarchy stays local.
+- click_node is preferred when a current UI node can be identified semantically.
+- click_node resolves selectors against the CURRENT hierarchy and calculates
+  current bounds. Never supply guessed coordinates.
+- click_text is available for simple text/content-description activation.
+- After any state-changing action, observe before choosing another action.
+- If a selector fails, re-observe and reason from the new state.
 
-AVAILABLE FUNDAMENTAL PRIMITIVES:
-- observe_android: inspect the current Android UI.
-- find_android_app: discover installed package names from a human app name.
-- launch_android_app: launch a discovered Android package.
-- click_node: resolve and tap a current UI node by semantic attributes.
-- click_text: activate a visible UI control by its text/content description.
-- type_text: enter text into the currently focused input field.
-- back_android: press Android Back.
-- scroll_android: scroll the current UI up or down.
+AVAILABLE PRIMITIVES:
+observe_android, find_android_app, launch_android_app, click_node,
+click_text, type_text, back_android, scroll_android.
 
-There is intentionally no tool named open_spotify, clear_chrome_data,
-block_facebook, or any other user-goal-specific command. Solve those goals by
-reasoning over the current device state with the primitives above.
+There are intentionally no app-specific goal tools. Solve goals by reasoning
+with these generic primitives.
 """
 
 
@@ -105,10 +84,30 @@ def _parameter_type(parameter):
         return "integer"
     if annotation is float:
         return "number"
+
+    if annotation is inspect.Parameter.empty:
+        default = parameter.default
+        if isinstance(default, bool):
+            return "boolean"
+        if isinstance(default, int) and not isinstance(default, bool):
+            return "integer"
+        if isinstance(default, float):
+            return "number"
+        if isinstance(default, str):
+            return "string"
+
+    annotation_text = str(annotation).lower()
+    if "bool" in annotation_text:
+        return "boolean"
+    if "int" in annotation_text:
+        return "integer"
+    if "float" in annotation_text:
+        return "number"
     return "string"
 
 
 def build_agent_tool_definitions():
+    """Build compact OpenAI-compatible tool schemas for the planner."""
     discovered = discover_tools()
     definitions = []
 
@@ -134,7 +133,6 @@ def build_agent_tool_definitions():
 
             properties[parameter_name] = {
                 "type": _parameter_type(parameter),
-                "description": f"Input for {name}: {parameter_name}.",
             }
             if parameter.default is inspect.Parameter.empty:
                 required.append(parameter_name)
@@ -156,7 +154,26 @@ def build_agent_tool_definitions():
     return definitions
 
 
+def _retry_delay(response, attempt):
+    """Use Groq's reset headers when available, otherwise exponential backoff."""
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(0.5, float(retry_after)) + 0.25
+        except ValueError:
+            pass
+
+    reset = response.headers.get("x-ratelimit-reset-tokens")
+    if reset:
+        match = re.match(r"([0-9.]+)s", reset.strip())
+        if match:
+            return max(0.5, float(match.group(1))) + 0.25
+
+    return GROQ_BACKOFF_SECONDS * (2 ** attempt)
+
+
 def _call_groq(messages):
+    """Call Groq with bounded retries for transient rate limits/server errors."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY environment variable is not set.")
@@ -169,52 +186,78 @@ def _call_groq(messages):
         "tools": build_agent_tool_definitions(),
         "tool_choice": "auto",
         "parallel_tool_calls": False,
+        "service_tier": "auto",
     }
 
-    response = requests.post(
-        API_URL,
-        headers={
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=45,
-    )
+    for attempt in range(MAX_GROQ_RETRIES):
+        response = requests.post(
+            API_URL,
+            headers={
+                "Authorization": "Bearer " + api_key,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=45,
+        )
 
-    if response.status_code != 200:
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]
+
+        if response.status_code == 429 and attempt < MAX_GROQ_RETRIES - 1:
+            delay = _retry_delay(response, attempt)
+            print(f"⏳ Groq rate limit; retrying in {delay:.1f}s...")
+            time.sleep(delay)
+            continue
+
+        if response.status_code >= 500 and attempt < MAX_GROQ_RETRIES - 1:
+            delay = GROQ_BACKOFF_SECONDS * (2 ** attempt)
+            print(f"⏳ Groq server error; retrying in {delay:.1f}s...")
+            time.sleep(delay)
+            continue
+
         raise RuntimeError("Groq error: " + response.text)
 
-    data = response.json()
-    return data["choices"][0]["message"]
+    raise RuntimeError("Groq request failed after retries.")
 
 
 def _unwrap_tool_result(result):
     """Normalize the executor envelope to the actual tool result."""
     if not isinstance(result, dict):
         return result
-
     if "result" in result and isinstance(result.get("result"), dict):
         return result["result"]
-
     return result
 
 
 def _planner_tool_result(result, function_name):
-    """Return useful planner state without flooding the model with raw XML nodes."""
+    """Keep planner messages compact while preserving decision-relevant state."""
     result = _unwrap_tool_result(result)
-
     if not isinstance(result, dict):
         return result
 
     if function_name == "observe_android" and result.get("success"):
         state = result.get("state") or {}
-        foreground_package = result.get("foreground_package") or state.get("foreground_package", "")
+        foreground_package = result.get("foreground_package") or state.get(
+            "foreground_package", ""
+        )
+        compact_state = {
+            "visible_text": state.get("visible_text", []),
+            "interactive_labels": [
+                node.get("label", "")
+                for node in state.get("interactive", [])
+                if node.get("label")
+            ],
+            "scrollable": state.get("scrollable", []),
+            "packages": state.get("packages", []),
+            "node_count": state.get("node_count", result.get("node_count", 0)),
+            "foreground_package": foreground_package,
+        }
         return {
             "success": True,
             "verified": bool(result.get("verified")),
-            "message": result.get("message", ""),
             "summary": result.get("summary", ""),
-            "state": state,
+            "state": compact_state,
             "foreground_package": foreground_package,
         }
 
@@ -227,6 +270,14 @@ def _planner_tool_result(result, function_name):
             "error": result.get("error"),
         }
 
+    if function_name == "find_android_app":
+        return {
+            "success": bool(result.get("success")),
+            "verified": bool(result.get("verified")),
+            "packages": result.get("packages", []),
+            "message": result.get("message", ""),
+        }
+
     return result
 
 
@@ -237,22 +288,111 @@ def _tool_result_message(tool_call, result, function_name):
         "content": json.dumps(
             _planner_tool_result(result, function_name),
             ensure_ascii=False,
+            separators=(",", ":"),
         ),
     }
 
 
 def _simple_open_goal(goal):
-    """Recognize the narrow, safe case where opening an app is the entire goal."""
+    """Recognize only the narrow generic 'open/launch/start app' goal."""
     normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
-    match = re.fullmatch(r"(?:open|launch|start)\s+(.+?)(?:\s+app)?", normalized)
+    match = re.fullmatch(
+        r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
+        normalized,
+    )
     return match.group(1).strip() if match else ""
 
 
 def _observe_directly():
-    """Observe the phone without spending another planner/Groq turn."""
+    """Observe without spending another planner/Groq turn."""
     return _unwrap_tool_result(
         execute_tool("observe_android", "observe_android")
     )
+
+
+def _run_simple_open_goal(app_name):
+    """Handle the generic open-app primitive locally, without planner tokens."""
+    verification = _observe_directly()
+    if verification.get("success"):
+        foreground = verification.get("foreground_package", "")
+        if not foreground:
+            foreground = (verification.get("state") or {}).get(
+                "foreground_package", ""
+            )
+
+        discovered_state = (verification.get("state") or {})
+        visible_packages = discovered_state.get("packages") or []
+        if foreground and app_name.replace(" ", "") in foreground.lower():
+            return {
+                "success": True,
+                "verified": True,
+                "message": f"{app_name} is already open and in the foreground.",
+                "steps": 0,
+            }
+
+    discovery = _unwrap_tool_result(
+        execute_tool(
+            "find_android_app",
+            "find_android_app",
+            app_name=app_name,
+        )
+    )
+    packages = discovery.get("packages") or [] if isinstance(discovery, dict) else []
+    if not packages:
+        return {
+            "success": False,
+            "verified": bool(discovery.get("verified")) if isinstance(discovery, dict) else False,
+            "message": f"I couldn't find an installed app matching '{app_name}'.",
+            "steps": 0,
+        }
+
+    package = packages[0]
+    launch = _unwrap_tool_result(
+        execute_tool(
+            "launch_android_app",
+            "launch_android_app",
+            package=package,
+        )
+    )
+    if not launch.get("success"):
+        return {
+            "success": False,
+            "verified": False,
+            "message": launch.get("message", "The app could not be launched."),
+            "steps": 0,
+        }
+
+    verification = _observe_directly()
+    foreground = verification.get("foreground_package", "")
+    if not foreground:
+        foreground = (verification.get("state") or {}).get("foreground_package", "")
+
+    if foreground == package:
+        return {
+            "success": True,
+            "verified": True,
+            "message": f"{app_name} is open and verified in the foreground.",
+            "steps": 0,
+        }
+
+    return {
+        "success": False,
+        "verified": False,
+        "message": (
+            f"I launched {app_name}, but verification shows "
+            f"{foreground or 'another app'} in the foreground."
+        ),
+        "steps": 0,
+    }
+
+
+def _compact_history(messages):
+    """Keep only recent action/observation pairs; current state is ground truth."""
+    if len(messages) <= 2 + (MAX_HISTORY_PAIRS * 2):
+        return messages
+
+    recent = messages[-(MAX_HISTORY_PAIRS * 2):]
+    return messages[:2] + recent
 
 
 def run_agent(goal):
@@ -260,6 +400,10 @@ def run_agent(goal):
     goal = str(goal or "").strip()
     if not goal:
         return {"success": False, "message": "Goal cannot be empty."}
+
+    simple_open_app = _simple_open_goal(goal)
+    if simple_open_app:
+        return _run_simple_open_goal(simple_open_app)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -271,28 +415,24 @@ def run_agent(goal):
 
     action_seen = False
     observed_after_action = False
-    last_launched_package = ""
-    simple_open_app = _simple_open_goal(goal)
 
     for step in range(1, MAX_STEPS + 1):
+        messages = _compact_history(messages)
         message = _call_groq(messages)
         messages.append(message)
         tool_calls = message.get("tool_calls") or []
 
         if not tool_calls:
             answer = (message.get("content") or "").strip()
-
             if action_seen and not observed_after_action:
                 messages.append({
                     "role": "system",
                     "content": (
-                        "A state-changing action occurred but the resulting "
-                        "state has not been observed yet. Call observe_android "
-                        "before claiming the user's goal is complete."
+                        "A state-changing action occurred but the resulting state "
+                        "has not been observed. Call observe_android before claiming success."
                     ),
                 })
                 continue
-
             return {"success": True, "message": answer, "steps": step}
 
         tool_call = tool_calls[0]
@@ -326,59 +466,9 @@ def run_agent(goal):
                 result = _unwrap_tool_result(execution)
                 print("⚙️", result)
 
-        if function_name == "launch_android_app" and result.get("success"):
-            last_launched_package = arguments.get("package", "")
-
-            # Opening an app is a complete, deterministic primitive sequence:
-            # launch -> observe -> verify. Do not ask Groq to decide to launch
-            # the same package again, and do not burn another planner turn.
-            if simple_open_app and last_launched_package:
-                print("🧠 Direct verification: observe_android({})")
-                verification = _observe_directly()
-                print("⚙️", verification)
-                foreground_package = verification.get("foreground_package", "")
-                if not foreground_package:
-                    foreground_package = (verification.get("state") or {}).get("foreground_package", "")
-
-                if foreground_package == last_launched_package:
-                    return {
-                        "success": True,
-                        "verified": True,
-                        "message": f"Goal completed: {last_launched_package} is in the foreground.",
-                        "steps": step,
-                    }
-
-                messages.append(_tool_result_message(tool_call, result, function_name))
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "The requested app launch did not put the requested package "
-                        "in the foreground. Use the latest observed foreground_package "
-                        "as ground truth and re-plan without blindly relaunching it."
-                    ),
-                })
-                continue
-
         if function_name == "observe_android":
             if action_seen:
                 observed_after_action = bool(result.get("success"))
-
-            foreground_package = result.get("foreground_package", "")
-            if not foreground_package:
-                foreground_package = (result.get("state") or {}).get("foreground_package", "")
-
-            if (
-                simple_open_app
-                and last_launched_package
-                and foreground_package == last_launched_package
-            ):
-                messages.append(_tool_result_message(tool_call, result, function_name))
-                return {
-                    "success": True,
-                    "verified": True,
-                    "message": f"Goal completed: {last_launched_package} is in the foreground.",
-                    "steps": step,
-                }
         else:
             action_seen = True
             observed_after_action = False
