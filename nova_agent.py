@@ -248,6 +248,13 @@ def _simple_open_goal(goal):
     return match.group(1).strip() if match else ""
 
 
+def _observe_directly():
+    """Observe the phone without spending another planner/Groq turn."""
+    return _unwrap_tool_result(
+        execute_tool("observe_android", "observe_android")
+    )
+
+
 def run_agent(goal):
     """Run Nova's adaptive goal/action/observation loop for one goal."""
     goal = str(goal or "").strip()
@@ -321,6 +328,36 @@ def run_agent(goal):
 
         if function_name == "launch_android_app" and result.get("success"):
             last_launched_package = arguments.get("package", "")
+
+            # Opening an app is a complete, deterministic primitive sequence:
+            # launch -> observe -> verify. Do not ask Groq to decide to launch
+            # the same package again, and do not burn another planner turn.
+            if simple_open_app and last_launched_package:
+                print("🧠 Direct verification: observe_android({})")
+                verification = _observe_directly()
+                print("⚙️", verification)
+                foreground_package = verification.get("foreground_package", "")
+                if not foreground_package:
+                    foreground_package = (verification.get("state") or {}).get("foreground_package", "")
+
+                if foreground_package == last_launched_package:
+                    return {
+                        "success": True,
+                        "verified": True,
+                        "message": f"Goal completed: {last_launched_package} is in the foreground.",
+                        "steps": step,
+                    }
+
+                messages.append(_tool_result_message(tool_call, result, function_name))
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "The requested app launch did not put the requested package "
+                        "in the foreground. Use the latest observed foreground_package "
+                        "as ground truth and re-plan without blindly relaunching it."
+                    ),
+                })
+                continue
 
         if function_name == "observe_android":
             if action_seen:
