@@ -1,34 +1,61 @@
 from pathlib import Path
+import re
 
 PATH = Path("nova_agent.py")
 text = PATH.read_text(encoding="utf-8")
 original = text
 
-# The current Groq organization does not support the optional auto service tier.
-text = text.replace('        "service_tier": "auto",\n', '')
+# Groq Free/standard orgs may reject this optional tier. Remove it wherever it
+# appears in the payload rather than depending on one exact surrounding block.
+text = re.sub(r'^\s*"service_tier"\s*:\s*"auto",?\s*\n', '', text, count=1, flags=re.MULTILINE)
 
-# Keep less stale planner history. The newest observation is ground truth, so
-# retaining fewer old action/observation pairs reduces token pressure without
-# turning the agent into a hard-coded procedure.
-text = text.replace("MAX_HISTORY_PAIRS = 3", "MAX_HISTORY_PAIRS = 2")
+# Reduce stale planner history. This preserves adaptive reasoning while lowering
+# the amount of old action/observation context sent to Groq.
+text = re.sub(r'^MAX_HISTORY_PAIRS\s*=\s*\d+', 'MAX_HISTORY_PAIRS = 2', text, count=1, flags=re.MULTILINE)
 
-old_rules = '''9. Use back and scrolling when needed.\n10. For destructive, privacy-sensitive, financial, account, or otherwise\n    consequential final actions, ask the user for confirmation immediately\n'''
-new_rules = '''9. Use back and scrolling when needed.\n10. When the goal names a destination screen or setting, reaching the parent\n    app is not enough: continue navigating until that destination is visible\n    or the agent has reliable evidence that it cannot be reached. If a named\n    destination is not visible in a scrollable list, prefer scrolling and then\n    observing again before deciding to go back. Do not use Back merely because\n    the target is below the current viewport. When the destination control\n    becomes visible, activate it using its current semantic node and observe\n    the resulting screen.\n11. For destructive, privacy-sensitive, financial, account, or otherwise\n    consequential final actions, ask the user for confirmation immediately\n'''
-if old_rules not in text:
-    raise SystemExit("Expected navigation rule block was not found; no changes made.")
-text = text.replace(old_rules, new_rules, 1)
+# Add a generic navigation rule without depending on the exact wording of the
+# surrounding prompt. If the rule is already present, leave it alone.
+navigation_rule = (
+    "10. When the goal names a destination screen or setting, reaching the parent "
+    "app is not enough: continue navigating until that destination is visible "
+    "or there is reliable evidence it cannot be reached. If a named destination "
+    "is not visible in a scrollable list, prefer scrolling and observing again "
+    "before going back. Do not use Back merely because the target is below the "
+    "current viewport. When it becomes visible, activate it using its current "
+    "semantic node and observe the resulting screen."
+)
+if "Do not use Back merely because the target is below the current viewport." not in text:
+    rule_pattern = r'(\n9\.\s+Use back and scrolling when needed\.)(\n10\.)'
+    updated, count = re.subn(
+        rule_pattern,
+        r'\1\n' + navigation_rule + r'\n11.',
+        text,
+        count=1,
+    )
+    if count == 0:
+        # Fall back to inserting before the destructive-action rule, regardless
+        # of its exact numbering/line wrapping.
+        marker = "For destructive, privacy-sensitive, financial, account, or otherwise"
+        if marker not in text:
+            raise SystemExit("Could not locate the generic safety/navigation rules; no changes made.")
+        updated = text.replace(
+            marker,
+            navigation_rule + "\n" + marker,
+            1,
+        )
+    text = updated
 
-# The formatted summary duplicates visible_text and interactive labels already
-# present in the structured observation. Removing it saves input tokens while
-# preserving the decision-relevant state.
-old_observe_return = '''        return {\n            "success": True,\n            "verified": bool(result.get("verified")),\n            "summary": result.get("summary", ""),\n            "state": compact_state,\n            "foreground_package": foreground_package,\n        }\n'''
-new_observe_return = '''        return {\n            "success": True,\n            "verified": bool(result.get("verified")),\n            "state": compact_state,\n            "foreground_package": foreground_package,\n        }\n'''
-if old_observe_return not in text:
-    raise SystemExit("Expected observation block was not found; no changes made.")
-text = text.replace(old_observe_return, new_observe_return, 1)
+# Do not send the formatted human-readable summary when the structured state is
+# already present. This removes duplicated visible-text/interactive information.
+text = re.sub(
+    r'(\s+"verified": bool\(result\.get\("verified"\)\),)\n\s+"summary": result\.get\("summary", ""\),\n',
+    r'\1\n',
+    text,
+    count=1,
+)
 
 if text == original:
-    raise SystemExit("No changes were necessary.")
-
-PATH.write_text(text, encoding="utf-8")
-print("Updated Nova's adaptive Android planner: less stale history, less duplicate observation text, stronger generic navigation behavior, and no unsupported Groq service_tier.")
+    print("Nova's planner already contains these improvements; no changes were necessary.")
+else:
+    PATH.write_text(text, encoding="utf-8")
+    print("Updated Nova's adaptive Android planner: lower stale-history token use, stronger generic navigation, compact observations, and no unsupported Groq service_tier.")
