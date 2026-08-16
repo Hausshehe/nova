@@ -15,15 +15,32 @@ def _parse_bounds(bounds):
 
 
 def _score(node, selector):
+    """Score a node only when it actually matches the supplied selector."""
     score = 0
+    matched = False
+
     for key, value in selector.items():
         if value is None or value == "":
             continue
+
         actual = node.get(key, "")
-        if str(actual).lower() == str(value).lower():
+        actual_s = str(actual).strip().lower()
+        value_s = str(value).strip().lower()
+
+        if actual_s == value_s:
             score += 100
-        elif key in {"text", "content_description", "resource_id", "class", "package"} and str(value).lower() in str(actual).lower():
+            matched = True
+        elif key in {"text", "content_description", "resource_id", "class", "package"} and value_s in actual_s:
             score += 25
+            matched = True
+        else:
+            # A supplied selector field is a constraint. If it does not match,
+            # this node must not be considered a candidate.
+            return 0
+
+    if not matched:
+        return 0
+
     if node.get("enabled"):
         score += 5
     if node.get("clickable"):
@@ -64,13 +81,23 @@ def click_node(selector=None, text=None, content_description=None,
             candidates.append((score, node))
 
     if not candidates:
-        return {"success": False, "verified": False, "error": "No matching UI node found", "selector": selector}
+        return {
+            "success": False,
+            "verified": False,
+            "error": "No matching UI node found",
+            "selector": selector,
+        }
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     score, node = candidates[0]
     bounds = _parse_bounds(node.get("bounds"))
     if not bounds:
-        return {"success": False, "verified": False, "error": "Matching node has invalid bounds", "node": node}
+        return {
+            "success": False,
+            "verified": False,
+            "error": "Matching node has invalid bounds",
+            "node": node,
+        }
 
     x1, y1, x2, y2 = bounds
     x = (x1 + x2) // 2
