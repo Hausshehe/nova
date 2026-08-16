@@ -1,26 +1,31 @@
-"""Observe the current Android UI without fixed coordinates or app scripts."""
+"""Observe Android UI and return both raw and compact agent-friendly state."""
 
 import xml.etree.ElementTree as ET
 
 from tools.android_root import run_root
-
+from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
 OBSERVE_TIMEOUT_SECONDS = 10
 
 
 def observe_android():
-    """Return a structured snapshot of the currently visible Android UI."""
+    """Capture the current Android UI and summarize actionable state."""
     try:
-        # uiautomator can occasionally hang on a transient Android UI state.
-        # Bound the device-side operation so the persistent root shell cannot
-        # leave the whole agent blocked forever.
         command = (
             f"timeout {OBSERVE_TIMEOUT_SECONDS} "
             f"/system/bin/uiautomator dump {DUMP_PATH} >/dev/null 2>&1 "
             f"&& cat {DUMP_PATH}"
         )
-        result = run_root(command)
+        result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS + 3)
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "verified": False,
+                "nodes": [],
+                "message": (result.stderr or result.stdout or "UI observation failed").strip(),
+            }
+
         xml_text = result.stdout
         if not xml_text.strip():
             return {
@@ -32,7 +37,6 @@ def observe_android():
 
         root = ET.fromstring(xml_text)
         nodes = []
-
         for node in root.iter("node"):
             attrs = node.attrib
             text = attrs.get("text", "").strip()
@@ -60,11 +64,14 @@ def observe_android():
                 "checked": attrs.get("checked") == "true",
             })
 
+        state = summarize_ui(nodes)
         return {
             "success": True,
             "verified": True,
             "node_count": len(nodes),
+            "state": state,
             "nodes": nodes,
+            "summary": format_ui_summary(state),
             "message": "Current Android UI snapshot captured successfully.",
         }
 
