@@ -13,8 +13,6 @@ SYSTEM_PROMPT = open(
     encoding="utf-8"
 ).read()
 
-# Keep only a small conversational window. Large UI/tool histories can
-# otherwise consume Groq TPM even when the current request is tiny.
 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 MAX_HISTORY_MESSAGES = 8
 
@@ -147,16 +145,39 @@ def _trim_history():
         messages = [messages[0]] + messages[-MAX_HISTORY_MESSAGES:]
 
 
-def _compact_tool_confirmation(results):
-    failures = [r for r in results if not r.get("success")]
-    if failures:
-        error = failures[0].get("error") or failures[0].get("message") or "The tool failed."
-        return f"I couldn't complete that: {error}"
-    if len(results) == 1:
+def _compact_tool_confirmation(tool_calls, results):
+    """Create a useful confirmation without spending another Groq request."""
+    for result in results:
+        if not result.get("success"):
+            error = result.get("error") or result.get("message") or "The tool failed."
+            return f"I couldn't complete that: {error}"
+
+    if len(tool_calls) == 1 and len(results) == 1:
+        name = tool_calls[0]["function"]["name"]
         result = results[0]
-        detail = result.get("result") or result.get("message")
-        if isinstance(detail, str) and detail.strip():
+
+        # Prefer the tool's own human-readable result when it is specific.
+        detail = result.get("result")
+        if isinstance(detail, str) and detail.strip() and detail.strip().lower() not in {"done", "success", "true"}:
             return detail.strip()
+
+        friendly = {
+            "open_spotify": "Spotify is open.",
+            "open_mt5": "MetaTrader 5 is open.",
+            "open_calculator": "The calculator is open.",
+            "open_camera": "The camera is open.",
+            "open_settings": "Settings are open.",
+            "open_youtube": "YouTube is open.",
+            "open_chrome": "Chrome is open.",
+            "open_browser": "The browser is open.",
+            "flashlight": "Done — the flashlight has been updated.",
+            "volume_control": "Done — the volume has been updated.",
+        }
+        if name in friendly:
+            return friendly[name]
+
+    if len(tool_calls) > 1:
+        return "Done — I completed the requested actions."
     return "Done."
 
 
@@ -212,10 +233,7 @@ def ask_nova(user_text):
             print("⚙️ Result:", result)
             results.append(result)
 
-        # IMPORTANT: Do not send the tool result back to Groq for a second
-        # completion. The tool already executed; a deterministic confirmation
-        # saves another request and avoids the TPM spike that caused failures.
-        answer = _compact_tool_confirmation(results)
+        answer = _compact_tool_confirmation(message["tool_calls"], results)
         messages.append({"role": "assistant", "content": answer})
         _trim_history()
         return answer
