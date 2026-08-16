@@ -1,4 +1,8 @@
-"""Observe Android UI and return both raw and compact agent-friendly state."""
+"""Observe Android UI and return compact state for Nova's reasoning.
+
+The full node list can still be requested by internal UI tools, but the
+normal LLM-facing result intentionally omits it to prevent huge Groq requests.
+"""
 
 import re
 import xml.etree.ElementTree as ET
@@ -24,8 +28,13 @@ def _foreground_package():
     return match.group(1) if match else ""
 
 
-def observe_android():
-    """Capture the current Android UI and summarize actionable state."""
+def observe_android(include_nodes=False):
+    """Capture Android UI.
+
+    By default only a compact semantic summary is returned to the caller.
+    ``include_nodes=True`` is reserved for internal tools such as click_node
+    that actually need the raw hierarchy for selector matching.
+    """
     try:
         foreground_package = _foreground_package()
         command = (
@@ -38,7 +47,7 @@ def observe_android():
             return {
                 "success": False,
                 "verified": False,
-                "nodes": [],
+                "nodes": [] if include_nodes else None,
                 "foreground_package": foreground_package,
                 "message": (result.stderr or result.stdout or "UI observation failed").strip(),
             }
@@ -48,7 +57,7 @@ def observe_android():
             return {
                 "success": False,
                 "verified": False,
-                "nodes": [],
+                "nodes": [] if include_nodes else None,
                 "foreground_package": foreground_package,
                 "message": "Android UI observation produced no XML snapshot.",
             }
@@ -84,22 +93,27 @@ def observe_android():
 
         state = summarize_ui(nodes)
         state["foreground_package"] = foreground_package
-        return {
+
+        response = {
             "success": True,
             "verified": True,
             "node_count": len(nodes),
             "foreground_package": foreground_package,
             "state": state,
-            "nodes": nodes,
             "summary": format_ui_summary(state),
             "message": "Current Android UI snapshot captured successfully.",
         }
+
+        if include_nodes:
+            response["nodes"] = nodes
+
+        return response
 
     except Exception as e:
         return {
             "success": False,
             "verified": False,
-            "nodes": [],
+            "nodes": [] if include_nodes else None,
             "foreground_package": "",
             "message": str(e),
         }
