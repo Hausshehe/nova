@@ -1,7 +1,8 @@
-"""Launch an installed Android application by package name."""
+"""Launch an installed Android application by discovered package name."""
 
 import re
-import subprocess
+
+from tools.android_root import run_root
 
 
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$")
@@ -19,28 +20,11 @@ def launch_android_app(package):
         }
 
     try:
-        process = subprocess.run(
-            [
-                "su",
-                "-c",
-                "/system/bin/am start -a android.intent.action.MAIN "
-                "-c android.intent.category.LAUNCHER -p " + package,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
+        result = run_root(
+            "/system/bin/am start -a android.intent.action.MAIN "
+            "-c android.intent.category.LAUNCHER -p " + package
         )
-
-        output = (process.stdout + "\n" + process.stderr).strip()
-
-        if process.returncode != 0:
-            return {
-                "success": False,
-                "verified": False,
-                "package": package,
-                "message": output or "Android launch command failed.",
-            }
-
+        output = result.stdout.strip()
         return {
             "success": True,
             "verified": False,
