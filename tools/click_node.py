@@ -34,8 +34,6 @@ def _score(node, selector):
             score += 25
             matched = True
         else:
-            # A supplied selector field is a constraint. If it does not match,
-            # this node must not be considered a candidate.
             return 0
 
     if not matched:
@@ -50,11 +48,7 @@ def _score(node, selector):
 
 def click_node(selector=None, text=None, content_description=None,
                resource_id=None, class_name=None, package=None):
-    """Find the best matching current UI node and tap its center.
-
-    The hierarchy is observed immediately before acting, so selectors adapt
-    to the current screen instead of depending on fixed coordinates.
-    """
+    """Find the best matching current UI node and tap its center."""
     selector = dict(selector or {})
     if text is not None:
         selector["text"] = text
@@ -70,7 +64,9 @@ def click_node(selector=None, text=None, content_description=None,
     if not selector:
         return {"success": False, "error": "A UI node selector is required"}
 
-    observed = observe_android()
+    # This tool needs the raw hierarchy internally; keep that payload out of
+    # the normal LLM-facing observe_android result.
+    observed = observe_android(include_nodes=True)
     if not observed.get("success"):
         return {"success": False, "error": observed.get("message", "UI observation failed")}
 
@@ -96,7 +92,7 @@ def click_node(selector=None, text=None, content_description=None,
             "success": False,
             "verified": False,
             "error": "Matching node has invalid bounds",
-            "node": node,
+            "selector": selector,
         }
 
     x1, y1, x2, y2 = bounds
@@ -109,7 +105,6 @@ def click_node(selector=None, text=None, content_description=None,
             "success": False,
             "verified": False,
             "selector": selector,
-            "node": node,
             "error": (result.stderr or result.stdout or "Tap failed").strip(),
         }
 
@@ -117,8 +112,13 @@ def click_node(selector=None, text=None, content_description=None,
         "success": True,
         "verified": False,
         "selector": selector,
-        "matched_node": node,
+        "matched_label": (
+            node.get("text")
+            or node.get("content_description")
+            or node.get("resource_id")
+            or "matching node"
+        ),
         "score": score,
         "tap": {"x": x, "y": y},
-        "message": "Matching UI node tapped; observe again to verify the resulting state.",
+        "message": "Matching UI node tapped successfully.",
     }
