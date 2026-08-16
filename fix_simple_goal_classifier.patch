@@ -1,34 +1,27 @@
 diff --git a/nova_agent.py b/nova_agent.py
 --- a/nova_agent.py
 +++ b/nova_agent.py
-@@ -293,9 +293,20 @@ def _simple_open_goal(goal):
+@@ -293,10 +293,21 @@ def _simple_open_goal(goal):
 -    """Recognize only the narrow generic 'open/launch/start app' goal."""
--    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
--    match = re.fullmatch(
--        r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
--        normalized,
--    )
--    return match.group(1).strip() if match else ""
 +    """Recognize only a single-app open/launch/start goal.
 +
-+    A previous version accepted the entire remainder of the sentence as the
-+    app name. That incorrectly classified goals such as
-+    "Open Settings and find the Display settings" as a simple open-app task,
-+    bypassing Nova's adaptive planner. Multi-step goals must stay adaptive.
++    Multi-step requests must stay in Nova's adaptive planner instead of being
++    mistaken for an app name.
 +    """
-+    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
+     normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
 +
-+    # If the request contains another action/conjunction, it is not a simple
-+    # open-app goal. Let the adaptive planner handle it.
++    # A simple open goal has exactly one intent. If the remainder contains
++    # another action/conjunction, let the adaptive planner handle the goal.
++    remainder = re.sub(r"^(?:open|launch|start)\s+", "", normalized)
 +    if re.search(
 +        r"\b(?:and|then|after|before|find|search|look|navigate|go|click|tap|"
 +        r"open|launch|start|change|enable|disable|turn|set|type|enter)\b",
-+        normalized.split(maxsplit=1)[1] if re.match(r"^(?:open|launch|start)\b", normalized) else "",
++        remainder,
 +    ):
 +        return ""
 +
-+    match = re.fullmatch(
-+        r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
-+        normalized,
-+    )
-+    return match.group(1).strip() if match else ""
+     match = re.fullmatch(
+         r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
+         normalized,
+     )
+     return match.group(1).strip() if match else ""
