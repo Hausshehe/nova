@@ -18,8 +18,8 @@ API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
 MAX_STEPS = 12
 
-# These are capabilities, not user commands. The model composes them to solve
-# goals it has never seen before.
+# Capabilities, not user commands. The model composes these to solve goals
+# it has never seen before.
 AGENT_TOOLS = {
     "observe_android",
     "find_android_app",
@@ -43,7 +43,8 @@ CORE RULES:
 3. Observe the CURRENT UI before making UI decisions.
 4. When the user names an application, do not invent or memorize its package
    name. Use find_android_app(name) first, then launch the discovered package.
-5. After an action that may change the UI, observe again.
+5. Perform ONE capability action at a time. After each state-changing action,
+   observe again before deciding the next action.
 6. Base every next action on the newest observed state.
 7. If the UI differs from what you expected, re-plan instead of repeating an
    old sequence.
@@ -54,16 +55,19 @@ CORE RULES:
     goal; Nova determines the procedure.
 11. Do not claim an action succeeded merely because a command returned.
     Verify the resulting state whenever possible.
-12. If a requested action is destructive, privacy-sensitive, financial, or
+12. Verification must relate to the USER'S GOAL. For example, after opening
+    Spotify, confirm that the observed foreground UI/package corresponds to
+    Spotify rather than merely confirming that a launch command returned.
+13. If a requested action is destructive, privacy-sensitive, financial, or
     otherwise consequential, ask for confirmation before the consequential
     final action.
-13. If the available capabilities are insufficient, say what is missing
+14. If the available capabilities are insufficient, say what is missing
     instead of pretending the goal was completed.
-14. Never invent UI elements, package names, or Android APIs.
-15. Prefer the shortest reliable route, but reliability and verification are
+15. Never invent UI elements, package names, or Android APIs.
+16. Prefer the shortest reliable route, but reliability and verification are
     more important than speed.
-16. Think in terms of the user's objective and the current device state, not
-    in terms of previously memorized scripts.
+17. Think in terms of the user's objective and the current device state, not
+    previously memorized scripts.
 
 AVAILABLE CAPABILITIES:
 - observe_android: inspect the current Android UI.
@@ -80,7 +84,6 @@ and the current observed state.
 
 def _parameter_type(parameter):
     annotation = parameter.annotation
-
     if annotation is bool:
         return "boolean"
     if annotation is int:
@@ -195,48 +198,55 @@ def run_agent(goal):
                 messages.append({
                     "role": "system",
                     "content": (
-                        "You performed an action but have not verified its "
-                        "result. Call observe_android() now before claiming "
-                        "success or failure."
+                        "You performed a state-changing action but have not "
+                        "verified the user's goal. Call observe_android() now "
+                        "and verify the resulting state before claiming "
+                        "success."
                     ),
                 })
                 continue
 
             return {"success": True, "message": answer, "steps": step}
 
-        for tool_call in tool_calls:
-            function_name = tool_call["function"]["name"]
+        # Execute exactly one tool call per reasoning cycle. This prevents the
+        # model from committing to a long blind sequence before seeing how the
+        # real device responded to the previous action.
+        tool_call = tool_calls[0]
+        function_name = tool_call["function"]["name"]
 
-            try:
-                arguments = json.loads(
-                    tool_call["function"].get("arguments") or "{}"
-                )
-            except json.JSONDecodeError:
-                arguments = {}
+        try:
+            arguments = json.loads(
+                tool_call["function"].get("arguments") or "{}"
+            )
+        except json.JSONDecodeError:
+            arguments = {}
 
-            if function_name not in AGENT_TOOLS:
-                result = {
-                    "success": False,
-                    "verified": False,
-                    "message": "Tool is not available to the adaptive agent.",
-                }
-            else:
-                print(f"🧠 Step {step}: {function_name}({arguments})")
-                result = execute_tool(function_name, function_name, **arguments)
-                print("⚙️", result)
+        if function_name not in AGENT_TOOLS:
+            result = {
+                "success": False,
+                "verified": False,
+                "message": "Tool is not available to the adaptive agent.",
+            }
+        else:
+            print(f"🧠 Step {step}: {function_name}({arguments})")
+            result = execute_tool(function_name, function_name, **arguments)
+            print("⚙️", result)
 
-            if function_name == "observe_android":
-                if action_seen:
-                    verified_after_action = bool(result.get("success"))
-            else:
-                action_seen = True
-                verified_after_action = False
+        if function_name == "observe_android":
+            if action_seen:
+                # The observation capability successfully returned a state.
+                # The model itself must determine whether that state proves
+                # the user's goal, so it gets the full observation result.
+                verified_after_action = bool(result.get("success"))
+        else:
+            action_seen = True
+            verified_after_action = False
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "content": json.dumps(result, ensure_ascii=False),
-            })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": json.dumps(result, ensure_ascii=False),
+        })
 
     return {
         "success": False,
