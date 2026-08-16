@@ -1,5 +1,6 @@
 """Observe Android UI and return both raw and compact agent-friendly state."""
 
+import re
 import xml.etree.ElementTree as ET
 
 from tools.android_root import run_root
@@ -9,9 +10,24 @@ DUMP_PATH = "/data/local/tmp/nova_ui.xml"
 OBSERVE_TIMEOUT_SECONDS = 10
 
 
+def _foreground_package():
+    """Return the package currently reported as the foreground/resumed app."""
+    result = run_root(
+        "dumpsys activity activities | grep -m 1 -E 'mResumedActivity|mCurrentFocus|mFocusedApp'",
+        timeout=5,
+    )
+    if result.returncode != 0:
+        return ""
+
+    line = (result.stdout or "").strip()
+    match = re.search(r"(?:u\d+\s+)?([A-Za-z0-9_.$]+)/(?:[A-Za-z0-9_.$]+)", line)
+    return match.group(1) if match else ""
+
+
 def observe_android():
     """Capture the current Android UI and summarize actionable state."""
     try:
+        foreground_package = _foreground_package()
         command = (
             f"timeout {OBSERVE_TIMEOUT_SECONDS} "
             f"/system/bin/uiautomator dump {DUMP_PATH} >/dev/null 2>&1 "
@@ -23,6 +39,7 @@ def observe_android():
                 "success": False,
                 "verified": False,
                 "nodes": [],
+                "foreground_package": foreground_package,
                 "message": (result.stderr or result.stdout or "UI observation failed").strip(),
             }
 
@@ -32,6 +49,7 @@ def observe_android():
                 "success": False,
                 "verified": False,
                 "nodes": [],
+                "foreground_package": foreground_package,
                 "message": "Android UI observation produced no XML snapshot.",
             }
 
@@ -65,10 +83,12 @@ def observe_android():
             })
 
         state = summarize_ui(nodes)
+        state["foreground_package"] = foreground_package
         return {
             "success": True,
             "verified": True,
             "node_count": len(nodes),
+            "foreground_package": foreground_package,
             "state": state,
             "nodes": nodes,
             "summary": format_ui_summary(state),
@@ -80,5 +100,6 @@ def observe_android():
             "success": False,
             "verified": False,
             "nodes": [],
+            "foreground_package": "",
             "message": str(e),
         }
