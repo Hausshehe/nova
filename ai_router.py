@@ -15,10 +15,7 @@ PROVIDERS = {
     "openrouter": {"key": "OPENROUTER_API_KEY", "url": "https://openrouter.ai/api/v1/chat/completions", "model_env": "OPENROUTER_MODEL", "default_model": "openrouter/free"},
 }
 
-# Gemini is intentionally last in the default chain for now. Its direct
-# OpenAI-compatible Gemini 3 tool-calling endpoint can reject multi-turn
-# histories when thought signatures are not round-tripped perfectly. When
-# Gemini access is healthy, AI_PROVIDER_ORDER can promote it without code edits.
+# Keep Gemini last until its direct multi-turn tool protocol is proven stable.
 DEFAULT_ORDER = ["groq", "mistral", "openrouter", "cloudflare", "gemini"]
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 _PROVIDER_COOLDOWN_UNTIL = {}
@@ -32,7 +29,11 @@ def _provider_order():
     if not configured:
         return DEFAULT_ORDER
     requested = [name.strip().lower() for name in configured.split(",") if name.strip()]
-    return [name for name in requested if name in PROVIDERS]
+    requested = [name for name in requested if name in PROVIDERS]
+    # Treat AI_PROVIDER_ORDER as a preference, not an allow-list. Always append
+    # every provider from the default chain so one stale env setting cannot
+    # silently disable fallback.
+    return requested + [name for name in DEFAULT_ORDER if name not in requested]
 
 
 def _parse_duration(value):
@@ -144,13 +145,6 @@ def _copy_message(message):
 
 
 def _sanitize_messages(messages, provider):
-    """Normalize history so every provider receives a valid tool-call sequence.
-
-    This is deliberately generic: no app, screen, label, or navigation path is
-    encoded here. Orphaned tool results are dropped when history compaction has
-    removed their matching assistant tool call. This prevents strict providers
-    such as Mistral from rejecting an otherwise valid adaptive session.
-    """
     sanitized = []
     pending_tool_ids = set()
     tool_names = {}
@@ -172,8 +166,6 @@ def _sanitize_messages(messages, provider):
             continue
 
         if role == "assistant":
-            # A new assistant turn means any old tool results that were not
-            # present in this compact history can no longer be validly replayed.
             if pending_tool_ids:
                 pending_tool_ids.clear()
             message = _copy_message(original)
@@ -203,7 +195,6 @@ def _sanitize_messages(messages, provider):
             continue
 
         if role in {"system", "user"}:
-            # A user/system turn cannot legally consume a pending tool result.
             pending_tool_ids.clear()
             sanitized.append(_copy_message(original))
             continue
@@ -212,8 +203,6 @@ def _sanitize_messages(messages, provider):
             pending_tool_ids.clear()
             sanitized.append({"role": "user", "content": copy.deepcopy(original["content"])})
 
-    # Gemini 3 direct OpenAI compatibility supports one sequential tool call in
-    # our planner. Keep the exact returned thought signature when present.
     if provider == "gemini":
         for message in sanitized:
             calls = message.get("tool_calls")
@@ -223,7 +212,6 @@ def _sanitize_messages(messages, provider):
 
 
 def _cross_provider_messages(messages):
-    """Build provider-neutral history without replaying provider-specific tools."""
     portable = []
     for original in messages:
         if not isinstance(original, dict):
@@ -246,8 +234,6 @@ def _cross_provider_messages(messages):
                     selections.append(f"Planner selected generic tool '{name}' with arguments {arguments}.")
                 text = (text + "\n" if text else "") + "\n".join(selections)
             if text:
-                # Avoid consecutive assistant messages when a model supplied
-                # text plus tool calls in one turn.
                 if portable and portable[-1].get("role") == "assistant":
                     portable[-1]["content"] += "\n" + text
                 else:
@@ -353,14 +339,11 @@ def _request(provider, messages, tools):
 
 def call_ai(messages, tools):
     """Return the first successful planner response from available providers."""
-    configured = [provider for provider in _provider_order() if _provider_has_key(provider)]
-    if not configured:
-        raise RuntimeError("No AI provider API keys are configured.")
-
+    provider_chain = _provider_order()
     failures = []
     skipped = []
     first_attempted_provider = None
-    for provider in configured:
+    for provider in provider_chain:
         if _is_cooled_down(provider):
             skipped.append(provider)
             continue
@@ -379,8 +362,8 @@ def call_ai(messages, tools):
 
     if skipped:
         print("⏭️ Temporarily skipped providers: " + ", ".join(skipped))
-    detail = " | ".join(failures) if failures else "All configured providers are temporarily cooling down."
-    raise RuntimeError("All available AI providers failed or are cooling down. " + detail)
+    detail = " | ".join(failures) if failures else "No provider returned a planner response."
+    raise RuntimeError("All AI providers failed or are cooling down. " + detail)
 
 
 def provider_status():
