@@ -1,45 +1,39 @@
 from pathlib import Path
-import re
 
 path = Path("nova_agent.py")
 text = path.read_text(encoding="utf-8")
 
+start = text.find("def _simple_open_goal(goal):")
+end = text.find("def _observe_directly():", start)
+if start == -1 or end == -1:
+    raise SystemExit("Could not locate the simple-open classifier boundaries in nova_agent.py")
+
 new_function = '''def _simple_open_goal(goal):
-    """Recognize only a single-app open/launch/start goal.
+    """Recognize only a standalone generic 'open/launch/start app' goal."""
+    normalized = " ".join(str(goal or "").strip().lower().split())
+    remainder = normalized
+    for verb in ("open ", "launch ", "start "):
+        if remainder.startswith(verb):
+            remainder = remainder[len(verb):].strip()
+            break
 
-    Compound requests such as "Open Settings and open Display & Brightness"
-    must go through the adaptive planner instead of being treated as one app
-    name.
-    """
-    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
-    remainder = re.sub(r"^(?:open|launch|start)\s+", "", normalized)
-
-    # If the remainder contains another action or a conjunction, this is a
-    # multi-step goal and must be handled by Groq's planner.
-    if re.search(
-        r"\b(?:and|then|after|before|find|search|look|navigate|go|click|tap|"
-        r"open|launch|start|change|enable|disable|turn|set|type|enter)\b",
-        remainder,
-    ):
+    action_words = {
+        "and", "then", "after", "before", "find", "search", "look",
+        "navigate", "go", "click", "tap", "open", "launch", "start",
+        "change", "enable", "disable", "turn", "set", "type", "enter",
+    }
+    if set(remainder.split()) & action_words:
         return ""
 
-    match = re.fullmatch(
-        r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
-        normalized,
-    )
-    return match.group(1).strip() if match else ""
+    if normalized.startswith(("open ", "launch ", "start ")):
+        app = remainder
+        if app.endswith(" app"):
+            app = app[:-4].rstrip()
+        return app
+    return ""
 
 
 '''
 
-pattern = re.compile(
-    r"def _simple_open_goal\(goal\):.*?(?=def _observe_directly\(\):)",
-    re.DOTALL,
-)
-match = pattern.search(text)
-if not match:
-    raise SystemExit("Could not locate _simple_open_goal in nova_agent.py")
-
-updated = text[:match.start()] + new_function + text[match.end():]
-path.write_text(updated, encoding="utf-8")
+path.write_text(text[:start] + new_function + text[end:], encoding="utf-8")
 print("Updated _simple_open_goal safely.")
