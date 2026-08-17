@@ -176,18 +176,27 @@ def _ui_signature(observed):
     return visible, scrollable
 
 
-def navigate_android_to(target, max_scrolls=8, direction="down"):
-    """Find and activate a human-named UI target using adaptive semantic search.
+def _split_target_path(target):
+    """Split a natural-language target chain into sequential destinations.
 
-    The helper checks the live hierarchy, scrolls only when the current UI is
-    actually scrollable, re-observes after each scroll, detects when scrolling
-    stops changing the screen, and reverses direction once when appropriate.
-    It uses no app-specific names, aliases, or planner coordinates.
+    This is generic grammar handling only. It does not contain Android screen
+    names, app names, aliases, coordinates, or assumptions about how many hops
+    any particular destination requires.
     """
-    target = str(target or "").strip()
-    if not target:
-        return {"success": False, "verified": False, "message": "Target cannot be empty."}
+    text = re.sub(r"\s+", " ", str(target or "").strip())
+    if not text:
+        return []
 
+    parts = re.split(
+        r"\s+(?:and|then)\s+(?:open|launch|start)\s+",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return [part.strip(" ,") for part in parts if part.strip(" ,")]
+
+
+def _navigate_single_target(target, max_scrolls=8, direction="down"):
+    """Navigate to one destination using the live hierarchy."""
     try:
         budget = max(0, min(int(max_scrolls), 12))
     except (TypeError, ValueError):
@@ -255,9 +264,6 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
                 unchanged_count = 0
             previous_signature = signature
 
-            # Two identical observations mean the requested direction is no
-            # longer moving the list. Stop instead of repeatedly scrolling at
-            # the end, then let the opposite direction search the other side.
             if unchanged_count >= 1:
                 break
 
@@ -267,8 +273,6 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
             scrolls += 1
             phase_scrolls += 1
 
-        # The second phase is the generic recovery route when the target was
-        # above the starting viewport or the first direction reached an edge.
         if phase_index == 0 and len(directions) > 1:
             continue
         break
@@ -280,4 +284,59 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
         "scrolls": scrolls,
         "foreground_package": last_foreground,
         "message": "Target was not found after adaptive semantic search in both directions.",
+    }
+
+
+def navigate_android_to(target, max_scrolls=8, direction="down"):
+    """Find and activate one or more human-named UI targets sequentially.
+
+    The target may contain a natural-language chain such as
+    "first, then open second". Each destination is searched from the live UI
+    after the previous destination changes the screen. This keeps multi-hop
+    navigation generic and adaptive instead of encoding app-specific paths.
+    """
+    targets = _split_target_path(target)
+    if not targets:
+        return {"success": False, "verified": False, "message": "Target cannot be empty."}
+
+    total_scrolls = 0
+    completed = []
+
+    for current_target in targets:
+        result = _navigate_single_target(
+            current_target,
+            max_scrolls=max_scrolls,
+            direction=direction,
+        )
+        total_scrolls += int(result.get("scrolls", 0))
+
+        if not result.get("success") or not result.get("verified"):
+            return {
+                "success": False,
+                "verified": bool(result.get("verified")),
+                "target": target,
+                "completed_targets": completed,
+                "failed_target": current_target,
+                "scrolls": total_scrolls,
+                "foreground_package": result.get("foreground_package", ""),
+                "message": result.get(
+                    "message",
+                    f"Could not complete navigation to '{current_target}'.",
+                ),
+            }
+
+        completed.append({
+            "target": current_target,
+            "matched_label": result.get("matched_label", ""),
+            "match_score": result.get("match_score", 0),
+        })
+
+    return {
+        "success": True,
+        "verified": True,
+        "target": target,
+        "completed_targets": completed,
+        "scrolls": total_scrolls,
+        "foreground_package": result.get("foreground_package", ""),
+        "message": "All navigation targets were found and activated sequentially using the live UI hierarchy.",
     }
