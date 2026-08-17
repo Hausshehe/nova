@@ -5,7 +5,8 @@ import time
 # Android Activities and accessibility UI updates are asynchronous. Give the
 # framework a short settling window before Nova immediately asks UIAutomator
 # for the next hierarchy snapshot. This is intentionally limited to
-# state-changing Android primitives so read-only tools remain fast.
+# state-changing Android primitives whose tools do not already perform their
+# own settle delay.
 POST_ACTION_SETTLE_SECONDS = 0.75
 STATE_CHANGING_TOOLS = {
     "launch_android_app",
@@ -13,7 +14,6 @@ STATE_CHANGING_TOOLS = {
     "click_node",
     "type_text",
     "back_android",
-    "scroll_android",
 }
 
 
