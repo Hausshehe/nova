@@ -7,15 +7,15 @@ text = path.read_text(encoding="utf-8")
 new_function = '''def _simple_open_goal(goal):
     """Recognize only a single-app open/launch/start goal.
 
-    Multi-step requests must stay in Nova's adaptive planner instead of being
-    mistaken for an app name.
+    Compound requests such as "Open Settings and open Display & Brightness"
+    must go through the adaptive planner instead of being treated as one app
+    name.
     """
     normalized = re.sub(r"\\s+", " ", str(goal or "").strip().lower())
-
-    # A simple open command must contain only the app name after the verb.
-    # Conjunctions and action verbs indicate that the planner should handle
-    # the complete multi-step goal.
     remainder = re.sub(r"^(?:open|launch|start)\\s+", "", normalized)
+
+    # If the remainder contains another action or a conjunction, this is a
+    # multi-step goal and must be handled by Groq's planner.
     if re.search(
         r"\\b(?:and|then|after|before|find|search|look|navigate|go|click|tap|"
         r"open|launch|start|change|enable|disable|turn|set|type|enter)\\b",
@@ -33,7 +33,7 @@ new_function = '''def _simple_open_goal(goal):
 '''
 
 pattern = re.compile(
-    r"def _simple_open_goal\(goal\):.*?(?=def _observe_directly\(\):)",
+    r"def _simple_open_goal\\(goal\\):.*?(?=def _observe_directly\\(\\):)",
     re.DOTALL,
 )
 match = pattern.search(text)
