@@ -17,6 +17,7 @@ MODEL = "openai/gpt-oss-120b"
 MAX_STEPS = 16
 MAX_GROQ_RETRIES = 4
 GROQ_BACKOFF_SECONDS = 1.5
+MAX_GROQ_RETRY_DELAY = 15.0
 MAX_HISTORY_PAIRS = 3
 SIMPLE_OPEN_VERIFY_ATTEMPTS = 6
 SIMPLE_OPEN_VERIFY_DELAY = 0.75
@@ -155,21 +156,27 @@ def build_agent_tool_definitions():
 
 
 def _retry_delay(response, attempt):
-    """Use Groq's reset headers when available, otherwise exponential backoff."""
+    """Use Groq's reset headers when available, but never sleep indefinitely."""
+    delay = None
+
     retry_after = response.headers.get("retry-after")
     if retry_after:
         try:
-            return max(0.5, float(retry_after)) + 0.25
+            delay = max(0.5, float(retry_after)) + 0.25
         except ValueError:
             pass
 
-    reset = response.headers.get("x-ratelimit-reset-tokens")
-    if reset:
-        match = re.match(r"([0-9.]+)s", reset.strip())
-        if match:
-            return max(0.5, float(match.group(1))) + 0.25
+    if delay is None:
+        reset = response.headers.get("x-ratelimit-reset-tokens")
+        if reset:
+            match = re.match(r"([0-9.]+)s", reset.strip())
+            if match:
+                delay = max(0.5, float(match.group(1))) + 0.25
 
-    return GROQ_BACKOFF_SECONDS * (2 ** attempt)
+    if delay is None:
+        delay = GROQ_BACKOFF_SECONDS * (2 ** attempt)
+
+    return min(delay, MAX_GROQ_RETRY_DELAY)
 
 
 def _call_groq(messages):
@@ -205,7 +212,7 @@ def _call_groq(messages):
 
         if response.status_code == 429 and attempt < MAX_GROQ_RETRIES - 1:
             delay = _retry_delay(response, attempt)
-            print(f"⏳ Groq rate limit; retrying in {delay:.1f}s...")
+            print(f"⏳ Groq rate limit; retrying in {delay:.1f}s (max {MAX_GROQ_RETRY_DELAY:.0f}s)...")
             time.sleep(delay)
             continue
 
@@ -279,11 +286,20 @@ def _planner_tool_result(result, function_name):
 
 
 def _tool_result_message(tool_call, result, function_name):
+    planner_result = _planner_tool_result(result, function_name)
+
+    if (
+        isinstance(result, dict)
+        and "post_action_observation" in result
+        and isinstance(planner_result, dict)
+    ):
+        planner_result["post_action_observation"] = result["post_action_observation"]
+
     return {
         "role": "tool",
         "tool_call_id": tool_call["id"],
         "content": json.dumps(
-            _planner_tool_result(result, function_name),
+            planner_result,
             ensure_ascii=False,
             separators=(",", ":"),
         ),
@@ -436,12 +452,48 @@ def run_agent(goal):
                 result = _unwrap_tool_result(execution)
                 print("⚙️", result)
 
+                # Only state-changing actions get an automatic observation.
+                # Discovery and observation are read-only, so do not spend an
+                # extra Android/root call after them. The observation is folded
+                # into the SAME tool result to avoid another planner turn and to
+                # preserve the valid assistant(tool_call) -> tool(result) shape.
+                if (
+                    function_name not in {"observe_android", "find_android_app"}
+                    and isinstance(result, dict)
+                    and result.get("success")
+                ):
+                    fresh_observation = _observe_directly()
+                    if isinstance(fresh_observation, dict):
+                        print(
+                            "👀 Auto-observe:",
+                            _planner_tool_result(
+                                fresh_observation,
+                                "observe_android",
+                            ),
+                        )
+                        observation_data = _planner_tool_result(
+                            fresh_observation,
+                            "observe_android",
+                        )
+                        result["post_action_observation"] = observation_data
+                        observed_after_action = bool(fresh_observation.get("success"))
+                    else:
+                        observed_after_action = False
+                elif function_name != "observe_android":
+                    observed_after_action = False
+
         if function_name == "observe_android":
             if action_seen:
                 observed_after_action = bool(result.get("success"))
+        elif function_name == "find_android_app":
+            # App discovery does not mutate UI state and does not require an
+            # automatic observation afterwards.
+            pass
         else:
             action_seen = True
-            observed_after_action = False
+            # A successful state-changing action was auto-observed above.
+            if not (isinstance(result, dict) and result.get("post_action_observation")):
+                observed_after_action = False
 
         messages.append(_tool_result_message(tool_call, result, function_name))
 
