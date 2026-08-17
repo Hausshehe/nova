@@ -9,7 +9,7 @@ PLATFORM="$SDK_DIR/platforms/android-33/android.jar"
 BUILD="$ANDROID_DIR/build/auto"
 CLASSES="$BUILD/classes"
 DEX="$BUILD/dex"
-KEYSTORE="${NOVA_KEYSTORE:-$ANDROID_DIR/build/signing/nova.keystore}"
+KEYSTORE="${NOVA_KEYSTORE:-$ANDROID_DIR/build/signing/nova-new.keystore}"
 ALIAS="${NOVA_KEY_ALIAS:-nova}"
 OUT="$BUILD/nova.apk"
 
@@ -28,7 +28,6 @@ done
     echo "Missing Android 33 platform: $PLATFORM" >&2
     exit 1
 }
-
 [[ -f "$ANDROID_DIR/AndroidManifest.xml" ]] || exit 1
 [[ -d "$ANDROID_DIR/res" ]] || exit 1
 [[ -d "$ANDROID_DIR/src" ]] || exit 1
@@ -37,7 +36,6 @@ mkdir -p "$BUILD" "$CLASSES" "$DEX" "$(dirname "$KEYSTORE")"
 rm -rf "$CLASSES" "$DEX"
 mkdir -p "$CLASSES" "$DEX"
 
-# 1. Compile Android resources and manifest.
 echo "[1/5] Compiling Android resources..."
 rm -f "$BUILD/resources.zip" "$BUILD/nova-unsigned.apk"
 aapt package \
@@ -47,33 +45,28 @@ aapt package \
     -I "$PLATFORM" \
     -F "$BUILD/resources.zip"
 
-# 2. Compile Java sources against android.jar.
 echo "[2/5] Compiling Java sources..."
 mapfile -t JAVA_SOURCES < <(find "$ANDROID_DIR/src" -type f -name '*.java' | sort)
 [[ ${#JAVA_SOURCES[@]} -gt 0 ]] || { echo "No Java sources found." >&2; exit 1; }
 javac -source 8 -target 8 -encoding UTF-8 -classpath "$PLATFORM" -d "$CLASSES" "${JAVA_SOURCES[@]}"
 
-# 3. Convert Java bytecode to Android dex.
 echo "[3/5] Building classes.dex..."
-d8 --min-api 23 --lib "$PLATFORM" --output "$DEX" "$CLASSES"/*.class "$CLASSES"/com/infoney/nova/*.class 2>/dev/null || \
-d8 --min-api 23 --lib "$PLATFORM" --output "$DEX" $(find "$CLASSES" -type f -name '*.class')
-
+mapfile -t CLASS_FILES < <(find "$CLASSES" -type f -name '*.class' | sort)
+[[ ${#CLASS_FILES[@]} -gt 0 ]] || { echo "No Java class files were produced." >&2; exit 1; }
+d8 --min-api 23 --lib "$PLATFORM" --output "$DEX" "${CLASS_FILES[@]}"
 [[ -f "$DEX/classes.dex" ]] || { echo "D8 did not produce classes.dex." >&2; exit 1; }
 
-# 4. Put dex into the resource APK, then zipalign before signing.
 echo "[4/5] Packaging and aligning APK..."
 cp "$BUILD/resources.zip" "$BUILD/nova-with-dex-unsigned.apk"
 zip -q -j "$BUILD/nova-with-dex-unsigned.apk" "$DEX/classes.dex"
 zipalign -f -p 4 "$BUILD/nova-with-dex-unsigned.apk" "$BUILD/nova-aligned.apk"
 
-# 5. Reuse one local keystore. Never commit it: .gitignore already excludes *.keystore.
 echo "[5/5] Signing APK..."
 if [[ ! -f "$KEYSTORE" ]]; then
-    echo "Creating local Nova keystore: $KEYSTORE"
+    echo "No Nova keystore found. Creating: $KEYSTORE"
     if [[ -z "${NOVA_KEYSTORE_PASSWORD:-}" ]]; then
         read -r -s -p "Create keystore password: " NOVA_KEYSTORE_PASSWORD
         echo
-        export NOVA_KEYSTORE_PASSWORD
         read -r -s -p "Confirm keystore password: " confirm
         echo
         [[ "$NOVA_KEYSTORE_PASSWORD" == "$confirm" ]] || { echo "Passwords do not match." >&2; exit 1; }
@@ -92,7 +85,6 @@ else
     if [[ -z "${NOVA_KEYSTORE_PASSWORD:-}" ]]; then
         read -r -s -p "Keystore password: " NOVA_KEYSTORE_PASSWORD
         echo
-        export NOVA_KEYSTORE_PASSWORD
     fi
 fi
 
