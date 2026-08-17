@@ -18,6 +18,8 @@ MAX_STEPS = 16
 MAX_GROQ_RETRIES = 4
 GROQ_BACKOFF_SECONDS = 1.5
 MAX_HISTORY_PAIRS = 3
+SIMPLE_OPEN_VERIFY_ATTEMPTS = 6
+SIMPLE_OPEN_VERIFY_DELAY = 0.75
 
 AGENT_TOOLS = {
     "observe_android",
@@ -310,18 +312,23 @@ def _observe_directly():
     )
 
 
+def _foreground_from_observation(verification):
+    """Extract the authoritative foreground package from an observation."""
+    if not isinstance(verification, dict):
+        return ""
+    foreground = verification.get("foreground_package", "")
+    if not foreground:
+        foreground = (verification.get("state") or {}).get(
+            "foreground_package", ""
+        )
+    return foreground or ""
+
+
 def _run_simple_open_goal(app_name):
     """Handle the generic open-app primitive locally, without planner tokens."""
     verification = _observe_directly()
+    foreground = _foreground_from_observation(verification)
     if verification.get("success"):
-        foreground = verification.get("foreground_package", "")
-        if not foreground:
-            foreground = (verification.get("state") or {}).get(
-                "foreground_package", ""
-            )
-
-        discovered_state = (verification.get("state") or {})
-        visible_packages = discovered_state.get("packages") or []
         if foreground and app_name.replace(" ", "") in foreground.lower():
             return {
                 "success": True,
@@ -362,25 +369,29 @@ def _run_simple_open_goal(app_name):
             "steps": 0,
         }
 
-    verification = _observe_directly()
-    foreground = verification.get("foreground_package", "")
-    if not foreground:
-        foreground = (verification.get("state") or {}).get("foreground_package", "")
+    # Android may acknowledge the launch intent before the target activity
+    # actually becomes the foreground app. Give it a short verification window
+    # instead of declaring failure from the first immediate observation.
+    for attempt in range(1, SIMPLE_OPEN_VERIFY_ATTEMPTS + 1):
+        if attempt > 1:
+            time.sleep(SIMPLE_OPEN_VERIFY_DELAY)
 
-    if foreground == package:
-        return {
-            "success": True,
-            "verified": True,
-            "message": f"{app_name} is open and verified in the foreground.",
-            "steps": 0,
-        }
+        verification = _observe_directly()
+        foreground = _foreground_from_observation(verification)
+        if verification.get("success") and foreground == package:
+            return {
+                "success": True,
+                "verified": True,
+                "message": f"{app_name} is open and verified in the foreground.",
+                "steps": 0,
+            }
 
     return {
         "success": False,
         "verified": False,
         "message": (
-            f"I launched {app_name}, but verification shows "
-            f"{foreground or 'another app'} in the foreground."
+            f"I launched {app_name}, but after waiting for the app to become "
+            f"foreground, verification still shows {foreground or 'another app'}."
         ),
         "steps": 0,
     }
