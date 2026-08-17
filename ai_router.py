@@ -189,14 +189,7 @@ def _sanitize_messages(messages, provider):
 
 
 def _cross_provider_messages(messages):
-    """Convert provider-specific tool history into portable planner history.
-
-    A provider's assistant tool calls can contain provider-specific metadata.
-    Gemini 3, for example, requires thought signatures to be returned exactly
-    on subsequent turns. That metadata cannot be reconstructed for a tool call
-    produced by another provider, so switching providers must use a neutral
-    textual representation instead of replaying foreign tool-call messages.
-    """
+    """Convert provider-specific tool history into portable planner history."""
     portable = []
     for original in messages:
         if not isinstance(original, dict):
@@ -321,19 +314,20 @@ def call_ai(messages, tools):
         raise RuntimeError("No AI provider API keys are configured. Set at least one of GROQ_API_KEY, GEMINI_API_KEY/GEMINI_API_KEYS, CLOUDFLARE_API_TOKEN, MISTRAL_API_KEY, or OPENROUTER_API_KEY.")
     failures = []
     skipped = []
-    last_successful_provider = None
+    first_attempted_provider = None
     for provider in configured:
         if _is_cooled_down(provider):
             skipped.append(provider)
             continue
+        if first_attempted_provider is None:
+            first_attempted_provider = provider
         print(f"🤖 Planner provider: {provider}")
         provider_messages = messages
-        if last_successful_provider and provider != last_successful_provider:
+        if provider != first_attempted_provider:
             provider_messages = _cross_provider_messages(messages)
-            print(f"🔄 Rebuilding portable planner history for provider switch: {last_successful_provider} → {provider}")
+            print(f"🔄 Rebuilding portable planner history for provider switch: {first_attempted_provider} → {provider}")
         message, error = _request(provider, provider_messages, tools)
         if message is not None:
-            last_successful_provider = provider
             return message
         failures.append(f"{provider}: {error}")
         print(f"⚠️ {provider} unavailable; failing over: {error}")
