@@ -9,28 +9,32 @@ DEFAULT_TIMEOUT_SECONDS = 15
 
 
 def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
-    """Run a command through an interactive root shell with a hard timeout.
+    """Run a privileged Android command with a real process timeout.
 
-    Nova uses an interactive `su` shell because `su -c` has been unreliable on
-    this device for some Android services.  The shell is started in its own
-    process group so a stuck child such as `uiautomator` cannot survive the
-    timeout and leave the planner waiting forever.
+    Prefer a direct ``su -c`` invocation so Python does not have to keep an
+    interactive root shell alive while waiting for Android services such as
+    uiautomator.  The subprocess is still placed in its own process group so
+    a stuck child can be killed together with the command on timeout.
     """
+    command = str(command or "").strip()
+    if not command:
+        return subprocess.CompletedProcess(
+            args=["su", "-c", ""],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
     process = subprocess.Popen(
-        ["su"],
-        stdin=subprocess.PIPE,
+        ["su", "-c", command],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        bufsize=1,
         start_new_session=True,
     )
 
     try:
-        stdout, stderr = process.communicate(
-            command + "\nexit\n",
-            timeout=timeout,
-        )
+        stdout, stderr = process.communicate(timeout=float(timeout))
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -42,14 +46,14 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
 
         stdout, stderr = process.communicate()
         return subprocess.CompletedProcess(
-            args=command,
+            args=["su", "-c", command],
             returncode=124,
             stdout=stdout or "",
             stderr=(stderr or "") + f"\nCommand timed out after {timeout} seconds.",
         )
 
     return subprocess.CompletedProcess(
-        args=command,
+        args=["su", "-c", command],
         returncode=process.returncode,
         stdout=stdout or "",
         stderr=stderr or "",
