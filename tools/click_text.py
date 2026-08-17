@@ -1,70 +1,52 @@
-import subprocess
+import re
+
+from tools.android_root import run_root
 
 
 def click_text(text):
-    """Click a visible Android UI element by its text/content description."""
+    """Click a visible Android UI element by its text/content description.
 
+    The result reflects the accessibility service's actual click result, not
+    merely whether Android accepted the broadcast.
+    """
     if not text or not str(text).strip():
-        return {
-            "success": False,
-            "error": "Text cannot be empty"
-        }
+        return {"success": False, "verified": False, "error": "Text cannot be empty"}
 
     target = str(text).strip()
-
-    # Use the explicit NovaClickReceiver because implicit
-    # broadcasts are unreliable on this device.
     command = (
         "/system/bin/am broadcast "
         "-n com.infoney.nova/.NovaClickReceiver "
         "-a com.infoney.nova.CLICK_TEXT "
         "--es text "
         + "'" + target.replace("'", "'\\''") + "'"
-        + "\nexit\n"
     )
 
     try:
-        process = subprocess.Popen(
-            ["su"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        result = run_root(command, timeout=8)
+        output = (result.stdout or "").strip()
+        error = (result.stderr or "").strip()
 
-        stdout, stderr = process.communicate(
-            command,
-            timeout=10
-        )
-
-        output = stdout.strip()
-        error = stderr.strip()
-
-        if process.returncode != 0:
+        if result.returncode != 0:
             return {
                 "success": False,
+                "verified": False,
                 "target": target,
                 "error": error or output,
-                "returncode": process.returncode
+                "returncode": result.returncode,
             }
 
+        match = re.search(r"Broadcast completed: result=(-?\d+)", output)
+        action_result = bool(match and int(match.group(1)) == 1)
         return {
-            "success": True,
+            "success": action_result,
+            "verified": action_result,
             "target": target,
-            "output": output
+            "output": output,
+            "message": (
+                "Accessibility service confirmed the click."
+                if action_result
+                else "Broadcast delivered, but the accessibility service did not confirm the click."
+            ),
         }
-
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return {
-            "success": False,
-            "target": target,
-            "error": "Root shell command timed out"
-        }
-
     except Exception as e:
-        return {
-            "success": False,
-            "target": target,
-            "error": str(e)
-        }
+        return {"success": False, "verified": False, "target": target, "error": str(e)}
