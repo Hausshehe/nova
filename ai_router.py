@@ -172,13 +172,28 @@ def _sanitize_messages(messages, provider):
             for call in tool_calls:
                 if not isinstance(call, dict):
                     continue
-                clean_call = {key: copy.deepcopy(value) for key, value in call.items() if key in {"id", "type", "function"}}
-                if provider == "gemini" and "extra_content" in call:
-                    clean_call["extra_content"] = copy.deepcopy(call["extra_content"])
+
+                # Gemini 3's thought signature lives in tool-call metadata.
+                # Preserve the complete call object instead of whitelisting
+                # fields, so future Gemini metadata is never silently dropped.
+                clean_call = copy.deepcopy(call)
                 function = clean_call.get("function")
                 if isinstance(function, dict):
-                    clean_call["function"] = {key: copy.deepcopy(value) for key, value in function.items() if key in {"name", "arguments"}}
+                    clean_call["function"] = {
+                        key: copy.deepcopy(value)
+                        for key, value in function.items()
+                        if key in {"name", "arguments"}
+                    }
                 clean_calls.append(clean_call)
+
+            # Nova intentionally executes one planner call at a time. If a
+            # Gemini response nevertheless contains parallel calls, retaining
+            # unexecuted calls in history creates an invalid tool-call turn.
+            # Keep the first call (the one that carries Gemini's signature) and
+            # execute/answer it before asking Gemini for the next step.
+            if provider == "gemini" and len(clean_calls) > 1:
+                clean_calls = clean_calls[:1]
+
             message["tool_calls"] = clean_calls
         sanitized.append(message)
     return sanitized
