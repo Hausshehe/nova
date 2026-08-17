@@ -11,6 +11,7 @@ import requests
 from ai_router import call_ai
 from tools.executor import execute_tool
 from tools.registry import discover_tools
+from tools.navigate_android_to import navigate_android_to
 
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -441,67 +442,49 @@ def _run_simple_open_goal(app_name):
 
 
 def _run_simple_open_path_goal(app_name, target):
-    """Open an app, then locate and activate a visible UI target generically.
+    """Open an app, then navigate to a human-named destination adaptively.
 
-    This path deliberately uses the same discovery, observation, scrolling and
-    click primitives as the adaptive planner. It contains no Settings,
-    Display, Wi-Fi, or other app-specific knowledge and therefore scales to
-    other Android apps and screens.
+    Navigation is delegated to the generic semantic Android navigator. It
+    searches the live hierarchy, uses semantic matching, detects scroll
+    boundaries, reverses direction when necessary, and never relies on
+    app-specific names or fixed coordinates.
     """
     opened = _run_simple_open_goal(app_name)
     if not opened.get("success"):
         return opened
 
-    verification = _observe_directly()
-    if not isinstance(verification, dict) or not verification.get("success"):
+    result = navigate_android_to(
+        target,
+        max_scrolls=SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS,
+        direction="down",
+    )
+
+    if not isinstance(result, dict):
         return {
             "success": False,
             "verified": False,
-            "message": f"{app_name} opened, but Nova could not observe the new UI.",
+            "message": f"{app_name} opened, but navigation returned an invalid result.",
             "steps": 1,
         }
 
-    foreground = _foreground_from_observation(verification)
-    for attempt in range(1, SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS + 1):
-        visible_target = _find_visible_target(verification, target)
-        if visible_target:
-            click = _unwrap_tool_result(
-                execute_tool("click_text", "click_text", text=visible_target)
-            )
-            if not isinstance(click, dict) or not click.get("success"):
-                verification = _observe_directly()
-                continue
-
-            post_click = _observe_directly()
-            post_visible = _find_visible_target(post_click, target)
-            post_foreground = _foreground_from_observation(post_click)
-            if click.get("verified") or post_visible or post_foreground == foreground:
-                return {
-                    "success": True,
-                    "verified": True,
-                    "message": f"Opened {target} inside {app_name} using verified UI navigation.",
-                    "steps": attempt + 1,
-                }
-
-            verification = post_click
-            continue
-
-        if attempt == SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS:
-            break
-
-        scroll = _unwrap_tool_result(
-            execute_tool("scroll_android", "scroll_android", direction="down")
-        )
-        if not isinstance(scroll, dict) or not scroll.get("success"):
-            break
-        time.sleep(SIMPLE_OPEN_PATH_SCROLL_DELAY)
-        verification = _observe_directly()
+    if result.get("success") and result.get("verified"):
+        return {
+            "success": True,
+            "verified": True,
+            "message": (
+                f"Opened {target} inside {app_name} using adaptive semantic navigation."
+            ),
+            "steps": int(result.get("scrolls", 0)) + 2,
+        }
 
     return {
         "success": False,
-        "verified": False,
-        "message": f"{app_name} is open, but I could not locate '{target}' in the current UI after verified scrolling.",
-        "steps": SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS,
+        "verified": bool(result.get("verified")),
+        "message": result.get(
+            "message",
+            f"{app_name} is open, but Nova could not locate '{target}'.",
+        ),
+        "steps": int(result.get("scrolls", 0)) + 1,
     }
 
 

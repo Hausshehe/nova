@@ -21,8 +21,28 @@ def _label(node):
     )
 
 
+def _normalize_word(word):
+    word = str(word or "").lower().strip()
+    if not word:
+        return ""
+
+    # Generic normalization for common UI wording variations.
+    # This is intentionally language-agnostic at the command level:
+    # it helps "apps" match "app" without knowing anything about Android.
+    if len(word) > 4 and word.endswith("ies"):
+        word = word[:-3] + "y"
+    elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+
+    return word
+
+
 def _words(value):
-    return set(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+    return {
+        normalized
+        for word in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if (normalized := _normalize_word(word))
+    }
 
 
 def _word_forms(word):

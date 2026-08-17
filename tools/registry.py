@@ -17,8 +17,11 @@ def discover_tools():
         if filename.startswith("_") or filename == "registry.py":
             continue
 
-        # Ignore backup/version files.
-        if ".before_" in filename:
+        # Ignore backup/version files and maintenance scripts.
+        if (
+            ".before_" in filename
+            or filename.startswith(("fix_", "improve_", "optimize_", "install_"))
+        ):
             continue
 
         module_name = filename[:-3]
