@@ -24,11 +24,12 @@ PROVIDERS = {
         "model_env": "GROQ_MODEL",
         "default_model": "openai/gpt-oss-120b",
     },
-    "cerebras": {
-        "key": "CEREBRAS_API_KEY",
-        "url": "https://api.cerebras.ai/v1/chat/completions",
-        "model_env": "CEREBRAS_MODEL",
-        "default_model": "gpt-oss-120b",
+    "cloudflare": {
+        "key": "CLOUDFLARE_API_TOKEN",
+        "url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions",
+        "model_env": "CLOUDFLARE_MODEL",
+        "default_model": "@cf/openai/gpt-oss-120b",
+        "account_env": "CLOUDFLARE_ACCOUNT_ID",
     },
     "mistral": {
         "key": "MISTRAL_API_KEY",
@@ -46,7 +47,7 @@ PROVIDERS = {
     },
 }
 
-DEFAULT_ORDER = ["gemini", "cerebras", "groq", "mistral", "openrouter"]
+DEFAULT_ORDER = ["gemini", "groq", "cloudflare", "mistral", "openrouter"]
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 # Provider cooldowns live for the lifetime of Nova. A rate-limited provider is
@@ -94,6 +95,18 @@ def _headers(provider, api_key):
     return headers
 
 
+def _provider_url(provider):
+    config = PROVIDERS[provider]
+    url = config["url"]
+    account_env = config.get("account_env")
+    if account_env:
+        account_id = os.environ.get(account_env)
+        if not account_id:
+            return None
+        url = url.format(account_id=account_id)
+    return url
+
+
 def _max_output_tokens():
     """Return Nova's adaptive output budget without hard-coding 800 tokens."""
     raw = os.environ.get("NOVA_MAX_OUTPUT_TOKENS", "1600").strip()
@@ -109,6 +122,11 @@ def _request(provider, messages, tools):
     api_key = os.environ.get(config["key"])
     if not api_key:
         return None, f"{config['key']} is not configured"
+
+    url = _provider_url(provider)
+    if not url:
+        account_env = config.get("account_env")
+        return None, f"{account_env} is not configured"
 
     model = os.environ.get(config["model_env"], config["default_model"])
     payload = {
@@ -127,7 +145,7 @@ def _request(provider, messages, tools):
     for attempt in range(2):
         try:
             response = requests.post(
-                config["url"],
+                url,
                 headers=_headers(provider, api_key),
                 json=payload,
                 timeout=30,
@@ -171,7 +189,7 @@ def call_ai(messages, tools):
     if not configured:
         raise RuntimeError(
             "No AI provider API keys are configured. Set at least one of "
-            "GEMINI_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, "
+            "GEMINI_API_KEY, GROQ_API_KEY, CLOUDFLARE_API_TOKEN, "
             "MISTRAL_API_KEY, or OPENROUTER_API_KEY."
         )
 
