@@ -3,14 +3,13 @@
 This tool is deliberately app-agnostic. It searches the current UI hierarchy
 for a human target, scrolls a real scrollable UI when the target is off-screen,
 and activates the best current semantic match. Nova still chooses the target;
-the tool never contains app-specific screen names or coordinates.
+the tool never contains app-specific screen names or planner coordinates.
 """
 
 import re
 from difflib import SequenceMatcher
 
 from tools.android_root import run_root
-from tools.click_node import click_node
 from tools.observe_android import observe_android
 
 
@@ -64,6 +63,25 @@ def _find_match(nodes, target):
     return candidates[0]
 
 
+def _bounds_center(bounds):
+    match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+    if not match:
+        return None
+    x1, y1, x2, y2 = map(int, match.groups())
+    return (x1 + x2) // 2, (y1 + y2) // 2
+
+
+def _activate(node):
+    center = _bounds_center(node.get("bounds", ""))
+    if center is None:
+        return False, "Matching node has invalid bounds."
+    x, y = center
+    result = run_root(f"input tap {x} {y}")
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "Tap failed").strip()
+    return True, ""
+
+
 def _scroll(direction):
     if direction == "up":
         command = "/system/bin/input swipe 540 300 540 700 350"
@@ -76,17 +94,16 @@ def _scroll(direction):
 def navigate_android_to(target, max_scrolls=5, direction="down"):
     """Find and activate a human-named UI target using current semantic state.
 
-    The helper first checks the current hierarchy. If the target is not visible
-    but a scrollable area exists, it scrolls and re-observes until the target is
-    found or the bounded scroll budget is exhausted. It uses no app-specific
-    names and no fixed screen coordinates in planner logic.
+    The helper checks the live hierarchy, scrolls a currently scrollable UI when
+    needed, re-observes after each scroll, and activates the best current match.
+    It uses no app-specific names and no fixed coordinates in planner logic.
     """
     target = str(target or "").strip()
     if not target:
         return {"success": False, "verified": False, "message": "Target cannot be empty."}
 
     try:
-        budget = max(0, min(int(max_scrolls), 12))
+        budget = max(0, min(int(max_scrolls), 8))
     except (TypeError, ValueError):
         budget = 5
 
@@ -95,7 +112,7 @@ def navigate_android_to(target, max_scrolls=5, direction="down"):
         direction = "down"
 
     scrolls = 0
-    last_state = None
+    last_foreground = ""
 
     for attempt in range(budget + 1):
         observed = observe_android(include_nodes=True)
@@ -108,37 +125,33 @@ def navigate_android_to(target, max_scrolls=5, direction="down"):
                 "message": observed.get("message", "UI observation failed."),
             }
 
-        last_state = observed
+        last_foreground = observed.get("foreground_package", "")
         match = _find_match(observed.get("nodes"), target)
         if match:
             score, node, label = match
-            selector = {}
-            for key in ("text", "content_description", "resource_id", "class", "package"):
-                value = node.get(key)
-                if value:
-                    selector[key] = value
-
-            click_result = click_node(selector=selector)
-            if click_result.get("success"):
-                verification = observe_android(include_nodes=False)
+            activated, error = _activate(node)
+            if not activated:
                 return {
-                    "success": True,
-                    "verified": bool(verification.get("success")),
+                    "success": False,
+                    "verified": False,
                     "target": target,
                     "matched_label": label,
-                    "match_score": round(score, 1),
                     "scrolls": scrolls,
-                    "foreground_package": verification.get("foreground_package", ""),
-                    "message": "Target found and activated using the current UI hierarchy.",
+                    "message": error,
                 }
 
+            # One verification observation is enough; the planner will receive
+            # this compact result and can observe again if it needs more detail.
+            verification = observe_android(include_nodes=False)
             return {
-                "success": False,
-                "verified": False,
+                "success": True,
+                "verified": bool(verification.get("success")),
                 "target": target,
                 "matched_label": label,
+                "match_score": round(score, 1),
                 "scrolls": scrolls,
-                "message": click_result.get("error") or click_result.get("message", "Target could not be activated."),
+                "foreground_package": verification.get("foreground_package", last_foreground),
+                "message": "Target found and activated using the current UI hierarchy.",
             }
 
         state = observed.get("state") or {}
@@ -160,6 +173,6 @@ def navigate_android_to(target, max_scrolls=5, direction="down"):
         "verified": True,
         "target": target,
         "scrolls": scrolls,
-        "foreground_package": (last_state or {}).get("foreground_package", ""),
+        "foreground_package": last_foreground,
         "message": "Target was not visible after the bounded semantic search; Nova can choose another generic route.",
     }
