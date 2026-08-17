@@ -158,10 +158,9 @@ def _max_output_tokens():
 def _sanitize_messages(messages, provider):
     """Return provider-safe copies of the OpenAI-compatible conversation.
 
-    Gemini's OpenAI-compatible endpoint still requires a tool-result message to
-    carry the name of the function that produced it. Nova historically stored
-    only tool_call_id, so after a normal planner turn Gemini could reject the
-    next request with `function_response.name: Name cannot be empty`.
+    Gemini's OpenAI-compatible endpoint requires tool-result messages to carry
+    the name of the function that produced them. Recover that name from the
+    matching assistant tool call before sending the conversation.
     """
     sanitized = []
     tool_names = {}
@@ -170,7 +169,8 @@ def _sanitize_messages(messages, provider):
         if not isinstance(original, dict):
             continue
 
-        # Build an id -> function-name map from the preceding assistant turn.
+        # First register any tool calls from this assistant message so later
+        # tool-result messages can recover their function name by tool_call_id.
         for call in original.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
@@ -180,28 +180,21 @@ def _sanitize_messages(messages, provider):
             if call_id and name:
                 tool_names[call_id] = name
 
-        message = {key: copy.deepcopy(value) for key, value in original.items() if key in {"role", "content", "tool_calls", "tool_call_id", "name"}}
+        message = {
+            key: copy.deepcopy(value)
+            for key, value in original.items()
+            if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+        }
 
-        # Gemini rejects tool results without a function name. Recover it from
-        # the matching assistant tool call instead of inventing a tool name.
         if provider == "gemini" and message.get("role") == "tool":
             call_id = message.get("tool_call_id")
             if not message.get("name") and call_id in tool_names:
                 message["name"] = tool_names[call_id]
 
-        if provider == "gemini":
             for key in ("extra_content", "reasoning_content", "reasoning_details"):
                 if key in original:
                     message[key] = copy.deepcopy(original[key])
 
-        tool_calls = message.get("tool_calls")
-        if not isinstance(original, dict):
-            continue
-        message = {key: copy.deepcopy(value) for key, value in original.items() if key in {"role", "content", "tool_calls", "tool_call_id", "name"}}
-        if provider == "gemini":
-            for key in ("extra_content", "reasoning_content", "reasoning_details"):
-                if key in original:
-                    message[key] = copy.deepcopy(original[key])
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
             clean_calls = []
@@ -220,7 +213,9 @@ def _sanitize_messages(messages, provider):
             if provider == "gemini" and len(clean_calls) > 1:
                 clean_calls = clean_calls[:1]
             message["tool_calls"] = clean_calls
+
         sanitized.append(message)
+
     return sanitized
 
 
@@ -297,7 +292,15 @@ def _request(provider, messages, tools):
         account_env = config.get("account_env")
         return None, f"{account_env} is not configured"
     model = os.environ.get(config["model_env"], config["default_model"])
-    payload = {"model": model, "messages": _sanitize_messages(messages, provider), "temperature": 0.2, "max_tokens": _max_output_tokens(), "tools": tools, "tool_choice": "auto", "parallel_tool_calls": False}
+    payload = {
+        "model": model,
+        "messages": _sanitize_messages(messages, provider),
+        "temperature": 0.2,
+        "max_tokens": _max_output_tokens(),
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
     keys = _gemini_keys() if provider == "gemini" else [os.environ.get(config["key"], "").strip()]
     keys = [key for key in keys if key]
     if not keys:
@@ -380,7 +383,20 @@ def provider_status():
     for name, config in PROVIDERS.items():
         if name == "gemini":
             keys = _gemini_keys()
-            status[name] = {"configured": bool(keys), "keys": len(keys), "model": os.environ.get(config["model_env"], config["default_model"]), "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now), "key_cooldowns": {str(index + 1): max(0.0, _GEMINI_KEY_COOLDOWN_UNTIL.get(key, 0.0) - now) for index, key in enumerate(keys)}}
+            status[name] = {
+                "configured": bool(keys),
+                "keys": len(keys),
+                "model": os.environ.get(config["model_env"], config["default_model"]),
+                "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now),
+                "key_cooldowns": {
+                    str(index + 1): max(0.0, _GEMINI_KEY_COOLDOWN_UNTIL.get(key, 0.0) - now)
+                    for index, key in enumerate(keys)
+                },
+            }
         else:
-            status[name] = {"configured": bool(os.environ.get(config["key"])), "model": os.environ.get(config["model_env"], config["default_model"]), "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now)}
+            status[name] = {
+                "configured": bool(os.environ.get(config["key"])),
+                "model": os.environ.get(config["model_env"], config["default_model"]),
+                "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now),
+            }
     return status
