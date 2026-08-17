@@ -316,6 +316,9 @@ def _tool_result_message(tool_call, result, function_name):
     return {
         "role": "tool",
         "tool_call_id": tool_call["id"],
+        # Preserve the function name explicitly. Gemini requires tool-result
+        # messages to identify the function that produced the result.
+        "name": function_name,
         "content": json.dumps(
             planner_result,
             ensure_ascii=False,
