@@ -6,6 +6,7 @@ requests.
 """
 
 import re
+import time
 import xml.etree.ElementTree as ET
 from collections import Counter
 
@@ -14,6 +15,8 @@ from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
 OBSERVE_TIMEOUT_SECONDS = 8
+FOREGROUND_RETRIES = 3
+FOREGROUND_RETRY_DELAY = 0.15
 
 
 def _foreground_package():
@@ -33,10 +36,9 @@ def _foreground_package():
 def _infer_foreground_from_nodes(nodes):
     """Infer the foreground package from the UI hierarchy as a fallback.
 
-    The dumpsys focus query is preferred because it is the authoritative
-    source.  Some OEM Android builds can nevertheless return an empty focus
-    line while the UI hierarchy clearly belongs to one application.  In that
-    case, use the most common non-empty package in the current hierarchy.
+    Some OEM Android builds can briefly return stale/empty focus information
+    while the accessibility hierarchy already belongs to the new screen. In
+    that case, use the most common non-empty package in the current hierarchy.
     """
     packages = [
         node.get("package", "").strip()
@@ -48,6 +50,26 @@ def _infer_foreground_from_nodes(nodes):
     return Counter(packages).most_common(1)[0][0]
 
 
+def _stable_foreground_package(hierarchy_package=""):
+    """Prefer a fresh focus result and retry briefly during Activity changes.
+
+    Settings on some OEM builds can report the previous Activity for a short
+    period immediately after a click. A few very short retries avoid feeding
+    that transient value to Nova as ground truth.
+    """
+    last = ""
+    for attempt in range(FOREGROUND_RETRIES):
+        current = _foreground_package()
+        if current:
+            last = current
+            if not hierarchy_package or current == hierarchy_package:
+                return current
+        if attempt + 1 < FOREGROUND_RETRIES:
+            time.sleep(FOREGROUND_RETRY_DELAY)
+
+    return hierarchy_package or last
+
+
 def observe_android(include_nodes=False):
     """Capture Android UI without allowing observation to block the agent.
 
@@ -56,11 +78,9 @@ def observe_android(include_nodes=False):
     that actually need the raw hierarchy for selector matching.
     """
     try:
-        foreground_package = _foreground_package()
-
-        # Do not wrap uiautomator in the Android `timeout` utility.  The root
-        # runner now owns the hard timeout and kills the entire process group,
-        # including a stuck uiautomator child.
+        # Capture the hierarchy first, then query foreground state. This is
+        # important after an Activity transition: querying focus before the
+        # dump can return the Activity that existed just before the click.
         command = (
             f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
             f">/dev/null 2>&1 && cat {DUMP_PATH}"
@@ -71,6 +91,7 @@ def observe_android(include_nodes=False):
         )
 
         if result.returncode != 0:
+            foreground_package = _foreground_package()
             return {
                 "success": False,
                 "verified": False,
@@ -85,6 +106,7 @@ def observe_android(include_nodes=False):
 
         xml_text = result.stdout
         if not xml_text.strip():
+            foreground_package = _foreground_package()
             return {
                 "success": False,
                 "verified": False,
@@ -122,10 +144,8 @@ def observe_android(include_nodes=False):
                 "checked": attrs.get("checked") == "true",
             })
 
-        # Prefer the authoritative dumpsys result. If the OEM focus query is
-        # empty, recover the foreground package from the current UI hierarchy.
-        if not foreground_package:
-            foreground_package = _infer_foreground_from_nodes(nodes)
+        hierarchy_package = _infer_foreground_from_nodes(nodes)
+        foreground_package = _stable_foreground_package(hierarchy_package)
 
         state = summarize_ui(nodes)
         state["foreground_package"] = foreground_package
