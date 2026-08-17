@@ -20,7 +20,7 @@ def discover_tools():
         # Ignore backup/version files and maintenance scripts.
         if (
             ".before_" in filename
-            or filename.startswith(("fix_", "improve_", "optimize_", "install_"))
+            or filename.startswith(("fix_", "improve_", "optimize_", "install_", "repair_"))
         ):
             continue
 
