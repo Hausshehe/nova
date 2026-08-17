@@ -133,9 +133,7 @@ def build_agent_tool_definitions():
             ):
                 continue
 
-            properties[parameter_name] = {
-                "type": _parameter_type(parameter),
-            }
+            properties[parameter_name] = {"type": _parameter_type(parameter)}
             if parameter.default is inspect.Parameter.empty:
                 required.append(parameter_name)
 
@@ -188,7 +186,6 @@ def _call_groq(messages):
         "tools": build_agent_tool_definitions(),
         "tool_choice": "auto",
         "parallel_tool_calls": False,
-        "service_tier": "auto",
     }
 
     for attempt in range(MAX_GROQ_RETRIES):
@@ -240,9 +237,7 @@ def _planner_tool_result(result, function_name):
 
     if function_name == "observe_android" and result.get("success"):
         state = result.get("state") or {}
-        foreground_package = result.get("foreground_package") or state.get(
-            "foreground_package", ""
-        )
+        foreground_package = result.get("foreground_package") or state.get("foreground_package", "")
         compact_state = {
             "visible_text": state.get("visible_text", []),
             "interactive_labels": [
@@ -298,18 +293,13 @@ def _tool_result_message(tool_call, result, function_name):
 def _simple_open_goal(goal):
     """Recognize only the narrow generic 'open/launch/start app' goal."""
     normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
-    match = re.fullmatch(
-        r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
-        normalized,
-    )
+    match = re.fullmatch(r"(?:open|launch|start)\s+(.+?)(?:\s+app)?", normalized)
     return match.group(1).strip() if match else ""
 
 
 def _observe_directly():
     """Observe without spending another planner/Groq turn."""
-    return _unwrap_tool_result(
-        execute_tool("observe_android", "observe_android")
-    )
+    return _unwrap_tool_result(execute_tool("observe_android", "observe_android"))
 
 
 def _foreground_from_observation(verification):
@@ -318,9 +308,7 @@ def _foreground_from_observation(verification):
         return ""
     foreground = verification.get("foreground_package", "")
     if not foreground:
-        foreground = (verification.get("state") or {}).get(
-            "foreground_package", ""
-        )
+        foreground = (verification.get("state") or {}).get("foreground_package", "")
     return foreground or ""
 
 
@@ -328,22 +316,15 @@ def _run_simple_open_goal(app_name):
     """Handle the generic open-app primitive locally, without planner tokens."""
     verification = _observe_directly()
     foreground = _foreground_from_observation(verification)
-    if verification.get("success"):
-        if foreground and app_name.replace(" ", "") in foreground.lower():
-            return {
-                "success": True,
-                "verified": True,
-                "message": f"{app_name} is already open and in the foreground.",
-                "steps": 0,
-            }
+    if verification.get("success") and foreground and app_name.replace(" ", "") in foreground.lower():
+        return {
+            "success": True,
+            "verified": True,
+            "message": f"{app_name} is already open and in the foreground.",
+            "steps": 0,
+        }
 
-    discovery = _unwrap_tool_result(
-        execute_tool(
-            "find_android_app",
-            "find_android_app",
-            app_name=app_name,
-        )
-    )
+    discovery = _unwrap_tool_result(execute_tool("find_android_app", "find_android_app", app_name=app_name))
     packages = discovery.get("packages") or [] if isinstance(discovery, dict) else []
     if not packages:
         return {
@@ -354,13 +335,7 @@ def _run_simple_open_goal(app_name):
         }
 
     package = packages[0]
-    launch = _unwrap_tool_result(
-        execute_tool(
-            "launch_android_app",
-            "launch_android_app",
-            package=package,
-        )
-    )
+    launch = _unwrap_tool_result(execute_tool("launch_android_app", "launch_android_app", package=package))
     if not launch.get("success"):
         return {
             "success": False,
@@ -369,13 +344,9 @@ def _run_simple_open_goal(app_name):
             "steps": 0,
         }
 
-    # Android may acknowledge the launch intent before the target activity
-    # actually becomes the foreground app. Give it a short verification window
-    # instead of declaring failure from the first immediate observation.
     for attempt in range(1, SIMPLE_OPEN_VERIFY_ATTEMPTS + 1):
         if attempt > 1:
             time.sleep(SIMPLE_OPEN_VERIFY_DELAY)
-
         verification = _observe_directly()
         foreground = _foreground_from_observation(verification)
         if verification.get("success") and foreground == package:
@@ -401,7 +372,6 @@ def _compact_history(messages):
     """Keep only recent action/observation pairs; current state is ground truth."""
     if len(messages) <= 2 + (MAX_HISTORY_PAIRS * 2):
         return messages
-
     recent = messages[-(MAX_HISTORY_PAIRS * 2):]
     return messages[:2] + recent
 
@@ -418,10 +388,7 @@ def run_agent(goal):
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": "Accomplish this goal on the Android phone:\n" + goal,
-        },
+        {"role": "user", "content": "Accomplish this goal on the Android phone:\n" + goal},
     ]
 
     action_seen = False
@@ -458,19 +425,11 @@ def run_agent(goal):
             if not isinstance(arguments, dict):
                 raise ValueError("Tool arguments must be a JSON object.")
         except (json.JSONDecodeError, ValueError) as exc:
-            result = {
-                "success": False,
-                "verified": False,
-                "message": f"Invalid tool arguments: {exc}",
-            }
+            result = {"success": False, "verified": False, "message": f"Invalid tool arguments: {exc}"}
 
         if result is None:
             if function_name not in AGENT_TOOLS:
-                result = {
-                    "success": False,
-                    "verified": False,
-                    "message": "Tool is not available to the adaptive agent.",
-                }
+                result = {"success": False, "verified": False, "message": "Tool is not available to the adaptive agent."}
             else:
                 print(f"🧠 Step {step}: {function_name}({arguments})")
                 execution = execute_tool(function_name, function_name, **arguments)
@@ -488,22 +447,18 @@ def run_agent(goal):
 
     return {
         "success": False,
-        "message": f"Agent reached the {MAX_STEPS}-step limit without completing the goal.",
+        "verified": False,
+        "message": "Nova reached its maximum planning steps before completing the goal.",
         "steps": MAX_STEPS,
     }
 
 
-if __name__ == "__main__":
+def main():
     import sys
-
     goal = " ".join(sys.argv[1:]).strip()
-    if not goal:
-        print('Usage: python nova_agent.py "your goal"')
-        raise SystemExit(2)
+    result = run_agent(goal)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
-    try:
-        result = run_agent(goal)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-    except Exception as exc:
-        print(json.dumps({"success": False, "message": str(exc)}, indent=2))
-        raise SystemExit(1)
+
+if __name__ == "__main__":
+    main()
