@@ -73,15 +73,71 @@ public class NovaAccessibilityService extends AccessibilityService {
         }
         target = target.trim();
         Log.i(TAG, "CLICK_TEXT: searching for: " + target);
-        AccessibilityNodeInfo node = findTargetNodeInAllWindows(target);
-        if (node == null) {
-            Log.w(TAG, "CLICK_TEXT: target node not found: " + target);
+
+        // Settings commonly places the requested row below the current
+        // RecyclerView viewport. Search first, then deterministically scroll
+        // the active accessibility tree and retry. This keeps the planner
+        // from having to guess when/how far to scroll.
+        final int maxAttempts = 6;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            AccessibilityNodeInfo node = findTargetNodeInAllWindows(target);
+            if (node != null) {
+                Log.i(TAG, "CLICK_TEXT: target found on attempt " + attempt + ", attempting click: " + target);
+                boolean result = clickNode(node, target);
+                node.recycle();
+                Log.i(TAG, "CLICK_TEXT result=" + result + " target=" + target + " attempt=" + attempt);
+                if (result) return true;
+            } else {
+                Log.i(TAG, "CLICK_TEXT: target not visible, attempt=" + attempt + "/" + maxAttempts);
+            }
+
+            if (attempt < maxAttempts) {
+                boolean moved = scrollActiveWindowForward();
+                Log.i(TAG, "CLICK_TEXT: auto-scroll moved=" + moved + " before attempt=" + (attempt + 1));
+                if (!moved) break;
+                try {
+                    Thread.sleep(400);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        Log.w(TAG, "CLICK_TEXT: target could not be clicked after auto-scroll retries: " + target);
+        return false;
+    }
+
+    private boolean scrollActiveWindowForward() {
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return false;
+            boolean moved = scrollNodeForward(root);
+            root.recycle();
+            return moved;
+        } catch (Exception e) {
+            Log.e(TAG, "CLICK_TEXT: auto-scroll failed", e);
             return false;
         }
-        Log.i(TAG, "CLICK_TEXT: target found, attempting click: " + target);
-        boolean result = clickNode(node, target);
-        Log.i(TAG, "CLICK_TEXT result=" + result + " target=" + target);
-        return result;
+    }
+
+    private boolean scrollNodeForward(AccessibilityNodeInfo node) {
+        if (node == null) return false;
+
+        if (node.isScrollable() && node.isEnabled()) {
+            boolean moved = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+            Log.i(TAG, "CLICK_TEXT: scroll container=" + node.getClassName() + " moved=" + moved);
+            if (moved) return true;
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            boolean moved = scrollNodeForward(child);
+            child.recycle();
+            if (moved) return true;
+        }
+        return false;
     }
 
     private AccessibilityNodeInfo findSwitchNodeInAllWindows() {
@@ -200,13 +256,6 @@ public class NovaAccessibilityService extends AccessibilityService {
         return null;
     }
 
-    /*
-     * IMPORTANT: Do not search the whole ancestor subtree here.
-     * A Settings row is often inside a clickable RecyclerView. Searching
-     * that subtree can select an unrelated clickable child/container and
-     * make Nova scroll instead of opening the requested row.
-     * Walk upward and use the nearest clickable ancestor only.
-     */
     private AccessibilityNodeInfo findRelatedClickableControl(AccessibilityNodeInfo node) {
         if (node == null) return null;
         if (isPreferredClickableControl(node)) return node;
