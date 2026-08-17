@@ -172,10 +172,6 @@ def _sanitize_messages(messages, provider):
             for call in tool_calls:
                 if not isinstance(call, dict):
                     continue
-
-                # Gemini 3's thought signature lives in tool-call metadata.
-                # Preserve the complete call object instead of whitelisting
-                # fields, so future Gemini metadata is never silently dropped.
                 clean_call = copy.deepcopy(call)
                 function = clean_call.get("function")
                 if isinstance(function, dict):
@@ -185,18 +181,84 @@ def _sanitize_messages(messages, provider):
                         if key in {"name", "arguments"}
                     }
                 clean_calls.append(clean_call)
-
-            # Nova intentionally executes one planner call at a time. If a
-            # Gemini response nevertheless contains parallel calls, retaining
-            # unexecuted calls in history creates an invalid tool-call turn.
-            # Keep the first call (the one that carries Gemini's signature) and
-            # execute/answer it before asking Gemini for the next step.
             if provider == "gemini" and len(clean_calls) > 1:
                 clean_calls = clean_calls[:1]
-
             message["tool_calls"] = clean_calls
         sanitized.append(message)
     return sanitized
+
+
+def _cross_provider_messages(messages):
+    """Convert provider-specific tool history into portable planner history.
+
+    A provider's assistant tool calls can contain provider-specific metadata.
+    Gemini 3, for example, requires thought signatures to be returned exactly
+    on subsequent turns. That metadata cannot be reconstructed for a tool call
+    produced by another provider, so switching providers must use a neutral
+    textual representation instead of replaying foreign tool-call messages.
+    """
+    portable = []
+    for original in messages:
+        if not isinstance(original, dict):
+            continue
+        role = original.get("role")
+        content = original.get("content")
+
+        if role in {"system", "user"}:
+            if content is not None:
+                portable.append({"role": role, "content": copy.deepcopy(content)})
+            continue
+
+        if role == "assistant":
+            if content:
+                portable.append({"role": "assistant", "content": copy.deepcopy(content)})
+            calls = original.get("tool_calls") or []
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") or {}
+                name = function.get("name") or "unknown_tool"
+                arguments = function.get("arguments") or "{}"
+                portable.append({
+                    "role": "assistant",
+                    "content": f"Planner selected generic tool '{name}' with arguments {arguments}."
+                })
+            continue
+
+        if role == "tool":
+            tool_name = original.get("name") or "generic_tool"
+            if content is None:
+                content = ""
+            portable.append({
+                "role": "user",
+                "content": f"Result from previous generic tool '{tool_name}': {content}"
+            })
+            continue
+
+        if content is not None:
+            portable.append({"role": "user", "content": copy.deepcopy(content)})
+
+    return portable
+
+
+def _validate_message(message):
+    """Reject malformed tool calls before they enter Nova's shared history."""
+    if not isinstance(message, dict):
+        return None, "Provider returned a non-object message"
+    tool_calls = message.get("tool_calls")
+    if tool_calls is None:
+        return message, None
+    if not isinstance(tool_calls, list):
+        return None, "Provider returned invalid tool_calls"
+    for index, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            return None, f"Provider returned invalid tool call at index {index}"
+        function = call.get("function")
+        if not isinstance(function, dict) or not function.get("name"):
+            return None, f"Provider returned a tool call without a function name at index {index}"
+        if not call.get("id"):
+            return None, f"Provider returned a tool call without an id at index {index}"
+    return message, None
 
 
 def _request(provider, messages, tools):
@@ -227,7 +289,12 @@ def _request(provider, messages, tools):
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    return data["choices"][0]["message"], None
+                    message = data["choices"][0]["message"]
+                    valid_message, validation_error = _validate_message(message)
+                    if valid_message is None:
+                        failures.append(validation_error)
+                        break
+                    return valid_message, None
                 except (KeyError, IndexError, TypeError, ValueError) as exc:
                     return None, f"{provider} returned an invalid response: {exc}"
             error = f"HTTP {response.status_code}: {response.text[:500]}"
@@ -242,6 +309,8 @@ def _request(provider, messages, tools):
             return None, error
     if provider == "gemini" and failures:
         return None, " | ".join(failures)
+    if failures:
+        return None, " | ".join(failures)
     return None, f"{provider} request failed"
 
 
@@ -252,13 +321,19 @@ def call_ai(messages, tools):
         raise RuntimeError("No AI provider API keys are configured. Set at least one of GROQ_API_KEY, GEMINI_API_KEY/GEMINI_API_KEYS, CLOUDFLARE_API_TOKEN, MISTRAL_API_KEY, or OPENROUTER_API_KEY.")
     failures = []
     skipped = []
+    last_successful_provider = None
     for provider in configured:
         if _is_cooled_down(provider):
             skipped.append(provider)
             continue
         print(f"🤖 Planner provider: {provider}")
-        message, error = _request(provider, messages, tools)
+        provider_messages = messages
+        if last_successful_provider and provider != last_successful_provider:
+            provider_messages = _cross_provider_messages(messages)
+            print(f"🔄 Rebuilding portable planner history for provider switch: {last_successful_provider} → {provider}")
+        message, error = _request(provider, provider_messages, tools)
         if message is not None:
+            last_successful_provider = provider
             return message
         failures.append(f"{provider}: {error}")
         print(f"⚠️ {provider} unavailable; failing over: {error}")
