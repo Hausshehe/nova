@@ -1,7 +1,8 @@
 """Observe Android UI and return compact state for Nova's reasoning.
 
 The full node list can still be requested by internal UI tools, but the
-normal LLM-facing result intentionally omits it to prevent huge Groq requests.
+normal LLM-facing result intentionally omits it to prevent huge provider
+requests.
 """
 
 import re
@@ -11,14 +12,14 @@ from tools.android_root import run_root
 from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
-OBSERVE_TIMEOUT_SECONDS = 10
+OBSERVE_TIMEOUT_SECONDS = 8
 
 
 def _foreground_package():
     """Return the package currently reported as the foreground/resumed app."""
     result = run_root(
         "dumpsys activity activities | grep -m 1 -E 'mResumedActivity|mCurrentFocus|mFocusedApp'",
-        timeout=5,
+        timeout=4,
     )
     if result.returncode != 0:
         return ""
@@ -29,7 +30,7 @@ def _foreground_package():
 
 
 def observe_android(include_nodes=False):
-    """Capture Android UI.
+    """Capture Android UI without allowing observation to block the agent.
 
     By default only a compact semantic summary is returned to the caller.
     ``include_nodes=True`` is reserved for internal tools such as click_node
@@ -37,19 +38,30 @@ def observe_android(include_nodes=False):
     """
     try:
         foreground_package = _foreground_package()
+
+        # Do not wrap uiautomator in the Android `timeout` utility.  The root
+        # runner now owns the hard timeout and kills the entire process group,
+        # including a stuck uiautomator child.
         command = (
-            f"timeout {OBSERVE_TIMEOUT_SECONDS} "
-            f"/system/bin/uiautomator dump {DUMP_PATH} >/dev/null 2>&1 "
-            f"&& cat {DUMP_PATH}"
+            f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
+            f">/dev/null 2>&1 && cat {DUMP_PATH}"
         )
-        result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS + 3)
+        result = run_root(
+            command,
+            timeout=OBSERVE_TIMEOUT_SECONDS,
+        )
+
         if result.returncode != 0:
             return {
                 "success": False,
                 "verified": False,
                 "nodes": [] if include_nodes else None,
                 "foreground_package": foreground_package,
-                "message": (result.stderr or result.stdout or "UI observation failed").strip(),
+                "message": (
+                    result.stderr
+                    or result.stdout
+                    or "UI observation failed"
+                ).strip(),
             }
 
         xml_text = result.stdout
