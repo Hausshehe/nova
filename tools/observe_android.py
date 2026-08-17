@@ -7,6 +7,7 @@ requests.
 
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 from tools.android_root import run_root
 from tools.android_ui import format_ui_summary, summarize_ui
@@ -27,6 +28,24 @@ def _foreground_package():
     line = (result.stdout or "").strip()
     match = re.search(r"(?:u\d+\s+)?([A-Za-z0-9_.$]+)/(?:[A-Za-z0-9_.$]+)", line)
     return match.group(1) if match else ""
+
+
+def _infer_foreground_from_nodes(nodes):
+    """Infer the foreground package from the UI hierarchy as a fallback.
+
+    The dumpsys focus query is preferred because it is the authoritative
+    source.  Some OEM Android builds can nevertheless return an empty focus
+    line while the UI hierarchy clearly belongs to one application.  In that
+    case, use the most common non-empty package in the current hierarchy.
+    """
+    packages = [
+        node.get("package", "").strip()
+        for node in nodes
+        if isinstance(node, dict) and node.get("package", "").strip()
+    ]
+    if not packages:
+        return ""
+    return Counter(packages).most_common(1)[0][0]
 
 
 def observe_android(include_nodes=False):
@@ -102,6 +121,11 @@ def observe_android(include_nodes=False):
                 "selected": attrs.get("selected") == "true",
                 "checked": attrs.get("checked") == "true",
             })
+
+        # Prefer the authoritative dumpsys result. If the OEM focus query is
+        # empty, recover the foreground package from the current UI hierarchy.
+        if not foreground_package:
+            foreground_package = _infer_foreground_from_nodes(nodes)
 
         state = summarize_ui(nodes)
         state["foreground_package"] = foreground_package
