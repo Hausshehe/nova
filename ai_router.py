@@ -28,7 +28,8 @@ PROVIDERS = {
         "key": "CLOUDFLARE_API_TOKEN",
         "url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions",
         "model_env": "CLOUDFLARE_MODEL",
-        "default_model": "@cf/openai/gpt-oss-120b",
+        # Free-plan model: 120B total / 12B active, with reasoning and function calling.
+        "default_model": "@cf/nvidia/nemotron-3-120b-a12b",
         "account_env": "CLOUDFLARE_ACCOUNT_ID",
     },
     "mistral": {
