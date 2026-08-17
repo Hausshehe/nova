@@ -120,6 +120,20 @@ def _score(label, target):
     return SequenceMatcher(None, target_n, label_n).ratio() * 50.0
 
 
+def _candidate_tiebreak(label, target):
+    """Prefer the least-expanded semantic label when scores are tied.
+
+    A short human target can legitimately match several longer UI labels.
+    When their semantic score is identical, a label with fewer unrelated words
+    is generally the closer representation of the requested destination.
+    This is generic and does not encode Android/app-specific aliases.
+    """
+    target_words = _words(target)
+    label_words = _words(label)
+    extra_words = max(0, len(label_words - target_words))
+    return (-extra_words, -len(label_words), -len(str(label or "")))
+
+
 def _find_match(nodes, target):
     candidates = []
     for node in nodes or []:
@@ -128,12 +142,13 @@ def _find_match(nodes, target):
         label = _label(node)
         score = _score(label, target)
         if score >= 50.0:
-            candidates.append((score, node, label))
+            candidates.append((score, _candidate_tiebreak(label, target), node, label))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0]
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    score, _, node, label = candidates[0]
+    return score, node, label
 
 
 def _bounds_center(bounds):
