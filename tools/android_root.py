@@ -9,24 +9,30 @@ DEFAULT_TIMEOUT_SECONDS = 15
 
 
 def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
-    """Run a privileged Android command with a real process timeout.
+    """Run a privileged Android command through an interactive root shell.
 
-    Prefer a direct ``su -c`` invocation so Python does not have to keep an
-    interactive root shell alive while waiting for Android services such as
-    uiautomator.  The subprocess is still placed in its own process group so
-    a stuck child can be killed together with the command on timeout.
+    On some rooted Android/Termux setups, especially with Magisk and SELinux,
+    ``su -c <cmd>`` can run the command as root but still fail when Android
+    ``cmd``/``am``/``pm`` services perform Binder IPC. The characteristic
+    failure is ``Failed transaction (2147483646)``.
+
+    An interactive ``su`` session is more reliable on these devices. Feed the
+    command through stdin, then explicitly exit. Keep the subprocess in its
+    own process group so a stuck Android service (for example uiautomator)
+    can still be terminated by the hard timeout.
     """
     command = str(command or "").strip()
     if not command:
         return subprocess.CompletedProcess(
-            args=["su", "-c", ""],
+            args=["su"],
             returncode=0,
             stdout="",
             stderr="",
         )
 
     process = subprocess.Popen(
-        ["su", "-c", command],
+        ["su"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -34,7 +40,10 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
     )
 
     try:
-        stdout, stderr = process.communicate(timeout=float(timeout))
+        stdout, stderr = process.communicate(
+            command + "\nexit\n",
+            timeout=float(timeout),
+        )
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -46,14 +55,14 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
 
         stdout, stderr = process.communicate()
         return subprocess.CompletedProcess(
-            args=["su", "-c", command],
+            args=["su"],
             returncode=124,
             stdout=stdout or "",
             stderr=(stderr or "") + f"\nCommand timed out after {timeout} seconds.",
         )
 
     return subprocess.CompletedProcess(
-        args=["su", "-c", command],
+        args=["su"],
         returncode=process.returncode,
         stdout=stdout or "",
         stderr=stderr or "",
