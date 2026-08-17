@@ -85,26 +85,33 @@ def _semantic_word_overlap(target_words, label_words):
     return matched / len(target_words)
 
 
-def _score(label, target):
+def _score(label, target, node=None):
     label_n = " ".join(str(label or "").lower().split())
     target_n = " ".join(str(target or "").lower().split())
     if not label_n or not target_n:
         return 0.0
     if label_n == target_n:
         return 100.0
-    if target_n in label_n:
-        return 90.0
 
     target_words = _words(target_n)
     label_words = _words(label_n)
     overlap = _semantic_word_overlap(target_words, label_words)
-    if overlap == 1.0:
-        return 85.0
-    if overlap >= 0.5:
-        return 60.0 + overlap * 20.0
 
-    # Compare each target word with the closest current label word as a
-    # fallback for normal linguistic variation, while avoiding weak matches.
+    # Exact target-word coverage is strong, but do not treat every longer
+    # label containing the same word as equally good. A broad target such as
+    # "Apps" should prefer the closest UI label rather than an arbitrary
+    # "App ..." sub-destination. This uses the live label itself, not a list
+    # of Android-specific aliases.
+    if overlap == 1.0:
+        target_ratio = SequenceMatcher(None, target_n, label_n).ratio()
+        extras = max(0, len(label_words - target_words))
+        score = 78.0 + (target_ratio * 7.0) - (extras * 3.0)
+        if node and node.get("clickable"):
+            score += 1.5
+        return score
+    if overlap >= 0.5:
+        return 55.0 + overlap * 20.0
+
     if target_words and label_words:
         similarities = []
         for target_word in target_words:
@@ -120,18 +127,16 @@ def _score(label, target):
     return SequenceMatcher(None, target_n, label_n).ratio() * 50.0
 
 
-def _candidate_tiebreak(label, target):
-    """Prefer the least-expanded semantic label when scores are tied.
-
-    A short human target can legitimately match several longer UI labels.
-    When their semantic score is identical, a label with fewer unrelated words
-    is generally the closer representation of the requested destination.
-    This is generic and does not encode Android/app-specific aliases.
-    """
+def _candidate_tiebreak(label, target, node=None):
+    """Prefer the closest semantic label and an actionable UI node on ties."""
     target_words = _words(target)
     label_words = _words(label)
     extra_words = max(0, len(label_words - target_words))
-    return (-extra_words, -len(label_words), -len(str(label or "")))
+    target_n = " ".join(str(target or "").lower().split())
+    label_n = " ".join(str(label or "").lower().split())
+    ratio = SequenceMatcher(None, target_n, label_n).ratio()
+    clickable = 1 if node and node.get("clickable") else 0
+    return (clickable, -extra_words, ratio, -len(label_words), -len(label_n))
 
 
 def _find_match(nodes, target):
@@ -140,9 +145,9 @@ def _find_match(nodes, target):
         if not isinstance(node, dict) or not node.get("enabled", True):
             continue
         label = _label(node)
-        score = _score(label, target)
+        score = _score(label, target, node)
         if score >= 50.0:
-            candidates.append((score, _candidate_tiebreak(label, target), node, label))
+            candidates.append((score, _candidate_tiebreak(label, target, node), node, label))
 
     if not candidates:
         return None
