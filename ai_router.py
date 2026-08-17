@@ -1,10 +1,12 @@
 """Multi-provider AI router for Nova's adaptive planner.
 
-Nova stays provider-agnostic: every provider receives the same messages and
-same generic tool definitions. The router handles provider selection,
-failover, rate-limit cooldowns, and conservative request compatibility.
+Nova stays provider-agnostic: every provider receives the same generic tool
+contract, while the router adapts conversation history to each provider's
+wire-format requirements. This is especially important for Gemini 3 thought
+signatures, which must be preserved exactly during multi-step tool calling.
 """
 
+import copy
 import os
 import time
 
@@ -28,7 +30,6 @@ PROVIDERS = {
         "key": "CLOUDFLARE_API_TOKEN",
         "url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions",
         "model_env": "CLOUDFLARE_MODEL",
-        # Free-plan model: 120B total / 12B active, with reasoning and function calling.
         "default_model": "@cf/nvidia/nemotron-3-120b-a12b",
         "account_env": "CLOUDFLARE_ACCOUNT_ID",
     },
@@ -42,17 +43,12 @@ PROVIDERS = {
         "key": "OPENROUTER_API_KEY",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "model_env": "OPENROUTER_MODEL",
-        # Let OpenRouter select an available free model that supports the
-        # request's capabilities instead of pinning Nova to a rotating model.
         "default_model": "openrouter/free",
     },
 }
 
 DEFAULT_ORDER = ["gemini", "groq", "cloudflare", "mistral", "openrouter"]
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
-
-# Provider cooldowns live for the lifetime of Nova. A rate-limited provider is
-# skipped temporarily instead of making Nova wait through repeated retries.
 _PROVIDER_COOLDOWN_UNTIL = {}
 
 
@@ -118,6 +114,74 @@ def _max_output_tokens():
     return max(400, min(value, 8192))
 
 
+def _sanitize_messages(messages, provider):
+    """Return provider-safe copies of the OpenAI-compatible conversation.
+
+    Nova keeps one canonical history so the planner remains provider-agnostic.
+    Provider APIs, however, do not accept every extension produced by another
+    provider. Gemini 3 is special: its OpenAI-compatible API puts the required
+    thought signature inside tool-call ``extra_content`` and requires that
+    field to be replayed exactly during sequential function calling.
+
+    For non-Gemini providers we deliberately strip provider-specific metadata
+    such as ``extra_content`` and ``annotations``. This prevents Gemini-only
+    fields from leaking into Groq/Cloudflare/Mistral/OpenRouter requests.
+    """
+    sanitized = []
+
+    for original in messages:
+        if not isinstance(original, dict):
+            continue
+
+        message = {
+            key: copy.deepcopy(value)
+            for key, value in original.items()
+            if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+        }
+
+        if provider == "gemini":
+            # Preserve Gemini's response metadata exactly where it was emitted.
+            for key in ("extra_content", "reasoning_content", "reasoning_details"):
+                if key in original:
+                    message[key] = copy.deepcopy(original[key])
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            clean_calls = []
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+
+                clean_call = {
+                    key: copy.deepcopy(value)
+                    for key, value in call.items()
+                    if key in {"id", "type", "function"}
+                }
+
+                if provider == "gemini" and "extra_content" in call:
+                    # Google documents this field as the OpenAI-compatibility
+                    # carrier for Gemini 3 thought_signature.
+                    clean_call["extra_content"] = copy.deepcopy(call["extra_content"])
+
+                function = clean_call.get("function")
+                if isinstance(function, dict):
+                    clean_call["function"] = {
+                        key: copy.deepcopy(value)
+                        for key, value in function.items()
+                        if key in {"name", "arguments"}
+                    }
+
+                clean_calls.append(clean_call)
+            message["tool_calls"] = clean_calls
+
+        # Gemini's OpenAI-compatible endpoint needs assistant messages with
+        # tool calls replayed as assistant messages. Other providers should
+        # receive the normal OpenAI-compatible shape only.
+        sanitized.append(message)
+
+    return sanitized
+
+
 def _request(provider, messages, tools):
     config = PROVIDERS[provider]
     api_key = os.environ.get(config["key"])
@@ -132,7 +196,7 @@ def _request(provider, messages, tools):
     model = os.environ.get(config["model_env"], config["default_model"])
     payload = {
         "model": model,
-        "messages": messages,
+        "messages": _sanitize_messages(messages, provider),
         "temperature": 0.2,
         "max_tokens": _max_output_tokens(),
         "tools": tools,
@@ -140,9 +204,6 @@ def _request(provider, messages, tools):
         "parallel_tool_calls": False,
     }
 
-    # Fail over quickly. A single short retry is useful for transient network
-    # failures, but rate limits and server overloads should move to the next
-    # provider immediately rather than blocking Nova for a long retry cycle.
     for attempt in range(2):
         try:
             response = requests.post(
@@ -167,13 +228,9 @@ def _request(provider, messages, tools):
         error = f"HTTP {response.status_code}: {response.text[:500]}"
 
         if response.status_code in RETRYABLE_STATUS:
-            # Do not sleep for provider-supplied retry-after values here. The
-            # whole point of the multi-provider router is to fail over quickly.
             _mark_cooldown(provider, response.status_code)
             return None, error
 
-        # Non-retryable errors normally indicate a bad key, unavailable model,
-        # malformed request, or provider-specific incompatibility. Move on.
         return None, error
 
     return None, f"{provider} request failed"
