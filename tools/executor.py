@@ -1,4 +1,20 @@
 import importlib
+import time
+
+
+# Android Activities and accessibility UI updates are asynchronous. Give the
+# framework a short settling window before Nova immediately asks UIAutomator
+# for the next hierarchy snapshot. This is intentionally limited to
+# state-changing Android primitives so read-only tools remain fast.
+POST_ACTION_SETTLE_SECONDS = 0.75
+STATE_CHANGING_TOOLS = {
+    "launch_android_app",
+    "click_text",
+    "click_node",
+    "type_text",
+    "back_android",
+    "scroll_android",
+}
 
 
 def execute_tool(tool_name, function_name, **kwargs):
@@ -10,6 +26,13 @@ def execute_tool(tool_name, function_name, **kwargs):
         function = getattr(module, function_name)
 
         result = function(**kwargs)
+
+        if (
+            tool_name in STATE_CHANGING_TOOLS
+            and isinstance(result, dict)
+            and result.get("success")
+        ):
+            time.sleep(POST_ACTION_SETTLE_SECONDS)
 
         return {
             "success": True,
