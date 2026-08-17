@@ -156,9 +156,45 @@ def _max_output_tokens():
 
 
 def _sanitize_messages(messages, provider):
-    """Return provider-safe copies of the OpenAI-compatible conversation."""
+    """Return provider-safe copies of the OpenAI-compatible conversation.
+
+    Gemini's OpenAI-compatible endpoint still requires a tool-result message to
+    carry the name of the function that produced it. Nova historically stored
+    only tool_call_id, so after a normal planner turn Gemini could reject the
+    next request with `function_response.name: Name cannot be empty`.
+    """
     sanitized = []
+    tool_names = {}
+
     for original in messages:
+        if not isinstance(original, dict):
+            continue
+
+        # Build an id -> function-name map from the preceding assistant turn.
+        for call in original.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") or {}
+            call_id = call.get("id")
+            name = function.get("name")
+            if call_id and name:
+                tool_names[call_id] = name
+
+        message = {key: copy.deepcopy(value) for key, value in original.items() if key in {"role", "content", "tool_calls", "tool_call_id", "name"}}
+
+        # Gemini rejects tool results without a function name. Recover it from
+        # the matching assistant tool call instead of inventing a tool name.
+        if provider == "gemini" and message.get("role") == "tool":
+            call_id = message.get("tool_call_id")
+            if not message.get("name") and call_id in tool_names:
+                message["name"] = tool_names[call_id]
+
+        if provider == "gemini":
+            for key in ("extra_content", "reasoning_content", "reasoning_details"):
+                if key in original:
+                    message[key] = copy.deepcopy(original[key])
+
+        tool_calls = message.get("tool_calls")
         if not isinstance(original, dict):
             continue
         message = {key: copy.deepcopy(value) for key, value in original.items() if key in {"role", "content", "tool_calls", "tool_call_id", "name"}}
