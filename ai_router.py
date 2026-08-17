@@ -1,10 +1,4 @@
-"""Multi-provider AI router for Nova's adaptive planner.
-
-Nova stays provider-agnostic: every provider receives the same generic tool
-contract, while the router adapts conversation history to each provider's
-wire-format requirements. This is especially important for Gemini 3 thought
-signatures, which must be preserved exactly during multi-step tool calling.
-"""
+"""Multi-provider AI router for Nova's adaptive planner."""
 
 import copy
 import os
@@ -14,17 +8,18 @@ import requests
 
 
 PROVIDERS = {
-    "gemini": {
-        "key": "GEMINI_API_KEY",
-        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        "model_env": "GEMINI_MODEL",
-        "default_model": "gemini-3.6-flash",
-    },
     "groq": {
         "key": "GROQ_API_KEY",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "model_env": "GROQ_MODEL",
         "default_model": "openai/gpt-oss-120b",
+    },
+    "gemini": {
+        "key": "GEMINI_API_KEY",
+        "keys_env": "GEMINI_API_KEYS",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "model_env": "GEMINI_MODEL",
+        "default_model": "gemini-3.6-flash",
     },
     "cloudflare": {
         "key": "CLOUDFLARE_API_TOKEN",
@@ -47,9 +42,11 @@ PROVIDERS = {
     },
 }
 
-DEFAULT_ORDER = ["gemini", "groq", "cloudflare", "mistral", "openrouter"]
+# Groq remains Nova's fast primary planner. Gemini is the first fallback.
+DEFAULT_ORDER = ["groq", "gemini", "cloudflare", "mistral", "openrouter"]
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 _PROVIDER_COOLDOWN_UNTIL = {}
+_GEMINI_KEY_COOLDOWN_UNTIL = {}
 
 
 def _provider_order():
@@ -79,6 +76,39 @@ def _is_cooled_down(provider):
         _PROVIDER_COOLDOWN_UNTIL.pop(provider, None)
         return False
     return True
+
+
+def _gemini_keys():
+    """Return configured Gemini keys in rotation order.
+
+    GEMINI_API_KEYS may contain comma-separated keys. GEMINI_API_KEY remains
+    supported for backward compatibility. Only use keys/projects legitimately
+    controlled by the user; this is provider failover, not quota evasion.
+    """
+    raw_pool = os.environ.get("GEMINI_API_KEYS", "")
+    keys = [item.strip() for item in raw_pool.split(",") if item.strip()]
+    single = os.environ.get("GEMINI_API_KEY", "").strip()
+    if single and single not in keys:
+        keys.append(single)
+    return keys
+
+
+def _provider_has_key(provider):
+    if provider == "gemini":
+        return bool(_gemini_keys())
+    return bool(os.environ.get(PROVIDERS[provider]["key"]))
+
+
+def _key_cooled_down(key):
+    until = _GEMINI_KEY_COOLDOWN_UNTIL.get(key, 0.0)
+    if until <= time.monotonic():
+        _GEMINI_KEY_COOLDOWN_UNTIL.pop(key, None)
+        return False
+    return True
+
+
+def _mark_key_cooldown(key, status_code):
+    _GEMINI_KEY_COOLDOWN_UNTIL[key] = time.monotonic() + _cooldown_seconds(status_code)
 
 
 def _headers(provider, api_key):
@@ -115,18 +145,7 @@ def _max_output_tokens():
 
 
 def _sanitize_messages(messages, provider):
-    """Return provider-safe copies of the OpenAI-compatible conversation.
-
-    Nova keeps one canonical history so the planner remains provider-agnostic.
-    Provider APIs, however, do not accept every extension produced by another
-    provider. Gemini 3 is special: its OpenAI-compatible API puts the required
-    thought signature inside tool-call ``extra_content`` and requires that
-    field to be replayed exactly during sequential function calling.
-
-    For non-Gemini providers we deliberately strip provider-specific metadata
-    such as ``extra_content`` and ``annotations``. This prevents Gemini-only
-    fields from leaking into Groq/Cloudflare/Mistral/OpenRouter requests.
-    """
+    """Return provider-safe copies of the OpenAI-compatible conversation."""
     sanitized = []
 
     for original in messages:
@@ -140,7 +159,6 @@ def _sanitize_messages(messages, provider):
         }
 
         if provider == "gemini":
-            # Preserve Gemini's response metadata exactly where it was emitted.
             for key in ("extra_content", "reasoning_content", "reasoning_details"):
                 if key in original:
                     message[key] = copy.deepcopy(original[key])
@@ -159,8 +177,6 @@ def _sanitize_messages(messages, provider):
                 }
 
                 if provider == "gemini" and "extra_content" in call:
-                    # Google documents this field as the OpenAI-compatibility
-                    # carrier for Gemini 3 thought_signature.
                     clean_call["extra_content"] = copy.deepcopy(call["extra_content"])
 
                 function = clean_call.get("function")
@@ -174,9 +190,6 @@ def _sanitize_messages(messages, provider):
                 clean_calls.append(clean_call)
             message["tool_calls"] = clean_calls
 
-        # Gemini's OpenAI-compatible endpoint needs assistant messages with
-        # tool calls replayed as assistant messages. Other providers should
-        # receive the normal OpenAI-compatible shape only.
         sanitized.append(message)
 
     return sanitized
@@ -184,10 +197,6 @@ def _sanitize_messages(messages, provider):
 
 def _request(provider, messages, tools):
     config = PROVIDERS[provider]
-    api_key = os.environ.get(config["key"])
-    if not api_key:
-        return None, f"{config['key']} is not configured"
-
     url = _provider_url(provider)
     if not url:
         account_env = config.get("account_env")
@@ -204,51 +213,64 @@ def _request(provider, messages, tools):
         "parallel_tool_calls": False,
     }
 
-    for attempt in range(2):
-        try:
-            response = requests.post(
-                url,
-                headers=_headers(provider, api_key),
-                json=payload,
-                timeout=30,
-            )
-        except requests.RequestException as exc:
-            if attempt == 0:
-                time.sleep(0.8)
-                continue
-            return None, str(exc)
+    keys = _gemini_keys() if provider == "gemini" else [os.environ.get(config["key"], "").strip()]
+    keys = [key for key in keys if key]
+    if not keys:
+        return None, f"{config['key']} is not configured"
 
-        if response.status_code == 200:
+    failures = []
+    for api_key in keys:
+        if provider == "gemini" and _key_cooled_down(api_key):
+            continue
+
+        for attempt in range(2):
             try:
-                data = response.json()
-                return data["choices"][0]["message"], None
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
-                return None, f"{provider} returned an invalid response: {exc}"
+                response = requests.post(
+                    url,
+                    headers=_headers(provider, api_key),
+                    json=payload,
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                if attempt == 0:
+                    time.sleep(0.8)
+                    continue
+                failures.append(str(exc))
+                break
 
-        error = f"HTTP {response.status_code}: {response.text[:500]}"
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    return data["choices"][0]["message"], None
+                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    return None, f"{provider} returned an invalid response: {exc}"
 
-        if response.status_code in RETRYABLE_STATUS:
-            _mark_cooldown(provider, response.status_code)
+            error = f"HTTP {response.status_code}: {response.text[:500]}"
+
+            if response.status_code in RETRYABLE_STATUS:
+                if provider == "gemini":
+                    _mark_key_cooldown(api_key, response.status_code)
+                    failures.append(f"Gemini key limited: {error}")
+                    break
+                _mark_cooldown(provider, response.status_code)
+                return None, error
+
             return None, error
 
-        return None, error
-
+    if provider == "gemini" and failures:
+        return None, " | ".join(failures)
     return None, f"{provider} request failed"
 
 
 def call_ai(messages, tools):
     """Return the first successful planner response from available providers."""
-    configured = [
-        provider
-        for provider in _provider_order()
-        if os.environ.get(PROVIDERS[provider]["key"])
-    ]
+    configured = [provider for provider in _provider_order() if _provider_has_key(provider)]
 
     if not configured:
         raise RuntimeError(
             "No AI provider API keys are configured. Set at least one of "
-            "GEMINI_API_KEY, GROQ_API_KEY, CLOUDFLARE_API_TOKEN, "
-            "MISTRAL_API_KEY, or OPENROUTER_API_KEY."
+            "GROQ_API_KEY, GEMINI_API_KEY/GEMINI_API_KEYS, "
+            "CLOUDFLARE_API_TOKEN, MISTRAL_API_KEY, or OPENROUTER_API_KEY."
         )
 
     failures = []
@@ -277,11 +299,21 @@ def call_ai(messages, tools):
 def provider_status():
     """Return a small diagnostic view of configured providers and cooldowns."""
     now = time.monotonic()
-    return {
-        name: {
-            "configured": bool(os.environ.get(config["key"])),
-            "model": os.environ.get(config["model_env"], config["default_model"]),
-            "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now),
-        }
-        for name, config in PROVIDERS.items()
-    }
+    status = {}
+    for name, config in PROVIDERS.items():
+        if name == "gemini":
+            configured = bool(_gemini_keys())
+            model = os.environ.get(config["model_env"], config["default_model"])
+            status[name] = {
+                "configured": configured,
+                "keys": len(_gemini_keys()),
+                "model": model,
+                "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now),
+            }
+        else:
+            status[name] = {
+                "configured": bool(os.environ.get(config["key"])),
+                "model": os.environ.get(config["model_env"], config["default_model"]),
+                "cooldown_seconds": max(0.0, _PROVIDER_COOLDOWN_UNTIL.get(name, 0.0) - now),
+            }
+    return status
