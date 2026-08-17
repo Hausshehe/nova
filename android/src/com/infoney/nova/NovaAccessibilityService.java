@@ -72,6 +72,25 @@ public class NovaAccessibilityService extends AccessibilityService {
             return false;
         }
         target = target.trim();
+
+        // Some Android Settings pages have stable platform Intent actions but
+        // expose their rows through a non-clickable accessibility text node.
+        // For these pages, use the platform deep link instead of guessing a
+        // row/container relationship. This is deterministic and avoids the
+        // repeated scroll/click failure seen on vendor Settings UIs.
+        String normalized = target.toLowerCase().replace("\u2011", "-").replace("\u2013", "-");
+        if ("display & brightness".equals(normalized) || "display and brightness".equals(normalized)) {
+            try {
+                Intent intent = new Intent(Settings.ACTION_DISPLAY_SETTINGS);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                Log.i(TAG, "CLICK_TEXT: opened Display & Brightness via ACTION_DISPLAY_SETTINGS");
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "CLICK_TEXT: ACTION_DISPLAY_SETTINGS failed", e);
+            }
+        }
+
         Log.i(TAG, "CLICK_TEXT: searching for: " + target);
 
         // Settings commonly places the requested row below the current
