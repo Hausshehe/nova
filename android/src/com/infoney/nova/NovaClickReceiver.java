@@ -16,6 +16,7 @@ public class NovaClickReceiver extends BroadcastReceiver {
 
         if (intent == null) {
             Log.w(TAG, "CLICK_TEXT: intent is null");
+            setResultCode(0);
             return;
         }
 
@@ -138,6 +139,7 @@ public class NovaClickReceiver extends BroadcastReceiver {
                         "CLICK_TEXT: accessibility service instance is NULL"
                 );
 
+                setResultCode(0);
                 return;
             }
 
@@ -154,6 +156,11 @@ public class NovaClickReceiver extends BroadcastReceiver {
                     "CLICK_TEXT: handleClickText returned="
                             + result
             );
+
+            // Propagate the actual accessibility click result back to the
+            // `am broadcast` caller.  Broadcast delivery alone is not proof
+            // that the requested UI element was clicked.
+            setResultCode(result ? 1 : 0);
         }
     }
 }
