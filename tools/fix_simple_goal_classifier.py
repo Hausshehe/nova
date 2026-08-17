@@ -11,20 +11,20 @@ new_function = '''def _simple_open_goal(goal):
     must go through the adaptive planner instead of being treated as one app
     name.
     """
-    normalized = re.sub(r"\\s+", " ", str(goal or "").strip().lower())
-    remainder = re.sub(r"^(?:open|launch|start)\\s+", "", normalized)
+    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
+    remainder = re.sub(r"^(?:open|launch|start)\s+", "", normalized)
 
     # If the remainder contains another action or a conjunction, this is a
     # multi-step goal and must be handled by Groq's planner.
     if re.search(
-        r"\\b(?:and|then|after|before|find|search|look|navigate|go|click|tap|"
-        r"open|launch|start|change|enable|disable|turn|set|type|enter)\\b",
+        r"\b(?:and|then|after|before|find|search|look|navigate|go|click|tap|"
+        r"open|launch|start|change|enable|disable|turn|set|type|enter)\b",
         remainder,
     ):
         return ""
 
     match = re.fullmatch(
-        r"(?:open|launch|start)\\s+(.+?)(?:\\s+app)?",
+        r"(?:open|launch|start)\s+(.+?)(?:\s+app)?",
         normalized,
     )
     return match.group(1).strip() if match else ""
@@ -33,7 +33,7 @@ new_function = '''def _simple_open_goal(goal):
 '''
 
 pattern = re.compile(
-    r"def _simple_open_goal\\(goal\\):.*?(?=def _observe_directly\\(\\):)",
+    r"def _simple_open_goal\(goal\):.*?(?=def _observe_directly\(\):)",
     re.DOTALL,
 )
 match = pattern.search(text)
