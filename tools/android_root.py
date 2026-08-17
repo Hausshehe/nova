@@ -45,6 +45,10 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
             timeout=float(timeout),
         )
     except subprocess.TimeoutExpired:
+        # Do not call communicate() again after killing the shell. A child
+        # Android service can inherit stdout/stderr and keep those pipes open,
+        # which would make communicate() hang forever—the exact failure mode
+        # that can freeze Nova during post-action observation.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
@@ -53,12 +57,33 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
             except ProcessLookupError:
                 pass
 
-        stdout, stderr = process.communicate()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+
+        try:
+            if process.stdin:
+                process.stdin.close()
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+        except OSError:
+            pass
+
         return subprocess.CompletedProcess(
             args=["su"],
             returncode=124,
-            stdout=stdout or "",
-            stderr=(stderr or "") + f"\nCommand timed out after {timeout} seconds.",
+            stdout="",
+            stderr=f"Command timed out after {timeout} seconds.",
         )
 
     return subprocess.CompletedProcess(
