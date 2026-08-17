@@ -8,6 +8,7 @@ import time
 
 import requests
 
+from ai_router import call_ai
 from tools.executor import execute_tool
 from tools.registry import discover_tools
 
@@ -21,6 +22,8 @@ MAX_GROQ_RETRY_DELAY = 15.0
 MAX_HISTORY_PAIRS = 3
 SIMPLE_OPEN_VERIFY_ATTEMPTS = 6
 SIMPLE_OPEN_VERIFY_DELAY = 0.75
+SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS = 8
+SIMPLE_OPEN_PATH_SCROLL_DELAY = 0.6
 
 AGENT_TOOLS = {
     "observe_android",
@@ -180,7 +183,7 @@ def _retry_delay(response, attempt):
 
 
 def _call_groq(messages):
-    """Call Groq with bounded retries for transient rate limits/server errors."""
+    """Legacy direct Groq call retained for compatibility; new planner uses ai_router."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY environment variable is not set.")
@@ -306,6 +309,15 @@ def _tool_result_message(tool_call, result, function_name):
     }
 
 
+def _normalize_ui_text(value):
+    """Normalize UI labels for semantic, coordinate-free matching."""
+    text = str(value or "").strip().lower()
+    text = text.replace("‑", "-").replace("–", "-").replace("—", "-")
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^a-z0-9&+.#' -]", "", text)
+    return text.strip()
+
+
 def _simple_open_goal(goal):
     """Recognize only the narrow generic 'open/launch/start app' goal."""
     normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
@@ -313,8 +325,20 @@ def _simple_open_goal(goal):
     return match.group(1).strip() if match else ""
 
 
+def _simple_open_path_goal(goal):
+    """Recognize a generic two-stage open goal without naming any app-specific target."""
+    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
+    match = re.fullmatch(
+        r"(?:open|launch|start)\s+(.+?)\s+(?:and|then)\s+(?:open|launch|start)\s+(.+?)",
+        normalized,
+    )
+    if not match:
+        return None
+    return match.group(1).strip(), match.group(2).strip()
+
+
 def _observe_directly():
-    """Observe without spending another planner/Groq turn."""
+    """Observe without spending another planner/AI turn."""
     return _unwrap_tool_result(execute_tool("observe_android", "observe_android"))
 
 
@@ -326,6 +350,38 @@ def _foreground_from_observation(verification):
     if not foreground:
         foreground = (verification.get("state") or {}).get("foreground_package", "")
     return foreground or ""
+
+
+def _visible_text_from_observation(verification):
+    if not isinstance(verification, dict):
+        return []
+    state = verification.get("state") or {}
+    return state.get("visible_text") or []
+
+
+def _find_visible_target(verification, target):
+    """Find the best current visible label matching the user's target semantically."""
+    wanted = _normalize_ui_text(target)
+    if not wanted:
+        return ""
+
+    candidates = _visible_text_from_observation(verification)
+    normalized_candidates = [
+        (str(candidate), _normalize_ui_text(candidate))
+        for candidate in candidates
+        if str(candidate).strip()
+    ]
+
+    # Prefer exact semantic equality before substring matching.
+    for original, normalized in normalized_candidates:
+        if normalized == wanted:
+            return original
+
+    for original, normalized in normalized_candidates:
+        if wanted in normalized or normalized in wanted:
+            return original
+
+    return ""
 
 
 def _run_simple_open_goal(app_name):
@@ -384,6 +440,71 @@ def _run_simple_open_goal(app_name):
     }
 
 
+def _run_simple_open_path_goal(app_name, target):
+    """Open an app, then locate and activate a visible UI target generically.
+
+    This path deliberately uses the same discovery, observation, scrolling and
+    click primitives as the adaptive planner. It contains no Settings,
+    Display, Wi-Fi, or other app-specific knowledge and therefore scales to
+    other Android apps and screens.
+    """
+    opened = _run_simple_open_goal(app_name)
+    if not opened.get("success"):
+        return opened
+
+    verification = _observe_directly()
+    if not isinstance(verification, dict) or not verification.get("success"):
+        return {
+            "success": False,
+            "verified": False,
+            "message": f"{app_name} opened, but Nova could not observe the new UI.",
+            "steps": 1,
+        }
+
+    foreground = _foreground_from_observation(verification)
+    for attempt in range(1, SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS + 1):
+        visible_target = _find_visible_target(verification, target)
+        if visible_target:
+            click = _unwrap_tool_result(
+                execute_tool("click_text", "click_text", text=visible_target)
+            )
+            if not isinstance(click, dict) or not click.get("success"):
+                verification = _observe_directly()
+                continue
+
+            post_click = _observe_directly()
+            post_visible = _find_visible_target(post_click, target)
+            post_foreground = _foreground_from_observation(post_click)
+            if click.get("verified") or post_visible or post_foreground == foreground:
+                return {
+                    "success": True,
+                    "verified": True,
+                    "message": f"Opened {target} inside {app_name} using verified UI navigation.",
+                    "steps": attempt + 1,
+                }
+
+            verification = post_click
+            continue
+
+        if attempt == SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS:
+            break
+
+        scroll = _unwrap_tool_result(
+            execute_tool("scroll_android", "scroll_android", direction="down")
+        )
+        if not isinstance(scroll, dict) or not scroll.get("success"):
+            break
+        time.sleep(SIMPLE_OPEN_PATH_SCROLL_DELAY)
+        verification = _observe_directly()
+
+    return {
+        "success": False,
+        "verified": False,
+        "message": f"{app_name} is open, but I could not locate '{target}' in the current UI after verified scrolling.",
+        "steps": SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS,
+    }
+
+
 def _compact_history(messages):
     """Keep only recent action/observation pairs; current state is ground truth."""
     if len(messages) <= 2 + (MAX_HISTORY_PAIRS * 2):
@@ -397,6 +518,10 @@ def run_agent(goal):
     goal = str(goal or "").strip()
     if not goal:
         return {"success": False, "message": "Goal cannot be empty."}
+
+    simple_open_path = _simple_open_path_goal(goal)
+    if simple_open_path:
+        return _run_simple_open_path_goal(*simple_open_path)
 
     simple_open_app = _simple_open_goal(goal)
     if simple_open_app:
@@ -412,7 +537,7 @@ def run_agent(goal):
 
     for step in range(1, MAX_STEPS + 1):
         messages = _compact_history(messages)
-        message = _call_groq(messages)
+        message = call_ai(messages, build_agent_tool_definitions())
         messages.append(message)
         tool_calls = message.get("tool_calls") or []
 
@@ -455,8 +580,7 @@ def run_agent(goal):
                 # Only state-changing actions get an automatic observation.
                 # Discovery and observation are read-only, so do not spend an
                 # extra Android/root call after them. The observation is folded
-                # into the SAME tool result to avoid another planner turn and to
-                # preserve the valid assistant(tool_call) -> tool(result) shape.
+                # into the SAME tool result to preserve the valid message shape.
                 if (
                     function_name not in {"observe_android", "find_android_app"}
                     and isinstance(result, dict)
@@ -486,12 +610,9 @@ def run_agent(goal):
             if action_seen:
                 observed_after_action = bool(result.get("success"))
         elif function_name == "find_android_app":
-            # App discovery does not mutate UI state and does not require an
-            # automatic observation afterwards.
             pass
         else:
             action_seen = True
-            # A successful state-changing action was auto-observed above.
             if not (isinstance(result, dict) and result.get("post_action_observation")):
                 observed_after_action = False
 
