@@ -12,7 +12,9 @@ new_function = '''def _simple_open_goal(goal):
     """
     normalized = re.sub(r"\\s+", " ", str(goal or "").strip().lower())
 
-    # If the request contains another action, it is not a simple open goal.
+    # A simple open command must contain only the app name after the verb.
+    # Conjunctions and action verbs indicate that the planner should handle
+    # the complete multi-step goal.
     remainder = re.sub(r"^(?:open|launch|start)\\s+", "", normalized)
     if re.search(
         r"\\b(?:and|then|after|before|find|search|look|navigate|go|click|tap|"
@@ -30,7 +32,10 @@ new_function = '''def _simple_open_goal(goal):
 
 '''
 
-pattern = re.compile(r"def _simple_open_goal\(goal\):.*?(?=def _observe_directly\(\):)", re.DOTALL)
+pattern = re.compile(
+    r"def _simple_open_goal\(goal\):.*?(?=def _observe_directly\(\):)",
+    re.DOTALL,
+)
 match = pattern.search(text)
 if not match:
     raise SystemExit("Could not locate _simple_open_goal in nova_agent.py")
