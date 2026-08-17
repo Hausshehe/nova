@@ -2,12 +2,14 @@
 
 import hashlib
 import re
+import time
 
 from tools.android_root import run_root
 
 
 DUMP_PATH = "/data/local/tmp/nova_scroll_probe.xml"
 PROBE_TIMEOUT_SECONDS = 4
+SCROLL_SETTLE_SECONDS = 0.75
 
 # The scroll primitive remembers only traversal state, not app names, labels,
 # coordinates, or destinations. This lets an agent sweep a scrollable screen
@@ -85,6 +87,10 @@ def scroll_android(direction="down"):
                 "message": (result.stderr or result.stdout or "Scroll failed").strip(),
             }
 
+        # Android's Settings/RecyclerView and many other UIs animate the swipe.
+        # Probe only after the animation settles; probing immediately can see the
+        # old hierarchy and falsely conclude that we are already at an edge.
+        time.sleep(SCROLL_SETTLE_SECONDS)
         after = _probe_signature()
         changed = before is None or after is None or before != after
 
@@ -93,8 +99,8 @@ def scroll_android(direction="down"):
             _LAST_SIGNATURE = after
         else:
             _BOUNDARY_STREAK += 1
-            # A no-op is evidence of an edge. Flip immediately so the next
-            # invocation can traverse back through content already passed.
+            # A confirmed no-op is evidence of an edge. Flip immediately so the
+            # next invocation traverses back through content already passed.
             _TRAVERSAL_DIRECTION = "up" if actual == "down" else "down"
             _LAST_SIGNATURE = after
 
