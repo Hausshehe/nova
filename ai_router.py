@@ -15,7 +15,7 @@ PROVIDERS = {
     "openrouter": {"key": "OPENROUTER_API_KEY", "url": "https://openrouter.ai/api/v1/chat/completions", "model_env": "OPENROUTER_MODEL", "default_model": "openrouter/free"},
 }
 
-DEFAULT_ORDER = ["groq", "gemini", "cloudflare", "mistral", "openrouter"]
+DEFAULT_ORDER = ["groq", "gemini", "mistral", "openrouter", "cloudflare"]
 RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 _PROVIDER_COOLDOWN_UNTIL = {}
 _GEMINI_KEY_COOLDOWN_UNTIL = {}
@@ -156,12 +156,7 @@ def _max_output_tokens():
 
 
 def _sanitize_messages(messages, provider):
-    """Return provider-safe copies of the OpenAI-compatible conversation.
-
-    Gemini's OpenAI-compatible endpoint requires tool-result messages to carry
-    the name of the function that produced them. Recover that name from the
-    matching assistant tool call before sending the conversation.
-    """
+    """Return provider-safe copies while preserving Gemini tool signatures."""
     sanitized = []
     tool_names = {}
 
@@ -169,8 +164,6 @@ def _sanitize_messages(messages, provider):
         if not isinstance(original, dict):
             continue
 
-        # First register any tool calls from this assistant message so later
-        # tool-result messages can recover their function name by tool_call_id.
         for call in original.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
@@ -183,17 +176,13 @@ def _sanitize_messages(messages, provider):
         message = {
             key: copy.deepcopy(value)
             for key, value in original.items()
-            if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+            if key in {"role", "content", "tool_calls", "tool_call_id", "name", "extra_content", "reasoning_content", "reasoning_details"}
         }
 
         if provider == "gemini" and message.get("role") == "tool":
             call_id = message.get("tool_call_id")
             if not message.get("name") and call_id in tool_names:
                 message["name"] = tool_names[call_id]
-
-            for key in ("extra_content", "reasoning_content", "reasoning_details"):
-                if key in original:
-                    message[key] = copy.deepcopy(original[key])
 
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
@@ -209,6 +198,10 @@ def _sanitize_messages(messages, provider):
                         for key, value in function.items()
                         if key in {"name", "arguments"}
                     }
+                # Gemini 3 requires the returned extra_content.google.thought_signature
+                # to be echoed back exactly on subsequent tool turns.
+                if provider == "gemini" and "extra_content" in call:
+                    clean_call["extra_content"] = copy.deepcopy(call["extra_content"])
                 clean_calls.append(clean_call)
             if provider == "gemini" and len(clean_calls) > 1:
                 clean_calls = clean_calls[:1]
@@ -301,22 +294,24 @@ def _request(provider, messages, tools):
         "tool_choice": "auto",
         "parallel_tool_calls": False,
     }
+    if provider == "gemini":
+        payload["reasoning_effort"] = "low"
     keys = _gemini_keys() if provider == "gemini" else [os.environ.get(config["key"], "").strip()]
     keys = [key for key in keys if key]
     if not keys:
         return None, f"{config['key']} is not configured"
     failures = []
-    for api_key in keys:
+    for index, api_key in enumerate(keys, start=1):
         if provider == "gemini" and _key_cooled_down(api_key):
             continue
         for attempt in range(2):
             try:
-                response = requests.post(url, headers=_headers(provider, api_key), json=payload, timeout=30)
+                response = requests.post(url, headers=_headers(provider, api_key), json=payload, timeout=15)
             except requests.RequestException as exc:
                 if attempt == 0:
                     time.sleep(0.8)
                     continue
-                failures.append(str(exc))
+                failures.append(f"Gemini key {index}: {exc}" if provider == "gemini" else str(exc))
                 break
             if response.status_code == 200:
                 try:
@@ -328,19 +323,25 @@ def _request(provider, messages, tools):
                         break
                     return valid_message, None
                 except (KeyError, IndexError, TypeError, ValueError) as exc:
-                    return None, f"{provider} returned an invalid response: {exc}"
+                    failures.append(f"{provider} returned an invalid response: {exc}")
+                    break
             error = f"HTTP {response.status_code}: {response.text[:500]}"
+            if provider == "gemini" and response.status_code in {401, 403}:
+                _mark_key_cooldown(api_key, response.status_code, 15 * 60)
+                failures.append(f"Gemini key {index} denied for ~900s: {error}")
+                break
             if response.status_code in RETRYABLE_STATUS:
                 delay = _provider_retry_delay(response, response.status_code)
                 if provider == "gemini":
                     _mark_key_cooldown(api_key, response.status_code, delay)
-                    failures.append(f"Gemini key limited for ~{delay:.1f}s: {error}")
+                    failures.append(f"Gemini key {index} limited for ~{delay:.1f}s: {error}")
                     break
                 _mark_cooldown(provider, response.status_code, delay)
                 return None, f"{error} (cooldown ~{delay:.1f}s)"
+            if provider == "gemini":
+                failures.append(f"Gemini key {index}: {error}")
+                break
             return None, error
-    if provider == "gemini" and failures:
-        return None, " | ".join(failures)
     if failures:
         return None, " | ".join(failures)
     return None, f"{provider} request failed"
