@@ -84,6 +84,13 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertEqual(observe.call_count, 3)
         self.assertIn("bounded recovery budget", result.message)
 
+    def test_ambiguous_visible_targets_are_rejected(self):
+        snapshot = self._snapshot(text=("App settings", "App options"))
+        result = resolve_target(snapshot, "App")
+        self.assertEqual(result.resolution, Resolution.AMBIGUOUS)
+        self.assertIsNone(result.node)
+        self.assertIn("Multiple visible controls", result.reason)
+
 
 if __name__ == "__main__":
     unittest.main()
