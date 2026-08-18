@@ -31,12 +31,9 @@ public class NovaAccessibilityService extends AccessibilityService {
         if (event == null) return;
         String packageName = event.getPackageName() != null ? event.getPackageName().toString() : "unknown";
         Log.i(TAG, "SCREEN: " + packageName);
-        // Do not synchronously traverse the entire accessibility hierarchy here.
-        // This callback and BroadcastReceiver callbacks share the service's main
-        // thread; a full recursive scan can therefore starve CLICK_ELEMENT and
-        // SCROLL_WINDOW broadcasts and make the shell transport appear hung.
-        // AccessibilitySnapshotPublisher owns the bounded/coalesced snapshot
-        // work and remains the authoritative hierarchy source for Python.
+        // Keep the accessibility callback lightweight. AccessibilitySnapshotPublisher
+        // owns hierarchy capture so BroadcastReceiver actions are not starved by a
+        // synchronous recursive tree walk on the service main thread.
         AccessibilitySnapshotPublisher.publish(this, "event:" + event.getEventType());
     }
 
@@ -169,13 +166,13 @@ public class NovaAccessibilityService extends AccessibilityService {
             if (windows != null) {
                 for (AccessibilityWindowInfo window : windows) {
                     if (window == null) continue;
-                    AccessibilityNodeInfo root = window.getRoot();
-                    if (root == null) continue;
+                    AccessibilityNodeInfo windowRoot = window.getRoot();
+                    if (windowRoot == null) continue;
                     try {
-                        AccessibilityNodeInfo found = findSwitchNode(root);
+                        AccessibilityNodeInfo found = findSwitchNode(windowRoot);
                         if (found != null) return found;
                     } finally {
-                        root.recycle();
+                        windowRoot.recycle();
                     }
                 }
             }
@@ -352,7 +349,7 @@ public class NovaAccessibilityService extends AccessibilityService {
         path.moveTo(x, y);
         android.accessibilityservice.GestureDescription.StrokeDescription stroke = new android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 100);
         android.accessibilityservice.GestureDescription gesture = new android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build();
-        return dispatchGesture(gesture, new android.accessibilityservice.GestureResultCallback() {
+        return dispatchGesture(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(android.accessibilityservice.GestureDescription gestureDescription) {
                 Log.i(TAG, "CLICK_NODE: gesture completed target=" + target);
