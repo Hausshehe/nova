@@ -5,7 +5,7 @@ from unittest.mock import patch
 import nova_agent
 from navigation.controller import NavigationResult, NavigationState
 from navigation.path import OpenPathNavigator
-from navigation.state import ObservationQuality, ScreenSnapshot
+from navigation.state import ObservationQuality, Resolution, ScreenSnapshot
 
 
 class OpenPathIntegrationTests(unittest.TestCase):
@@ -110,9 +110,10 @@ class OpenPathIntegrationTests(unittest.TestCase):
 
         controller = ScriptedController()
         navigator = OpenPathNavigator(controller)
+        resolved = SimpleNamespace(resolution=Resolution.FOUND, node={"text": "YouTube"})
         with patch("navigation.path.observe_screen", return_value=app_list), patch(
-            "navigation.path.find_android_app"
-        ) as find_app:
+            "navigation.path.resolve_target", return_value=resolved
+        ), patch("navigation.path.find_android_app") as find_app:
             result = navigator.navigate("Open Settings and open Apps, then open YouTube")
 
         self.assertTrue(result.success)
