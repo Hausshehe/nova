@@ -27,9 +27,6 @@ def _normalize_word(word):
     if not word:
         return ""
 
-    # Generic normalization for common UI wording variations.
-    # This is intentionally language-agnostic at the command level:
-    # it helps "apps" match "app" without knowing anything about Android.
     if len(word) > 4 and word.endswith("ies"):
         word = word[:-3] + "y"
     elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
@@ -73,8 +70,6 @@ def _semantic_word_overlap(target_words, label_words):
             if target_forms & label_forms:
                 found = True
                 break
-            # Also accept clear prefix relationships for words such as
-            # "app"/"apps"/"application", without maintaining a synonym list.
             if len(target_word) >= 3 and len(label_word) >= 3:
                 shorter, longer = sorted((target_word, label_word), key=len)
                 if longer.startswith(shorter) and len(shorter) >= 3:
@@ -182,14 +177,9 @@ def _find_app_collection_handoff(nodes):
         if not app_score or not collection_score:
             continue
 
-        # Collection intent is stronger than generic "app" overlap. Explicit
-        # update/upgrade actions are excluded because they are a sibling action,
-        # not the collection containing installed apps.
         score = (app_score * 5) + (collection_score * 12) - (action_score * 20)
         score += SequenceMatcher(None, "app list", label.lower()).ratio() * 3
 
-        # Prefer a truly actionable node, but do not reject a text node merely
-        # because an OEM hierarchy places clickability on its parent.
         if node.get("clickable"):
             score += 2
         elif node.get("focusable") or node.get("bounds"):
@@ -305,6 +295,29 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                 }
 
             last_foreground = observed.get("foreground_package", "")
+
+            # Installed-app targets must enter the generic app collection before
+            # normal semantic matching. This prevents sibling actions such as
+            # "App update" from winning the handoff.
+            if target_is_app and not handoff_used:
+                handoff = _find_app_collection_handoff(observed.get("nodes"))
+                if handoff:
+                    score, node, label = handoff
+                    activated, error = _activate(node)
+                    if not activated:
+                        return {
+                            "success": False,
+                            "verified": False,
+                            "target": target,
+                            "matched_label": label,
+                            "scrolls": scrolls,
+                            "message": error,
+                        }
+                    handoff_used = True
+                    previous_signature = None
+                    unchanged_count = 0
+                    continue
+
             match = _find_match(observed.get("nodes"), target)
             if match:
                 score, node, label = match
@@ -331,25 +344,6 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                     "message": "Target found and activated using the current UI hierarchy.",
                 }
 
-            if target_is_app and not handoff_used:
-                handoff = _find_app_collection_handoff(observed.get("nodes"))
-                if handoff:
-                    score, node, label = handoff
-                    activated, error = _activate(node)
-                    if not activated:
-                        return {
-                            "success": False,
-                            "verified": False,
-                            "target": target,
-                            "matched_label": label,
-                            "scrolls": scrolls,
-                            "message": error,
-                        }
-                    handoff_used = True
-                    previous_signature = None
-                    unchanged_count = 0
-                    continue
-
             state = observed.get("state") or {}
             if not state.get("scrollable") or phase_scrolls >= budget:
                 break
@@ -361,7 +355,7 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                 unchanged_count = 0
             previous_signature = signature
 
-            if unchanged_count >= 1:
+            if unchanged_count >= 2:
                 break
 
             if not _scroll(current_direction):
