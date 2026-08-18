@@ -260,6 +260,7 @@ class NavigationController:
             current_direction = "down"
         no_progress = 0
         transient_observations = 0
+        scroll_action_failures = 0
         last_progress: Optional[Progress] = None
 
         while total_scrolls <= self.max_scrolls:
@@ -336,6 +337,7 @@ class NavigationController:
             history.append(NavigationState.SCROLL)
             action = scroll(snapshot, current_direction)
             if not action.success:
+                scroll_action_failures += 1
                 history.append(NavigationState.REOBSERVE)
                 recovery_snapshot = observe_screen(
                     previous=snapshot,
@@ -356,63 +358,78 @@ class NavigationController:
                             "Repeated transient observations prevented safe scroll recovery.",
                         )
                     continue
-                no_progress += 1
+                # A command failure is not proof of a directional boundary.
+                # Keep direction unchanged and let the next validated
+                # observation/progress result decide whether recovery is needed.
+                if scroll_action_failures >= 2:
+                    return self._result(
+                        target=target,
+                        state=NavigationState.FAILURE,
+                        history=history + [NavigationState.RECOVER],
+                        snapshot=recovery_snapshot,
+                        progress=last_progress,
+                        scroll_count=total_scrolls,
+                        direction=current_direction,
+                        message="Repeated scroll actions failed; refusing to reverse direction without evidence of UI progress or boundary state.",
+                    )
+                continue
+
+            scroll_action_failures = 0
+            total_scrolls += 1
+            history.append(NavigationState.WAIT_AFTER_SCROLL)
+            time.sleep(self.settle_seconds)
+            history.append(NavigationState.REOBSERVE)
+            after = observe_screen(
+                previous=snapshot,
+                include_nodes=True,
+                retries=self.observation_retries,
+                settle_seconds=self.settle_seconds,
+            )
+            if after.observation_quality is not ObservationQuality.VALID:
+                transient_observations += 1
+                if transient_observations >= self.max_transient_observations:
+                    return self._bounded_observation_failure(
+                        target,
+                        history,
+                        after,
+                        last_progress,
+                        total_scrolls,
+                        current_direction,
+                        "Repeated transient observations prevented safe post-scroll verification.",
+                    )
+                continue
+            transient_observations = 0
+            last_progress = compare_snapshots(snapshot, after)
+            snapshot = after
+            if last_progress.meaningful:
+                no_progress = 0
             else:
-                total_scrolls += 1
-                history.append(NavigationState.WAIT_AFTER_SCROLL)
-                time.sleep(self.settle_seconds)
-                history.append(NavigationState.REOBSERVE)
-                after = observe_screen(
+                confirm = observe_screen(
                     previous=snapshot,
                     include_nodes=True,
                     retries=self.observation_retries,
                     settle_seconds=self.settle_seconds,
                 )
-                if after.observation_quality is not ObservationQuality.VALID:
+                if confirm.observation_quality is not ObservationQuality.VALID:
                     transient_observations += 1
                     if transient_observations >= self.max_transient_observations:
                         return self._bounded_observation_failure(
                             target,
                             history,
-                            after,
+                            confirm,
                             last_progress,
                             total_scrolls,
                             current_direction,
-                            "Repeated transient observations prevented safe post-scroll verification.",
+                            "Repeated transient observations prevented safe progress assessment.",
                         )
                     continue
-                transient_observations = 0
-                last_progress = compare_snapshots(snapshot, after)
-                snapshot = after
-                if last_progress.meaningful:
+                confirmation = compare_snapshots(snapshot, confirm)
+                snapshot = confirm
+                if confirmation.meaningful:
+                    last_progress = confirmation
                     no_progress = 0
                 else:
-                    confirm = observe_screen(
-                        previous=snapshot,
-                        include_nodes=True,
-                        retries=self.observation_retries,
-                        settle_seconds=self.settle_seconds,
-                    )
-                    if confirm.observation_quality is not ObservationQuality.VALID:
-                        transient_observations += 1
-                        if transient_observations >= self.max_transient_observations:
-                            return self._bounded_observation_failure(
-                                target,
-                                history,
-                                confirm,
-                                last_progress,
-                                total_scrolls,
-                                current_direction,
-                                "Repeated transient observations prevented safe progress assessment.",
-                            )
-                        continue
-                    confirmation = compare_snapshots(snapshot, confirm)
-                    snapshot = confirm
-                    if confirmation.meaningful:
-                        last_progress = confirmation
-                        no_progress = 0
-                    else:
-                        no_progress += 1
+                    no_progress += 1
 
             if no_progress >= self.no_progress_before_reversal:
                 if current_direction == "down":
