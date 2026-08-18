@@ -8,9 +8,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 public class NovaAccessibilityService extends AccessibilityService {
 
@@ -31,13 +29,14 @@ public class NovaAccessibilityService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return;
         String packageName = event.getPackageName() != null ? event.getPackageName().toString() : "unknown";
         Log.i(TAG, "SCREEN: " + packageName);
-        Set<String> seen = new HashSet<>();
-        scanNode(root, seen);
-        root.recycle();
+        // Do not synchronously traverse the entire accessibility hierarchy here.
+        // This callback and BroadcastReceiver callbacks share the service's main
+        // thread; a full recursive scan can therefore starve CLICK_ELEMENT and
+        // SCROLL_WINDOW broadcasts and make the shell transport appear hung.
+        // AccessibilitySnapshotPublisher owns the bounded/coalesced snapshot
+        // work and remains the authoritative hierarchy source for Python.
         AccessibilitySnapshotPublisher.publish(this, "event:" + event.getEventType());
     }
 
@@ -45,23 +44,6 @@ public class NovaAccessibilityService extends AccessibilityService {
     public void onInterrupt() {
         Log.w(TAG, "Accessibility service interrupted.");
         AccessibilitySnapshotPublisher.publish(this, "service_interrupted");
-    }
-
-    private void scanNode(AccessibilityNodeInfo node, Set<String> seen) {
-        if (node == null) return;
-        CharSequence text = node.getText();
-        CharSequence description = node.getContentDescription();
-        String value = null;
-        if (text != null && text.length() > 0) value = text.toString();
-        else if (description != null && description.length() > 0) value = description.toString();
-        if (value != null) {
-            String key = value + "|" + node.isClickable();
-            if (!seen.contains(key)) {
-                seen.add(key);
-                Log.i(TAG, (node.isClickable() ? "CLICKABLE: " : "TEXT: ") + value);
-            }
-        }
-        for (int i = 0; i < node.getChildCount(); i++) scanNode(node.getChild(i), seen);
     }
 
     public static boolean handleClickText(String text) {
