@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .contracts import Hypothesis
+from .memory import ExperienceStore
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,31 @@ def hypothesis_fingerprint(hypothesis: Hypothesis) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def fingerprints_from_memory(store: ExperienceStore) -> set[str]:
+    """Build novelty fingerprints from hypotheses already recorded in memory.
+
+    Malformed historical records are ignored here; they must not prevent the
+    researcher from starting. New proposals still undergo strict validation.
+    """
+    fingerprints: set[str] = set()
+    for payload in store.list_experiment_hypotheses():
+        try:
+            hypothesis = Hypothesis(
+                name=str(payload["name"]),
+                thesis=str(payload["thesis"]),
+                symbol=str(payload["symbol"]),
+                timeframe=str(payload["timeframe"]),
+                rules=dict(payload["rules"]),
+                expected_edge=str(payload["expected_edge"]),
+                falsifier=str(payload["falsifier"]),
+                rationale=str(payload.get("rationale", "")),
+            )
+            fingerprints.add(hypothesis_fingerprint(hypothesis))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return fingerprints
+
+
 class Researcher:
     """Bounded proposal manager backed by previously seen fingerprints."""
 
@@ -80,6 +106,11 @@ class Researcher:
         self._seen = set(prior_fingerprints)
         self._accepted = 0
         self._revisions = 0
+
+    @classmethod
+    def from_memory(cls, store: ExperienceStore, budget: ResearchBudget | None = None) -> "Researcher":
+        """Create a bounded researcher whose novelty history comes from SQLite."""
+        return cls(budget=budget, prior_fingerprints=fingerprints_from_memory(store))
 
     @property
     def accepted_count(self) -> int:
