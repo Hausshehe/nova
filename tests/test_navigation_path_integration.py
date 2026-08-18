@@ -42,6 +42,29 @@ class OpenPathIntegrationTests(unittest.TestCase):
         call_ai.assert_called_once()
         self.assertTrue(result["success"])
 
+    def test_simple_open_does_not_use_loose_foreground_substring(self):
+        current = {
+            "success": True,
+            "foreground_package": "com.google.android.apps.youtube.music",
+            "state": {},
+        }
+        discovery = {
+            "success": True,
+            "verified": True,
+            "packages": ["com.google.android.youtube"],
+        }
+        launch = {"success": True}
+        with patch.object(nova_agent, "_observe_directly", return_value=current), patch.object(
+            nova_agent,
+            "execute_tool",
+            side_effect=[discovery, launch],
+        ) as execute:
+            result = nova_agent._run_simple_open_goal("YouTube")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(execute.called)
+        self.assertEqual(execute.call_args_list[0].args[:2], ("find_android_app", "find_android_app"))
+
     def test_late_path_failure_retries_only_the_failed_target_from_checkpoint(self):
         settings = ScreenSnapshot(
             foreground_package="com.android.settings",
