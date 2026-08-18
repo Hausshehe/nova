@@ -105,22 +105,23 @@ class NavigationController:
             if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
                 return self._bounded_observation_failure(target, history, recovery_snapshot, progress, total_scrolls, direction, "Activation verification failed and the recovery observation was unreliable.")
 
-            # A destination screen does not necessarily preserve the source
-            # target label. If the fresh recovery snapshot itself proves a
-            # meaningful transition from the pre-action screen, accept that
-            # evidence instead of requiring the old target to remain resolvable.
+            # A destination does not need to preserve the source target label.
+            # However, a meaningful observation change is not enough by itself:
+            # the source target must also stop resolving. This prevents a scroll,
+            # animation, or other same-screen change from being mistaken for a
+            # successful activation when the target is still present.
             recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
-            if recovery_progress.meaningful:
+            recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
+            if recovery_progress.meaningful and recovery_match.resolution is not Resolution.FOUND:
                 recovered_verification = VerificationResult(
                     True,
                     recovery_snapshot,
-                    "A meaningful live UI transition was verified during bounded activation recovery.",
+                    "A meaningful live UI transition was verified during bounded activation recovery after the source target disappeared.",
                 )
                 history.append(NavigationState.VERIFY)
                 history.append(NavigationState.SUCCESS)
                 return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
 
-            recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
             if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, match=recovery_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message="Activation verification failed and the target was not safely re-resolved for a bounded retry.")
 
@@ -178,11 +179,6 @@ class NavigationController:
                     if transient_observations >= self.max_transient_observations:
                         return self._bounded_observation_failure(target, history, recovery_snapshot, last_progress, total_scrolls, current_direction, "Repeated transient observations prevented safe scroll recovery.")
                     continue
-
-                # A failed gesture is a recoverable action failure, not evidence
-                # that the target is behind us. Re-observe the live scroll region
-                # and retry once with a smaller gesture. Direction is unchanged
-                # until the UI itself provides evidence for reversal.
                 scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.70)
                 if scroll_action_failures >= 2:
                     return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=recovery_snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Repeated scroll actions failed after bounded recovery attempts; refusing to reverse direction without evidence of UI progress or boundary state.")
@@ -205,9 +201,6 @@ class NavigationController:
             snapshot = after
             if last_progress.meaningful:
                 no_progress = 0
-                # Real movement is evidence that the current direction is useful.
-                # Keep it, but use a moderate gesture size so a fast scroll is
-                # less likely to jump over a nearby semantic destination.
                 scroll_distance_ratio = 0.35
             else:
                 confirm = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
@@ -224,9 +217,6 @@ class NavigationController:
                     scroll_distance_ratio = 0.30
                 else:
                     no_progress += 1
-                    # Two observations with no meaningful movement are evidence
-                    # of a possible boundary/stall. Before reversal, make the next
-                    # gesture smaller so recovery gathers finer-grained evidence.
                     scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.75)
 
             if no_progress >= self.no_progress_before_reversal:
