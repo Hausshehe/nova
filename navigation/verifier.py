@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .observer import observe_screen
-from .state import ObservationQuality, ScreenSnapshot
+from .state import ObservationQuality, Resolution, ScreenSnapshot
+from .resolver import resolve_target
 
 
 MIN_TEXT_CHANGE_RATIO = 0.20
@@ -18,6 +19,7 @@ class VerificationResult:
     success: bool
     snapshot: ScreenSnapshot
     reason: str
+    target_resolved: bool = False
 
 
 def _text_change_ratio(before: ScreenSnapshot, after: ScreenSnapshot) -> float:
@@ -33,7 +35,7 @@ def _text_change_ratio(before: ScreenSnapshot, after: ScreenSnapshot) -> float:
 
 def _meaningful_transition(before: Optional[ScreenSnapshot], after: ScreenSnapshot) -> bool:
     if before is None:
-        return bool(after.visible_nodes or after.visible_text or after.foreground_package)
+        return bool(after.visible_nodes or after.visible_text)
     if before.foreground_package != after.foreground_package:
         return True
     return _text_change_ratio(before, after) >= MIN_TEXT_CHANGE_RATIO
@@ -43,10 +45,16 @@ def verify_transition(
     before: Optional[ScreenSnapshot],
     *,
     expected_foreground_package: Optional[str] = None,
+    expected_target: Optional[str] = None,
     timeout_seconds: float = 3.0,
     poll_seconds: float = 0.25,
 ) -> VerificationResult:
-    """Wait for and verify a meaningful post-action UI transition."""
+    """Wait for and verify a meaningful post-action UI transition.
+
+    A successful verification must come from a VALID observation. When the
+    caller supplies an expected target, the target must also resolve on the
+    resulting live hierarchy; a generic UI change is not enough.
+    """
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     last = before
 
@@ -58,11 +66,26 @@ def verify_transition(
             time.sleep(max(0.0, float(poll_seconds)))
             continue
 
-        if expected_foreground_package:
-            if current.foreground_package == expected_foreground_package:
-                return VerificationResult(True, current, "Expected foreground package is active.")
-        elif _meaningful_transition(before, current):
-            return VerificationResult(True, current, "A meaningful live UI transition was verified.")
+        package_ok = (
+            not expected_foreground_package
+            or current.foreground_package == expected_foreground_package
+        )
+        target_ok = True
+        if expected_target:
+            target_match = resolve_target(current, expected_target)
+            target_ok = target_match.resolution is Resolution.FOUND and target_match.node is not None
+
+        if package_ok and (target_ok if expected_target else _meaningful_transition(before, current)):
+            reason = (
+                "Expected foreground package is active and the target is visible."
+                if expected_foreground_package and expected_target
+                else "Expected foreground package is active."
+                if expected_foreground_package
+                else "Target is visible on the resulting live hierarchy."
+                if expected_target
+                else "A meaningful live UI transition was verified."
+            )
+            return VerificationResult(True, current, reason, target_resolved=bool(expected_target))
 
         time.sleep(max(0.0, float(poll_seconds)))
 
@@ -72,5 +95,6 @@ def verify_transition(
     return VerificationResult(
         False,
         last,
-        "No verified foreground/package change or meaningful semantic UI transition was observed within the bounded verification window.",
+        "No verified foreground/package change or target-consistent semantic transition was observed within the bounded verification window.",
+        target_resolved=False,
     )
