@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from navigation.controller import NavigationController
 from navigation.goal_parser import parse_open_path
+from navigation.path import OpenPathNavigator
 
 
 def navigate_android_to(target, max_scrolls=8, direction="down"):
-    """Navigate through the live Android UI using the rebuilt controller.
+    """Navigate through the live Android UI using checkpoint-aware navigation.
 
     No package lookup, fixed coordinate, app-specific handoff, or direct app
-    launch is performed here. This adapter is intentionally UI-route-only:
-    callers that need to launch an installed app should use the dedicated app
-    launch primitive and verify the foreground package separately.
+    launch is performed here. Installed-app launching remains the responsibility
+    of the dedicated app-launch primitive and exact foreground verification.
     """
     targets = parse_open_path(target)
     if not targets:
@@ -40,48 +40,24 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
         max_scrolls=budget,
         settle_seconds=0.25,
     )
-    completed = []
-    total_scrolls = 0
-    last_result = None
+    navigator = OpenPathNavigator(
+        controller,
+        initial_direction=initial_direction,
+    )
+    result = navigator.navigate("open " + " and open ".join(targets))
 
-    for current_target in targets:
-        result = controller.navigate_target(
-            current_target,
-            initial_direction=initial_direction,
-        )
-        last_result = result
-        total_scrolls += result.scroll_count
+    snapshot = None
+    if navigator.checkpoints.latest is not None:
+        snapshot = navigator.checkpoints.latest.snapshot
 
-        if not result.success or not result.verified:
-            snapshot = result.snapshot
-            return {
-                "success": False,
-                "verified": bool(result.verified),
-                "target": target,
-                "completed_targets": completed,
-                "failed_target": current_target,
-                "scrolls": total_scrolls,
-                "foreground_package": snapshot.foreground_package if snapshot else "",
-                "message": result.message or f"Could not reach '{current_target}'.",
-                "navigation_state": result.state.value,
-                "history": [state.value for state in result.history],
-            }
-
-        completed.append({
-            "target": current_target,
-            "matched_label": result.match.label if result.match else "",
-            "match_score": round(result.match.score, 1) if result.match else 0,
-        })
-
-    snapshot = last_result.snapshot if last_result else None
     return {
-        "success": True,
-        "verified": True,
+        "success": result.success,
+        "verified": result.verified,
         "target": target,
-        "completed_targets": completed,
-        "scrolls": total_scrolls,
+        "completed_targets": result.completed_targets,
+        "failed_target": result.failed_target,
+        "checkpoints": result.checkpoints,
+        "resumed_from_checkpoint": result.resumed_from_checkpoint,
         "foreground_package": snapshot.foreground_package if snapshot else "",
-        "message": "All navigation targets were found and activated with the rebuilt adaptive navigation engine.",
-        "navigation_state": last_result.state.value if last_result else "SUCCESS",
-        "history": [state.value for state in last_result.history] if last_result else [],
+        "message": result.message,
     }
