@@ -1,6 +1,7 @@
 name: Navigation Tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - rebuild-navigation-engine
