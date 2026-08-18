@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from navigation.observer import observe_screen
 from navigation.state import ObservationQuality, ScreenSnapshot
@@ -57,6 +58,20 @@ class NavigationObserverTests(unittest.TestCase):
 
         self.assertEqual(result.observation_quality, ObservationQuality.VALID)
         self.assertEqual(result.visible_text, ("Apps",))
+
+
+class LowLevelObservationTests(unittest.TestCase):
+    def test_low_level_observation_uses_one_bounded_dump_attempt(self):
+        import tools.observe_android as observer
+
+        timed_out = SimpleNamespace(returncode=124, stdout="", stderr="Command timed out")
+        with patch.object(observer, "run_root", return_value=timed_out) as run_root:
+            result = observer.observe_android(include_nodes=True)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(run_root.call_count, 2)
+        self.assertEqual(run_root.call_args_list[0].args[0].startswith("rm -f"), True)
+        self.assertIn("dumpsys activity", run_root.call_args_list[1].args[0])
 
 
 if __name__ == "__main__":
