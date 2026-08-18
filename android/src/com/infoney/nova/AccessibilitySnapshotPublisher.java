@@ -41,16 +41,25 @@ public final class AccessibilitySnapshotPublisher {
                 // accessibility snapshot cannot be published.
             } finally {
                 RUNNING.set(false);
-                if (GENERATION.get() > 0 && RUNNING.compareAndSet(false, true)) {
-                    EXECUTOR.execute(() -> {
-                        try {
-                            write(service, "coalesced_event");
-                        } catch (Exception ignored) {
-                            // Fallback observer remains authoritative.
-                        } finally {
-                            RUNNING.set(false);
-                        }
-                    });
+                // Only schedule another write if a new event arrived after the
+                // worker's last snapshot. Do not use GENERATION > 0 here:
+                // generation is intentionally monotonic and therefore remains
+                // positive for the lifetime of the service.
+                if (GENERATION.get() != 0 && RUNNING.compareAndSet(false, true)) {
+                    long latest = GENERATION.get();
+                    if (latest != 0) {
+                        EXECUTOR.execute(() -> {
+                            try {
+                                write(service, "coalesced_event");
+                            } catch (Exception ignored) {
+                                // Fallback observer remains authoritative.
+                            } finally {
+                                RUNNING.set(false);
+                            }
+                        });
+                    } else {
+                        RUNNING.set(false);
+                    }
                 }
             }
         });
