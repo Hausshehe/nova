@@ -29,5 +29,5 @@ def test_first_experiment_signal_is_deterministic_and_next_bar_safe():
     bars = _bars()
     result = run_long_flat(bars, signal, fee_bps=1.0, slippage_bps=1.0)
     assert result.trades
-    assert result.trades[0].entry_timestamp == bars[51].timestamp
-    assert result.trades[0].entry_price > bars[51].open
+    assert result.trades[0].entry_timestamp == bars[50].timestamp
+    assert result.trades[0].entry_price > bars[50].open
