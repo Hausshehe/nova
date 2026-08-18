@@ -30,25 +30,47 @@ public final class AccessibilitySnapshotPublisher {
         if (!RUNNING.compareAndSet(false, true)) return;
 
         EXECUTOR.execute(() -> {
+            long lastWrittenGeneration = 0;
             try {
                 long seen;
                 do {
                     seen = GENERATION.get();
                     write(service, reason);
+                    lastWrittenGeneration = seen;
                 } while (seen != GENERATION.get());
             } catch (Exception ignored) {
                 // The Python observer can fall back to UIAutomator when the
                 // accessibility snapshot cannot be published.
             } finally {
                 RUNNING.set(false);
-                if (GENERATION.get() > 0 && RUNNING.compareAndSet(false, true)) {
+                // Generation is monotonic. Only queue a coalesced write when
+                // an event actually arrived after the worker's last write.
+                if (GENERATION.get() != lastWrittenGeneration
+                        && RUNNING.compareAndSet(false, true)) {
                     EXECUTOR.execute(() -> {
+                        long coalescedGeneration = GENERATION.get();
                         try {
                             write(service, "coalesced_event");
                         } catch (Exception ignored) {
                             // Fallback observer remains authoritative.
                         } finally {
                             RUNNING.set(false);
+                            // If another event arrived while the coalesced
+                            // write was running, publish() will normally have
+                            // observed RUNNING=true and cannot enqueue another
+                            // worker. Schedule one final write here.
+                            if (GENERATION.get() != coalescedGeneration
+                                    && RUNNING.compareAndSet(false, true)) {
+                                EXECUTOR.execute(() -> {
+                                    try {
+                                        write(service, "coalesced_event");
+                                    } catch (Exception ignoredAgain) {
+                                        // Fallback observer remains authoritative.
+                                    } finally {
+                                        RUNNING.set(false);
+                                    }
+                                });
+                            }
                         }
                     });
                 }

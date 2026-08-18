@@ -8,13 +8,13 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 public class NovaAccessibilityService extends AccessibilityService {
 
     private static final String TAG = "NovaAccessibility";
+    private static final long TARGET_SEARCH_BUDGET_MS = 1200L;
+    private static final int MAX_TARGET_SEARCH_DEPTH = 64;
 
     public static NovaAccessibilityService instance;
 
@@ -29,13 +29,11 @@ public class NovaAccessibilityService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return;
         String packageName = event.getPackageName() != null ? event.getPackageName().toString() : "unknown";
         Log.i(TAG, "SCREEN: " + packageName);
-        Set<String> seen = new HashSet<>();
-        scanNode(root, seen);
-        root.recycle();
+        // Keep the accessibility callback lightweight. AccessibilitySnapshotPublisher
+        // owns hierarchy capture so BroadcastReceiver actions are not starved by a
+        // synchronous recursive tree walk on the service main thread.
         AccessibilitySnapshotPublisher.publish(this, "event:" + event.getEventType());
     }
 
@@ -43,23 +41,6 @@ public class NovaAccessibilityService extends AccessibilityService {
     public void onInterrupt() {
         Log.w(TAG, "Accessibility service interrupted.");
         AccessibilitySnapshotPublisher.publish(this, "service_interrupted");
-    }
-
-    private void scanNode(AccessibilityNodeInfo node, Set<String> seen) {
-        if (node == null) return;
-        CharSequence text = node.getText();
-        CharSequence description = node.getContentDescription();
-        String value = null;
-        if (text != null && text.length() > 0) value = text.toString();
-        else if (description != null && description.length() > 0) value = description.toString();
-        if (value != null) {
-            String key = value + "|" + node.isClickable();
-            if (!seen.contains(key)) {
-                seen.add(key);
-                Log.i(TAG, (node.isClickable() ? "CLICKABLE: " : "TEXT: ") + value);
-            }
-        }
-        for (int i = 0; i < node.getChildCount(); i++) scanNode(node.getChild(i), seen);
     }
 
     public static boolean handleClickText(String text) {
@@ -168,24 +149,31 @@ public class NovaAccessibilityService extends AccessibilityService {
     }
 
     private AccessibilityNodeInfo findSwitchNodeInAllWindows() {
+        AccessibilityNodeInfo root = null;
         try {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            root = getRootInActiveWindow();
             if (root != null) {
                 AccessibilityNodeInfo found = findSwitchNode(root);
                 if (found != null) return found;
             }
         } catch (Exception e) {
             Log.e(TAG, "SWITCH_SEARCH: active root failed", e);
+        } finally {
+            if (root != null) root.recycle();
         }
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
                 for (AccessibilityWindowInfo window : windows) {
                     if (window == null) continue;
-                    AccessibilityNodeInfo root = window.getRoot();
-                    if (root == null) continue;
-                    AccessibilityNodeInfo found = findSwitchNode(root);
-                    if (found != null) return found;
+                    AccessibilityNodeInfo windowRoot = window.getRoot();
+                    if (windowRoot == null) continue;
+                    try {
+                        AccessibilityNodeInfo found = findSwitchNode(windowRoot);
+                        if (found != null) return found;
+                    } finally {
+                        windowRoot.recycle();
+                    }
                 }
             }
         } catch (Exception e) {
@@ -214,32 +202,54 @@ public class NovaAccessibilityService extends AccessibilityService {
     public boolean clickElement(String target) {
         if (target == null || target.trim().isEmpty()) return false;
         target = target.trim();
+        long started = System.currentTimeMillis();
+        Log.i(TAG, "CLICK_ELEMENT: search start target=" + target);
         AccessibilityNodeInfo node = findTargetNodeInAllWindows(target);
+        long searchMs = System.currentTimeMillis() - started;
+        Log.i(TAG, "CLICK_ELEMENT: search finished target=" + target + " found=" + (node != null) + " elapsed_ms=" + searchMs);
         if (node == null) return false;
-        boolean result = clickNode(node, target);
-        node.recycle();
-        return result;
+        try {
+            long clickStarted = System.currentTimeMillis();
+            boolean result = clickNode(node, target);
+            Log.i(TAG, "CLICK_ELEMENT: click finished target=" + target + " result=" + result + " elapsed_ms=" + (System.currentTimeMillis() - clickStarted));
+            return result;
+        } finally {
+            node.recycle();
+        }
     }
 
     private AccessibilityNodeInfo findTargetNodeInAllWindows(String target) {
+        final long deadline = System.nanoTime() + TARGET_SEARCH_BUDGET_MS * 1_000_000L;
+        AccessibilityNodeInfo activeRoot = null;
         try {
-            AccessibilityNodeInfo activeRoot = getRootInActiveWindow();
+            activeRoot = getRootInActiveWindow();
             if (activeRoot != null) {
-                AccessibilityNodeInfo found = findMatchingNode(activeRoot, target);
+                AccessibilityNodeInfo found = findMatchingNode(activeRoot, target, deadline, 0);
                 if (found != null) return found;
             }
         } catch (Exception e) {
             Log.e(TAG, "WINDOW_SEARCH: active root failed", e);
+        } finally {
+            if (activeRoot != null) activeRoot.recycle();
+        }
+        if (System.nanoTime() >= deadline) {
+            Log.w(TAG, "WINDOW_SEARCH: target search budget exhausted before window fallback target=" + target);
+            return null;
         }
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
                 for (AccessibilityWindowInfo window : windows) {
+                    if (System.nanoTime() >= deadline) break;
                     if (window == null) continue;
                     AccessibilityNodeInfo root = window.getRoot();
                     if (root == null) continue;
-                    AccessibilityNodeInfo found = findMatchingNode(root, target);
-                    if (found != null) return found;
+                    try {
+                        AccessibilityNodeInfo found = findMatchingNode(root, target, deadline, 0);
+                        if (found != null) return found;
+                    } finally {
+                        root.recycle();
+                    }
                 }
             }
         } catch (Exception e) {
@@ -248,8 +258,8 @@ public class NovaAccessibilityService extends AccessibilityService {
         return null;
     }
 
-    private AccessibilityNodeInfo findMatchingNode(AccessibilityNodeInfo node, String target) {
-        if (node == null) return null;
+    private AccessibilityNodeInfo findMatchingNode(AccessibilityNodeInfo node, String target, long deadline, int depth) {
+        if (node == null || System.nanoTime() >= deadline || depth > MAX_TARGET_SEARCH_DEPTH) return null;
         String wanted = target.trim().toLowerCase();
         CharSequence text = node.getText();
         CharSequence description = node.getContentDescription();
@@ -266,7 +276,8 @@ public class NovaAccessibilityService extends AccessibilityService {
         }
 
         for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo found = findMatchingNode(node.getChild(i), target);
+            if (System.nanoTime() >= deadline) return null;
+            AccessibilityNodeInfo found = findMatchingNode(node.getChild(i), target, deadline, depth + 1);
             if (found != null) return found;
         }
         return null;
@@ -338,7 +349,7 @@ public class NovaAccessibilityService extends AccessibilityService {
         path.moveTo(x, y);
         android.accessibilityservice.GestureDescription.StrokeDescription stroke = new android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 100);
         android.accessibilityservice.GestureDescription gesture = new android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build();
-        return dispatchGesture(gesture, new android.accessibilityservice.GestureResultCallback() {
+        return dispatchGesture(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(android.accessibilityservice.GestureDescription gestureDescription) {
                 Log.i(TAG, "CLICK_NODE: gesture completed target=" + target);

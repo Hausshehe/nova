@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -20,9 +21,13 @@ class ActionResult:
     action: str
     message: str = ""
     bounds: str = ""
+    duration_ms: Optional[float] = None
+    executor_returncode: Optional[int] = None
+    transport_output: str = ""
 
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+_RECEIVER_RESULT_RE = re.compile(r"(?:Broadcast completed:\s*)?result=(-?\d+)\b")
 
 
 def _parse_bounds(bounds: str) -> Optional[Tuple[int, int, int, int]]:
@@ -60,8 +65,14 @@ def _semantic_label(node: Dict[str, Any]) -> str:
     )
 
 
-def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str]:
-    """Send one bounded semantic command to Nova's Accessibility Service."""
+def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
+    """Send one bounded semantic command and expose its transport metadata.
+
+    Android's ``am broadcast`` shell exit code is not the Accessibility receiver's
+    result code. In particular, a receiver returning result=1 can make ``am`` exit
+    with code 1. The receiver result is therefore the authoritative action result;
+    the shell return code remains diagnostic metadata.
+    """
     command = [
         "am",
         "broadcast",
@@ -75,6 +86,7 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
     if direction:
         command.extend(["--es", "direction", direction])
 
+    started = time.monotonic()
     try:
         result = subprocess.run(
             command,
@@ -88,23 +100,28 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return False, f"Accessibility Service command transport unavailable: {exc}"
+        return False, f"Accessibility Service command transport unavailable: {exc}", -1, round((time.monotonic() - started) * 1000, 1)
 
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
-    if result.returncode == 0 and re.search(r"result=1\b", output):
-        return True, output or "Accessibility Service command completed successfully."
+    match = _RECEIVER_RESULT_RE.search(output)
 
-    if result.returncode == 0 and re.search(r"result=0\b", output):
-        return False, "Accessibility Service rejected the requested action (result=0); no root fallback was attempted."
+    if match:
+        receiver_result = int(match.group(1))
+        if receiver_result == 1:
+            return True, output or "Accessibility Service receiver accepted the action.", result.returncode, elapsed_ms
+        if receiver_result == 0:
+            return False, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.", result.returncode, elapsed_ms
+        return False, f"Accessibility Service receiver returned unexpected result={receiver_result}.", result.returncode, elapsed_ms
 
-    return False, output or "Accessibility Service did not report success."
+    return False, output or "Accessibility Service did not report a receiver result.", result.returncode, elapsed_ms
 
 
-def _accessibility_click(label: str) -> Tuple[bool, str]:
+def _accessibility_click(label: str) -> Tuple[bool, str, int, float]:
     """Ask Nova's Accessibility Service to click a semantic live target."""
     label = " ".join(str(label or "").split())
     if not label:
-        return False, "The target has no semantic label for accessibility activation."
+        return False, "The target has no semantic label for accessibility activation.", -1, 0.0
     return _accessibility_broadcast("com.infoney.nova.CLICK_ELEMENT", target=label)
 
 
@@ -135,16 +152,16 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
     if not label:
         return ActionResult(False, "TAP", "The target has no semantic label for accessibility activation.", bounds)
 
-    success, message = _accessibility_click(label)
+    success, message, returncode, duration_ms = _accessibility_click(label)
     if success:
-        return ActionResult(True, "TAP", "Semantic target activated through the Accessibility Service.", bounds)
-    return ActionResult(False, "TAP", message, bounds)
+        return ActionResult(True, "TAP", "Semantic target activated through the Accessibility Service.", bounds, duration_ms, returncode, message)
+    return ActionResult(False, "TAP", message, bounds, duration_ms, returncode, message)
 
 
-def _accessibility_scroll(direction: str) -> Tuple[bool, str]:
+def _accessibility_scroll(direction: str) -> Tuple[bool, str, int, float]:
     direction = str(direction or "down").strip().lower()
     if direction not in {"down", "up"}:
-        return False, f"Unsupported scroll direction: {direction}."
+        return False, f"Unsupported scroll direction: {direction}.", -1, 0.0
     return _accessibility_broadcast(
         "com.infoney.nova.SCROLL_WINDOW",
         direction=direction,
@@ -175,7 +192,7 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
     if width < 80 or height < 160:
         return ActionResult(False, "SCROLL", "Scrollable region is too small for a safe gesture.", region.get("bounds", ""))
 
-    success, message = _accessibility_scroll(direction)
+    success, message, returncode, duration_ms = _accessibility_scroll(direction)
     if success:
-        return ActionResult(True, "SCROLL", "Live scrollable region advanced through the Accessibility Service.", region.get("bounds", ""))
-    return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
+        return ActionResult(True, "SCROLL", "Live scrollable region advanced through the Accessibility Service.", region.get("bounds", ""), duration_ms, returncode, message)
+    return ActionResult(False, "SCROLL", message, region.get("bounds", ""), duration_ms, returncode, message)

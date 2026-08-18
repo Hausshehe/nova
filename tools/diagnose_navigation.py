@@ -1,222 +1,391 @@
-"""Trace Nova Android navigation without changing navigator behavior.
+"""Run one evidence-driven accessibility navigation hop.
 
-This diagnostic wraps the existing navigation primitives at runtime and prints
-step boundaries, durations, and key decisions. It is intentionally separate
-from production navigation logic so the normal agent remains unchanged.
+This probe intentionally does not call the full NavigationController. It captures
+one setup -> observation -> target resolution -> semantic scroll -> fresh
+observation -> target resolution cycle so a real-device failure can be localized
+without changing production navigation behavior.
 """
 
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
 import sys
 import time
+from pathlib import Path
 
-import nova_agent
-import tools.navigate_android_to as navigator
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from navigation.actions import scroll
+from navigation.diagnostics import DiagnosticTrace
+from navigation.observer import observe_screen
+from navigation.resolver import resolve_target
+from navigation.state import Resolution, ScreenSnapshot
+from tools.accessibility_snapshot import read_accessibility_snapshot
 
-def _stamp():
-    return time.monotonic()
-
-
-def _log(message):
-    print(f"[NOVA-NAV-DIAG] {message}", flush=True)
-
-
-def _compact(value):
-    if isinstance(value, dict):
-        keys = (
-            "success",
-            "verified",
-            "target",
-            "matched_label",
-            "match_score",
-            "scrolls",
-            "foreground_package",
-            "message",
-        )
-        return {key: value.get(key) for key in keys if key in value}
-    if isinstance(value, tuple) and len(value) >= 3:
-        return {"score": round(float(value[0]), 1), "label": value[2]}
-    if isinstance(value, bool):
-        return value
-    return type(value).__name__
+DEFAULT_SETTINGS_PACKAGE = "com.android.settings"
+DEFAULT_SETUP_TIMEOUT_SECONDS = 5.0
+DEFAULT_SETUP_POLL_SECONDS = 0.20
+DEFAULT_POST_SCROLL_TIMEOUT_SECONDS = 3.0
+DEFAULT_POST_SCROLL_POLL_SECONDS = 0.10
 
 
-def _wrap_observe(function):
-    def wrapped(*args, **kwargs):
-        started = _stamp()
-        try:
-            result = function(*args, **kwargs)
-        except BaseException as exc:
-            _log(f"OBSERVE FAIL ({_stamp() - started:.2f}s) {type(exc).__name__}: {exc}")
-            raise
-
-        elapsed = _stamp() - started
-        state = result.get("state") or {}
-        scrollable = state.get("scrollable") or []
-        visible = state.get("visible_text") or []
-        regions = [
-            item.get("bounds", "")
-            for item in scrollable
-            if isinstance(item, dict) and item.get("bounds")
-        ]
-        _log(
-            "OBSERVE "
-            f"{elapsed:.2f}s success={result.get('success')} "
-            f"verified={result.get('verified')} "
-            f"pkg={result.get('foreground_package', '')} "
-            f"nodes={result.get('node_count', 0)} "
-            f"scrollable_count={len(scrollable)} "
-            f"scrollable_bounds={regions[:4]} "
-            f"visible={list(visible)[:8]}"
-        )
-        return result
-
-    return wrapped
+def _node_summary(node):
+    if not isinstance(node, dict):
+        return {}
+    ancestor = node.get("actionable_ancestor")
+    return {
+        "text": str(node.get("text") or "").strip(),
+        "content_description": str(node.get("content_description") or "").strip(),
+        "resource_id": str(node.get("resource_id") or "").strip(),
+        "class": str(node.get("class") or ""),
+        "package": str(node.get("package") or ""),
+        "bounds": str(node.get("bounds") or ""),
+        "clickable": bool(node.get("clickable")),
+        "enabled": bool(node.get("enabled", True)),
+        "actionable_ancestor": (
+            {
+                "bounds": str(ancestor.get("bounds") or ""),
+                "clickable": bool(ancestor.get("clickable")),
+                "enabled": bool(ancestor.get("enabled", True)),
+            }
+            if isinstance(ancestor, dict)
+            else None
+        ),
+    }
 
 
-def _wrap_find_match(function):
-    def wrapped(nodes, target):
-        started = _stamp()
-        result = function(nodes, target)
-        _log(f"MATCH target={target!r} ({_stamp() - started:.3f}s) -> {_compact(result)}")
-        return result
-
-    return wrapped
-
-
-def _wrap_handoff(function):
-    def wrapped(nodes):
-        started = _stamp()
-        result = function(nodes)
-        _log(f"HANDOFF ({_stamp() - started:.3f}s) -> {_compact(result)}")
-        if result:
-            _score, node, label = result
-            ancestor = node.get("actionable_ancestor") if isinstance(node, dict) else None
-            _log(
-                f"HANDOFF NODE label={label!r} clickable={node.get('clickable')} "
-                f"bounds={node.get('bounds','')!r} "
-                f"ancestor_clickable={bool(isinstance(ancestor, dict) and ancestor.get('clickable'))} "
-                f"ancestor_bounds={ancestor.get('bounds','')!r}" if isinstance(ancestor, dict)
-                else f"HANDOFF NODE label={label!r} clickable={node.get('clickable')} bounds={node.get('bounds','')!r} ancestor=None"
-            )
-        return result
-
-    return wrapped
+def _snapshot_data(snapshot: ScreenSnapshot, *, compact: bool = False):
+    data = {
+        "foreground_package": snapshot.foreground_package,
+        "observation_quality": snapshot.observation_quality.value,
+        "message": snapshot.message,
+        "node_count": len(snapshot.visible_nodes),
+        "actionable_count": len(snapshot.actionable_nodes),
+        "scrollable_regions": [
+            str(region.get("bounds") or "")
+            for region in snapshot.scrollable_regions
+            if isinstance(region, dict)
+        ],
+        "visible_text": list(snapshot.visible_text[:30]),
+    }
+    if not compact:
+        data["nodes"] = [_node_summary(node) for node in snapshot.visible_nodes[:30]]
+    return data
 
 
-def _wrap_target_app(function):
-    def wrapped(target):
-        started = _stamp()
-        result = function(target)
-        _log(f"TARGET-IS-APP target={target!r} ({_stamp() - started:.2f}s) -> {result}")
-        return result
-
-    return wrapped
-
-
-def _wrap_activate(function):
-    def wrapped(node):
-        label = navigator._label(node)
-        ancestor = node.get("actionable_ancestor") if isinstance(node, dict) else None
-        started = _stamp()
-        _log(
-            f"TAP START label={label!r} node_clickable={node.get('clickable')} "
-            f"node_bounds={node.get('bounds','')!r} "
-            f"ancestor_bounds={ancestor.get('bounds','')!r}" if isinstance(ancestor, dict)
-            else f"TAP START label={label!r} node_clickable={node.get('clickable')} node_bounds={node.get('bounds','')!r} ancestor=None"
-        )
-        result = function(node)
-        _log(f"TAP END   label={label!r} ({_stamp() - started:.2f}s) -> {_compact(result)}")
-        return result
-
-    return wrapped
+def _match_data(match, *, compact: bool = False):
+    data = {
+        "resolution": match.resolution.value,
+        "target": match.target,
+        "label": match.label,
+        "score": match.score,
+        "reason": match.reason,
+    }
+    if not compact:
+        data["node"] = _node_summary(match.node) if match.node is not None else None
+    return data
 
 
-def _wrap_scroll(function):
-    def wrapped(direction, scrollable=None):
-        started = _stamp()
-        regions = scrollable or []
-        bounds = [
-            item.get("bounds", "")
-            for item in regions
-            if isinstance(item, dict) and item.get("bounds")
-        ]
-        _log(f"SCROLL START direction={direction} regions={bounds[:4]}")
-        result = function(direction, scrollable)
-        _log(f"SCROLL END   direction={direction} ({_stamp() - started:.2f}s) -> {result}")
-        return result
-
-    return wrapped
+def _record(trace, stage, event, **data):
+    """Record events with the real trace or a lightweight test double."""
+    recorder = getattr(trace, "record", None)
+    if callable(recorder):
+        recorder(stage, event, **data)
+        return
+    events = getattr(trace, "events", None)
+    if isinstance(events, list):
+        events.append({"stage": stage, "event": event, **data})
 
 
-def _wrap_run_root(function):
-    def wrapped(command, timeout=None):
-        text = str(command or "").strip().replace("\n", " ")
-        interesting = (
-            "uiautomator" in text
-            or "input tap" in text
-            or "input swipe" in text
-            or "dumpsys activity" in text
-        )
-        if not interesting:
-            return function(command, timeout=timeout) if timeout is not None else function(command)
-
-        started = _stamp()
-        result = function(command, timeout=timeout) if timeout is not None else function(command)
-        _log(
-            f"ROOT ({_stamp() - started:.2f}s) rc={result.returncode} "
-            f"cmd={text[:180]!r}"
-        )
-        return result
-
-    return wrapped
-
-
-def install_wrappers():
-    # run_root is imported into both navigator and observer modules, so wrap
-    # each module-local reference to capture the actual primitive used.
-    wrapped_root = _wrap_run_root(navigator.run_root)
-    navigator.run_root = wrapped_root
-    import tools.observe_android as observer
-    observer.run_root = wrapped_root
-
-    navigator.observe_android = _wrap_observe(navigator.observe_android)
-    navigator._find_match = _wrap_find_match(navigator._find_match)
-    navigator._find_app_collection_handoff = _wrap_handoff(
-        navigator._find_app_collection_handoff
-    )
-    navigator._target_is_installed_app = _wrap_target_app(
-        navigator._target_is_installed_app
-    )
-    navigator._activate = _wrap_activate(navigator._activate)
-    navigator._scroll = _wrap_scroll(navigator._scroll)
-
-    # nova_agent already imported navigate_android_to directly, so replace that
-    # reference with the navigator module's now-instrumented implementation.
-    nova_agent.navigate_android_to = navigator.navigate_android_to
-
-
-def main():
-    install_wrappers()
-    goal = "Open Settings and open Apps, then open YouTube"
-    if len(sys.argv) > 1:
-        goal = " ".join(sys.argv[1:])
-
-    _log(f"GOAL {goal!r}")
-    started = _stamp()
+def _launch_settings(trace: DiagnosticTrace, *, timeout_seconds: float = DEFAULT_SETUP_TIMEOUT_SECONDS) -> bool:
+    """Launch Settings as deterministic probe setup, then wait for its live package."""
+    started = time.monotonic()
+    command = ["am", "start", "-a", "android.settings.SETTINGS"]
     try:
-        result = nova_agent.run_agent(goal)
-        elapsed = _stamp() - started
-        _log(f"RUN COMPLETE ({elapsed:.2f}s)")
-        print(result)
-        return 0 if isinstance(result, dict) and result.get("success") else 1
-    except KeyboardInterrupt:
-        elapsed = _stamp() - started
-        _log(f"INTERRUPTED ({elapsed:.2f}s)")
-        raise
-    except BaseException as exc:
-        elapsed = _stamp() - started
-        _log(f"RUN FAILED ({elapsed:.2f}s) {type(exc).__name__}: {exc}")
-        raise
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        _record(
+            trace,
+            "setup",
+            "launch_settings_failed",
+            requested=True,
+            command=command,
+            success=False,
+            error=repr(exc),
+            elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+        )
+        return False
+
+    _record(
+        trace,
+        "setup",
+        "launch_settings",
+        requested=True,
+        command=command,
+        success=result.returncode == 0,
+        executor_returncode=result.returncode,
+        transport_output="\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        ),
+        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+    )
+    if result.returncode != 0:
+        return False
+
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        snapshot = observe_screen(previous=None, include_nodes=True, retries=1, settle_seconds=0.0)
+        if snapshot.foreground_package == DEFAULT_SETTINGS_PACKAGE:
+            _record(
+                trace,
+                "setup",
+                "settings_foreground_confirmed",
+                package=snapshot.foreground_package,
+                observation_quality=snapshot.observation_quality.value,
+                node_count=len(snapshot.visible_nodes),
+                elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
+            return True
+        time.sleep(DEFAULT_SETUP_POLL_SECONDS)
+
+    snapshot = observe_screen(previous=None, include_nodes=True, retries=1, settle_seconds=0.0)
+    _record(
+        trace,
+        "setup",
+        "settings_foreground_timeout",
+        expected_package=DEFAULT_SETTINGS_PACKAGE,
+        actual_package=snapshot.foreground_package,
+        observation_quality=snapshot.observation_quality.value,
+        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+    )
+    return False
+
+
+def _snapshot_timestamp_ms():
+    """Read the publisher timestamp without treating age alone as freshness."""
+    data = read_accessibility_snapshot(max_age_seconds=30.0)
+    if not isinstance(data, dict):
+        return 0
+    try:
+        return int(data.get("timestamp_ms") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _wait_for_new_snapshot(
+    before_timestamp_ms: int,
+    *,
+    timeout_seconds: float = DEFAULT_POST_SCROLL_TIMEOUT_SECONDS,
+) -> int:
+    """Wait for a snapshot published after the scroll request."""
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    latest = before_timestamp_ms
+    while time.monotonic() < deadline:
+        latest = _snapshot_timestamp_ms()
+        if latest > before_timestamp_ms:
+            return latest
+        time.sleep(DEFAULT_POST_SCROLL_POLL_SECONDS)
+    return latest
+
+
+def run_one_scroll(
+    target: str,
+    direction: str = "down",
+    *,
+    expected_package: str | None = None,
+    compact: bool = False,
+) -> DiagnosticTrace:
+    trace = DiagnosticTrace()
+
+    before = observe_screen(previous=None, include_nodes=True)
+    trace.record("observation", "before_scroll", snapshot=_snapshot_data(before, compact=compact))
+
+    if expected_package and before.foreground_package != expected_package:
+        trace.record(
+            "failure",
+            "unexpected_foreground_package",
+            expected_package=expected_package,
+            actual_package=before.foreground_package,
+            message="Probe refused to act because the live screen is not the expected application.",
+        )
+        return trace
+
+    before_match = resolve_target(before, target)
+    trace.record("target_resolution", "before_scroll", match=_match_data(before_match, compact=compact))
+
+    if not before.valid:
+        trace.record(
+            "failure",
+            "invalid_before_observation",
+            message="The pre-scroll hierarchy was not valid, so no action was attempted.",
+        )
+        return trace
+
+    if before_match.resolution in {Resolution.INVALID_OBSERVATION, Resolution.AMBIGUOUS}:
+        trace.record(
+            "failure",
+            "unsafe_before_resolution",
+            message="The target resolution was not safe enough to justify a scroll.",
+            resolution=before_match.resolution.value,
+        )
+        return trace
+
+    if before_match.node is not None:
+        trace.record(
+            "decision",
+            "target_already_visible",
+            action="ACTIVATE_NOT_PERFORMED_BY_PROBE",
+            reason="The target is already present; this probe intentionally stops before activation.",
+        )
+        return trace
+
+    if not before.scrollable:
+        trace.record(
+            "failure",
+            "no_scrollable_region",
+            message="The target is not visible and the pre-scroll observation exposes no scrollable region.",
+        )
+        return trace
+
+    trace.record(
+        "decision",
+        "scroll",
+        direction=direction,
+        scrollable_regions=[
+            str(region.get("bounds") or "")
+            for region in before.scrollable_regions
+            if isinstance(region, dict)
+        ],
+    )
+
+    before_timestamp_ms = _snapshot_timestamp_ms()
+    action = scroll(before, direction)
+    trace.record(
+        "scroll_request",
+        "accessibility_scroll",
+        requested=True,
+        direction=direction,
+        success=action.success,
+        bounds=action.bounds,
+        duration_ms=action.duration_ms,
+        executor_returncode=action.executor_returncode,
+        message=action.message,
+        transport_output=action.transport_output,
+        before_snapshot_timestamp_ms=before_timestamp_ms,
+    )
+
+    if not action.success:
+        trace.record(
+            "failure",
+            "scroll_transport_or_execution",
+            message="The semantic scroll did not report success; no second scroll or recovery was attempted.",
+        )
+        return trace
+
+    after_timestamp_ms = _wait_for_new_snapshot(before_timestamp_ms)
+    if after_timestamp_ms <= before_timestamp_ms:
+        trace.record(
+            "failure",
+            "post_scroll_observation_timeout",
+            message="Accessibility accepted the scroll, but no newer published hierarchy arrived within the bounded diagnostic window.",
+            before_snapshot_timestamp_ms=before_timestamp_ms,
+            latest_snapshot_timestamp_ms=after_timestamp_ms,
+            timeout_seconds=DEFAULT_POST_SCROLL_TIMEOUT_SECONDS,
+        )
+        return trace
+
+    after = observe_screen(previous=None, include_nodes=True)
+    trace.record(
+        "observation",
+        "after_scroll",
+        snapshot=_snapshot_data(after, compact=compact),
+        snapshot_timestamp_ms=after_timestamp_ms,
+    )
+    trace.record(
+        "observation_comparison",
+        "after_scroll_vs_before",
+        semantic_signature_changed=before.semantic_signature() != after.semantic_signature(),
+        foreground_package_changed=before.foreground_package != after.foreground_package,
+        visible_text_changed=before.visible_text != after.visible_text,
+    )
+
+    after_match = resolve_target(after, target)
+    trace.record("target_resolution", "after_scroll", match=_match_data(after_match, compact=compact))
+
+    if after_match.resolution is Resolution.AMBIGUOUS:
+        trace.record(
+            "failure",
+            "ambiguous_after_resolution",
+            message="The fresh post-scroll hierarchy contains competing target candidates; activation is unsafe.",
+        )
+        return trace
+
+    if after_match.node is not None:
+        trace.record(
+            "decision",
+            "activation_ready",
+            action="ACTIVATE_NOT_PERFORMED_BY_PROBE",
+            reason="A fresh post-scroll resolution found the target. Activation is deliberately isolated from this experiment.",
+        )
+    else:
+        trace.record(
+            "decision",
+            "target_not_resolved_after_scroll",
+            action="NO_ACTIVATION",
+            reason="The fresh post-scroll hierarchy did not resolve the target.",
+        )
+
+    return trace
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Trace one Accessibility scroll and fresh post-scroll resolution."
+    )
+    parser.add_argument("target", help="Semantic target to look for, e.g. Apps")
+    parser.add_argument("--direction", choices=("down", "up"), default="down")
+    parser.add_argument(
+        "--expected-package",
+        default=DEFAULT_SETTINGS_PACKAGE,
+        help="Refuse to act unless the live foreground package matches this value.",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Omit per-node dumps so real-device traces stay readable.",
+    )
+    parser.add_argument(
+        "--no-launch-settings",
+        action="store_true",
+        help="Do not launch Settings before probing.",
+    )
+    args = parser.parse_args()
+
+    trace = DiagnosticTrace()
+    if not args.no_launch_settings and not _launch_settings(trace):
+        print(json.dumps(trace.as_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+        return 1
+
+    probe_trace = run_one_scroll(
+        args.target,
+        args.direction,
+        expected_package=args.expected_package,
+        compact=args.compact,
+    )
+    trace.events.extend(probe_trace.events)
+    print(json.dumps(trace.as_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+
+    return 0 if not any(event["stage"] == "failure" for event in trace.events) else 1
 
 
 if __name__ == "__main__":
