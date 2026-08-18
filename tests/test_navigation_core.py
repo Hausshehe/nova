@@ -1,11 +1,12 @@
 import unittest
 from unittest.mock import patch
 
+from navigation.actions import ActionResult
 from navigation.controller import NavigationController, NavigationState
 from navigation.progress import compare_snapshots
 from navigation.resolver import resolve_target
 from navigation.state import ObservationQuality, Resolution, ScreenSnapshot
-from navigation.verifier import verify_transition
+from navigation.verifier import VerificationResult, verify_transition
 
 
 class NavigationCoreTests(unittest.TestCase):
@@ -96,11 +97,7 @@ class NavigationCoreTests(unittest.TestCase):
         before = self._snapshot(text=("Apps", "Display"))
         after = self._snapshot(text=("Apps", "Display"))
         with patch("navigation.verifier.observe_screen", return_value=after):
-            result = verify_transition(
-                before,
-                timeout_seconds=0.2,
-                poll_seconds=0,
-            )
+            result = verify_transition(before, timeout_seconds=0.2, poll_seconds=0)
         self.assertFalse(result.success)
         self.assertIn("meaningful semantic UI transition", result.reason)
 
@@ -108,12 +105,36 @@ class NavigationCoreTests(unittest.TestCase):
         before = self._snapshot(text=("Apps", "Display", "Battery"))
         after = self._snapshot(text=("App list", "Assistant", "Screen time"))
         with patch("navigation.verifier.observe_screen", return_value=after):
-            result = verify_transition(
-                before,
-                timeout_seconds=0.2,
-                poll_seconds=0,
-            )
+            result = verify_transition(before, timeout_seconds=0.2, poll_seconds=0)
         self.assertTrue(result.success)
+
+    def test_adaptive_scroll_keeps_direction_when_progress_is_real(self):
+        first = self._snapshot(text=("A", "B", "C"))
+        after_scroll = self._snapshot(text=("D", "E", "F"))
+        target_screen = self._snapshot(text=("YouTube", "WhatsApp"))
+        controller = NavigationController(
+            observation_retries=1,
+            max_transient_observations=2,
+            max_scrolls=3,
+            settle_seconds=0,
+        )
+        action = ActionResult(True, "SCROLL", "simulated")
+        tap = ActionResult(True, "TAP", "simulated")
+        verification = VerificationResult(True, target_screen, "simulated verified transition")
+
+        with patch(
+            "navigation.controller.observe_screen",
+            side_effect=[first, after_scroll, target_screen],
+        ), patch("navigation.controller.scroll", return_value=action), patch(
+            "navigation.controller.activate_node", return_value=tap
+        ), patch("navigation.controller.verify_transition", return_value=verification):
+            result = controller.navigate_target("YouTube")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.direction, "down")
+        self.assertEqual(result.scroll_count, 1)
+        self.assertIn(NavigationState.SCROLL, result.history)
+        self.assertIn(NavigationState.SUCCESS, result.history)
 
 
 if __name__ == "__main__":
