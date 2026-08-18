@@ -352,13 +352,18 @@ def _run_simple_open_goal(app_name):
     """Handle the generic open-app primitive locally, without planner tokens."""
     verification = _observe_directly()
     foreground = _foreground_from_observation(verification)
-    if verification.get("success") and foreground and app_name.replace(" ", "") in foreground.lower():
-        return {
-            "success": True,
-            "verified": True,
-            "message": f"{app_name} is already open and in the foreground.",
-            "steps": 0,
-        }
+    if verification.get("success") and foreground:
+        discovery = _unwrap_tool_result(
+            execute_tool("find_android_app", "find_android_app", app_name=app_name)
+        )
+        packages = discovery.get("packages") or [] if isinstance(discovery, dict) else []
+        if len(packages) == 1 and foreground == packages[0]:
+            return {
+                "success": True,
+                "verified": True,
+                "message": f"{app_name} is already open and in the foreground.",
+                "steps": 0,
+            }
 
     discovery = _unwrap_tool_result(execute_tool("find_android_app", "find_android_app", app_name=app_name))
     packages = discovery.get("packages") or [] if isinstance(discovery, dict) else []
