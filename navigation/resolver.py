@@ -104,12 +104,14 @@ def _iter_nodes(snapshot: ScreenSnapshot) -> Iterable[Dict[str, Any]]:
 
 def _candidate_matches(snapshot: ScreenSnapshot, target: str):
     candidates = []
+    normalized_target = " ".join(str(target or "").lower().split())
     for node in _iter_nodes(snapshot):
         label = _label(node)
         score = _semantic_score(label, target, node)
         if score >= MIN_MATCH_SCORE:
-            candidates.append((score, _tiebreak(label, target, node), node, label))
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            exact = " ".join(label.lower().split()) == normalized_target
+            candidates.append((exact, score, _tiebreak(label, target, node), node, label))
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     return candidates
 
 
@@ -118,9 +120,36 @@ def _best_ui_match(snapshot: ScreenSnapshot, target: str) -> Optional[TargetMatc
     if not candidates:
         return None
 
-    score, _, node, label = candidates[0]
+    exact_candidates = [candidate for candidate in candidates if candidate[0]]
+    if exact_candidates:
+        # Exact visible text is authoritative. If multiple exact nodes exist,
+        # only accept when one is clearly actionable/better; otherwise refuse
+        # to guess between identical destinations.
+        if len(exact_candidates) > 1:
+            first = exact_candidates[0]
+            second = exact_candidates[1]
+            first_node, first_label = first[3], first[4]
+            second_node, second_label = second[3], second[4]
+            if first_node is not second_node and first[2] == second[2]:
+                return TargetMatch(
+                    resolution=Resolution.AMBIGUOUS,
+                    target=target,
+                    score=first[1],
+                    reason=f"Multiple visible controls exactly match '{target}' and Nova cannot safely choose one.",
+                )
+        exact = exact_candidates[0]
+        return TargetMatch(
+            resolution=Resolution.FOUND,
+            target=target,
+            node=exact[3],
+            label=exact[4],
+            score=exact[1],
+            reason="Exact visible semantic match found in the current live hierarchy.",
+        )
+
+    score, _, node, label = candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4]
     if len(candidates) > 1:
-        second_score, _, _, second_label = candidates[1]
+        second_score, _, _, second_label = candidates[1][1], candidates[1][2], candidates[1][3], candidates[1][4]
         if second_label != label and score - second_score <= AMBIGUITY_SCORE_GAP:
             return TargetMatch(
                 resolution=Resolution.AMBIGUOUS,
