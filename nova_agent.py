@@ -9,9 +9,10 @@ import time
 import requests
 
 from ai_router import call_ai
+from navigation.goal_parser import parse_open_path
+from navigation.path import OpenPathNavigator
 from tools.executor import execute_tool
 from tools.registry import discover_tools
-from tools.navigate_android_to import navigate_android_to
 
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -23,8 +24,6 @@ MAX_GROQ_RETRY_DELAY = 15.0
 MAX_HISTORY_PAIRS = 3
 SIMPLE_OPEN_VERIFY_ATTEMPTS = 6
 SIMPLE_OPEN_VERIFY_DELAY = 0.75
-SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS = 8
-SIMPLE_OPEN_PATH_SCROLL_DELAY = 0.6
 
 AGENT_TOOLS = {
     "observe_android",
@@ -327,15 +326,11 @@ def _simple_open_goal(goal):
 
 
 def _simple_open_path_goal(goal):
-    """Recognize a generic two-stage open goal without naming any app-specific target."""
-    normalized = re.sub(r"\s+", " ", str(goal or "").strip().lower())
-    match = re.fullmatch(
-        r"(?:open|launch|start)\s+(.+?)\s+(?:and|then)\s+(?:open|launch|start)\s+(.+?)",
-        normalized,
-    )
-    if not match:
-        return None
-    return match.group(1).strip(), match.group(2).strip()
+    """Recognize any generic multi-stage open path handled by the deterministic navigator."""
+    targets = parse_open_path(goal)
+    if len(targets) < 2:
+        return []
+    return targets
 
 
 def _observe_directly():
@@ -351,38 +346,6 @@ def _foreground_from_observation(verification):
     if not foreground:
         foreground = (verification.get("state") or {}).get("foreground_package", "")
     return foreground or ""
-
-
-def _visible_text_from_observation(verification):
-    if not isinstance(verification, dict):
-        return []
-    state = verification.get("state") or {}
-    return state.get("visible_text") or []
-
-
-def _find_visible_target(verification, target):
-    """Find the best current visible label matching the user's target semantically."""
-    wanted = _normalize_ui_text(target)
-    if not wanted:
-        return ""
-
-    candidates = _visible_text_from_observation(verification)
-    normalized_candidates = [
-        (str(candidate), _normalize_ui_text(candidate))
-        for candidate in candidates
-        if str(candidate).strip()
-    ]
-
-    # Prefer exact semantic equality before substring matching.
-    for original, normalized in normalized_candidates:
-        if normalized == wanted:
-            return original
-
-    for original, normalized in normalized_candidates:
-        if wanted in normalized or normalized in wanted:
-            return original
-
-    return ""
 
 
 def _run_simple_open_goal(app_name):
@@ -404,6 +367,14 @@ def _run_simple_open_goal(app_name):
             "success": False,
             "verified": bool(discovery.get("verified")) if isinstance(discovery, dict) else False,
             "message": f"I couldn't find an installed app matching '{app_name}'.",
+            "steps": 0,
+        }
+
+    if len(packages) != 1:
+        return {
+            "success": False,
+            "verified": bool(discovery.get("verified")) if isinstance(discovery, dict) else False,
+            "message": f"The installed-app identity for '{app_name}' is ambiguous; Nova will not guess.",
             "steps": 0,
         }
 
@@ -441,50 +412,19 @@ def _run_simple_open_goal(app_name):
     }
 
 
-def _run_simple_open_path_goal(app_name, target):
-    """Open an app, then navigate to a human-named destination adaptively.
-
-    Navigation is delegated to the generic semantic Android navigator. It
-    searches the live hierarchy, uses semantic matching, detects scroll
-    boundaries, reverses direction when necessary, and never relies on
-    app-specific names or fixed coordinates.
-    """
-    opened = _run_simple_open_goal(app_name)
-    if not opened.get("success"):
-        return opened
-
-    result = navigate_android_to(
-        target,
-        max_scrolls=SIMPLE_OPEN_PATH_SCROLL_ATTEMPTS,
-        direction="down",
-    )
-
-    if not isinstance(result, dict):
-        return {
-            "success": False,
-            "verified": False,
-            "message": f"{app_name} opened, but navigation returned an invalid result.",
-            "steps": 1,
-        }
-
-    if result.get("success") and result.get("verified"):
-        return {
-            "success": True,
-            "verified": True,
-            "message": (
-                f"Opened {target} inside {app_name} using adaptive semantic navigation."
-            ),
-            "steps": int(result.get("scrolls", 0)) + 2,
-        }
-
+def _run_simple_open_path_goal(targets):
+    """Execute a generic multi-step open path with verified checkpoints."""
+    navigator = OpenPathNavigator()
+    result = navigator.navigate("open " + " and open ".join(targets))
     return {
-        "success": False,
-        "verified": bool(result.get("verified")),
-        "message": result.get(
-            "message",
-            f"{app_name} is open, but Nova could not locate '{target}'.",
-        ),
-        "steps": int(result.get("scrolls", 0)) + 1,
+        "success": result.success,
+        "verified": result.verified,
+        "message": result.message,
+        "steps": len(result.completed_targets),
+        "targets": result.targets,
+        "completed_targets": result.completed_targets,
+        "failed_target": result.failed_target,
+        "checkpoints": result.checkpoints,
     }
 
 
@@ -504,7 +444,7 @@ def run_agent(goal):
 
     simple_open_path = _simple_open_path_goal(goal)
     if simple_open_path:
-        return _run_simple_open_path_goal(*simple_open_path)
+        return _run_simple_open_path_goal(simple_open_path)
 
     simple_open_app = _simple_open_goal(goal)
     if simple_open_app:
@@ -560,10 +500,6 @@ def run_agent(goal):
                 result = _unwrap_tool_result(execution)
                 print("⚙️", result)
 
-                # Only state-changing actions get an automatic observation.
-                # Discovery and observation are read-only, so do not spend an
-                # extra Android/root call after them. The observation is folded
-                # into the SAME tool result to preserve the valid message shape.
                 if (
                     function_name not in {"observe_android", "find_android_app"}
                     and isinstance(result, dict)
@@ -573,15 +509,9 @@ def run_agent(goal):
                     if isinstance(fresh_observation, dict):
                         print(
                             "👀 Auto-observe:",
-                            _planner_tool_result(
-                                fresh_observation,
-                                "observe_android",
-                            ),
+                            _planner_tool_result(fresh_observation, "observe_android"),
                         )
-                        observation_data = _planner_tool_result(
-                            fresh_observation,
-                            "observe_android",
-                        )
+                        observation_data = _planner_tool_result(fresh_observation, "observe_android")
                         result["post_action_observation"] = observation_data
                         observed_after_action = bool(fresh_observation.get("success"))
                     else:
