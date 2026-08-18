@@ -13,9 +13,6 @@ import json
 import sys
 from pathlib import Path
 
-# Allow ``python tools/diagnose_navigation.py ...`` to import the repository's
-# top-level ``navigation`` package. When Python executes a script by path,
-# sys.path starts at ``tools/`` rather than the repository root.
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
@@ -52,8 +49,8 @@ def _node_summary(node):
     }
 
 
-def _snapshot_data(snapshot: ScreenSnapshot):
-    return {
+def _snapshot_data(snapshot: ScreenSnapshot, *, compact: bool = False):
+    data = {
         "foreground_package": snapshot.foreground_package,
         "observation_quality": snapshot.observation_quality.value,
         "message": snapshot.message,
@@ -65,29 +62,49 @@ def _snapshot_data(snapshot: ScreenSnapshot):
             if isinstance(region, dict)
         ],
         "visible_text": list(snapshot.visible_text[:30]),
-        "nodes": [_node_summary(node) for node in snapshot.visible_nodes[:30]],
     }
+    if not compact:
+        data["nodes"] = [_node_summary(node) for node in snapshot.visible_nodes[:30]]
+    return data
 
 
-def _match_data(match):
-    return {
+def _match_data(match, *, compact: bool = False):
+    data = {
         "resolution": match.resolution.value,
         "target": match.target,
         "label": match.label,
         "score": match.score,
         "reason": match.reason,
-        "node": _node_summary(match.node) if match.node is not None else None,
     }
+    if not compact:
+        data["node"] = _node_summary(match.node) if match.node is not None else None
+    return data
 
 
-def run_one_scroll(target: str, direction: str = "down") -> DiagnosticTrace:
+def run_one_scroll(
+    target: str,
+    direction: str = "down",
+    *,
+    expected_package: str | None = None,
+    compact: bool = False,
+) -> DiagnosticTrace:
     trace = DiagnosticTrace()
 
     before = observe_screen(previous=None, include_nodes=True)
-    trace.record("observation", "before_scroll", snapshot=_snapshot_data(before))
+    trace.record("observation", "before_scroll", snapshot=_snapshot_data(before, compact=compact))
+
+    if expected_package and before.foreground_package != expected_package:
+        trace.record(
+            "failure",
+            "unexpected_foreground_package",
+            expected_package=expected_package,
+            actual_package=before.foreground_package,
+            message="Probe refused to act because the live screen is not the expected application.",
+        )
+        return trace
 
     before_match = resolve_target(before, target)
-    trace.record("target_resolution", "before_scroll", match=_match_data(before_match))
+    trace.record("target_resolution", "before_scroll", match=_match_data(before_match, compact=compact))
 
     if not before.valid:
         trace.record(
@@ -157,7 +174,7 @@ def run_one_scroll(target: str, direction: str = "down") -> DiagnosticTrace:
         return trace
 
     after = observe_screen(previous=None, include_nodes=True)
-    trace.record("observation", "after_scroll", snapshot=_snapshot_data(after))
+    trace.record("observation", "after_scroll", snapshot=_snapshot_data(after, compact=compact))
     trace.record(
         "observation_comparison",
         "after_scroll_vs_before",
@@ -167,7 +184,7 @@ def run_one_scroll(target: str, direction: str = "down") -> DiagnosticTrace:
     )
 
     after_match = resolve_target(after, target)
-    trace.record("target_resolution", "after_scroll", match=_match_data(after_match))
+    trace.record("target_resolution", "after_scroll", match=_match_data(after_match, compact=compact))
 
     if after_match.resolution is Resolution.AMBIGUOUS:
         trace.record(
@@ -196,12 +213,28 @@ def run_one_scroll(target: str, direction: str = "down") -> DiagnosticTrace:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Trace one Accessibility scroll and fresh post-scroll resolution.")
+    parser = argparse.ArgumentParser(
+        description="Trace one Accessibility scroll and fresh post-scroll resolution."
+    )
     parser.add_argument("target", help="Semantic target to look for, e.g. Apps")
     parser.add_argument("--direction", choices=("down", "up"), default="down")
+    parser.add_argument(
+        "--expected-package",
+        help="Refuse to act unless the live foreground package matches this value.",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Omit per-node dumps so real-device traces stay readable.",
+    )
     args = parser.parse_args()
 
-    trace = run_one_scroll(args.target, args.direction)
+    trace = run_one_scroll(
+        args.target,
+        args.direction,
+        expected_package=args.expected_package,
+        compact=args.compact,
+    )
     print(json.dumps(trace.as_dict(), indent=2, ensure_ascii=False, sort_keys=True))
 
     return 0 if not any(event["stage"] == "failure" for event in trace.events) else 1
