@@ -75,6 +75,31 @@ def _stable_foreground_package(hierarchy_package=""):
     return last
 
 
+def _actionable_ancestor(node):
+    """Return the nearest clickable ancestor represented by a UI node.
+
+    Android accessibility trees commonly expose a visible label as a
+    non-clickable child while the enclosing row owns the action. The observer
+    preserves only the nearest actionable ancestor so navigation can remain
+    semantic and device-agnostic without hard-coded coordinates or labels.
+    """
+    for ancestor in reversed(list(node.iterancestors())) if hasattr(node, "iterancestors") else []:
+        attrs = ancestor.attrib
+        if attrs.get("enabled") == "true" and attrs.get("clickable") == "true":
+            return {
+                "text": attrs.get("text", "").strip(),
+                "content_description": attrs.get("content-desc", "").strip(),
+                "resource_id": attrs.get("resource-id", "").strip(),
+                "class": attrs.get("class", "").strip(),
+                "package": attrs.get("package", "").strip(),
+                "bounds": attrs.get("bounds", "").strip(),
+                "clickable": True,
+                "enabled": True,
+                "focusable": attrs.get("focusable") == "true",
+            }
+    return None
+
+
 def _parse_hierarchy(xml_text, include_nodes):
     """Parse a UI hierarchy XML snapshot into Nova's compact representation."""
     root = ET.fromstring(xml_text)
@@ -91,7 +116,7 @@ def _parse_hierarchy(xml_text, include_nodes):
         if not any((text, description, resource_id, class_name)):
             continue
 
-        nodes.append({
+        item = {
             "text": text,
             "content_description": description,
             "resource_id": resource_id,
@@ -104,7 +129,37 @@ def _parse_hierarchy(xml_text, include_nodes):
             "scrollable": attrs.get("scrollable") == "true",
             "selected": attrs.get("selected") == "true",
             "checked": attrs.get("checked") == "true",
-        })
+        }
+
+        if include_nodes:
+            actionable = None
+            parent = node
+            while parent is not None:
+                parent = next(
+                    (candidate for candidate in root.iter() if node in list(candidate)),
+                    None,
+                )
+                if parent is None:
+                    break
+                attrs_parent = parent.attrib
+                if attrs_parent.get("enabled") == "true" and attrs_parent.get("clickable") == "true":
+                    actionable = {
+                        "text": attrs_parent.get("text", "").strip(),
+                        "content_description": attrs_parent.get("content-desc", "").strip(),
+                        "resource_id": attrs_parent.get("resource-id", "").strip(),
+                        "class": attrs_parent.get("class", "").strip(),
+                        "package": attrs_parent.get("package", "").strip(),
+                        "bounds": attrs_parent.get("bounds", "").strip(),
+                        "clickable": True,
+                        "enabled": True,
+                        "focusable": attrs_parent.get("focusable") == "true",
+                    }
+                    break
+                node = parent
+            if actionable:
+                item["actionable_ancestor"] = actionable
+
+        nodes.append(item)
     return nodes
 
 
