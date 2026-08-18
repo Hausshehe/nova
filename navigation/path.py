@@ -32,9 +32,23 @@ class PathResult:
 class OpenPathNavigator:
     """Execute a parsed open path while preserving verified checkpoints."""
 
-    def __init__(self, controller: Optional[NavigationController] = None):
+    def __init__(
+        self,
+        controller: Optional[NavigationController] = None,
+        *,
+        initial_direction: str = "down",
+    ):
         self.controller = controller or NavigationController()
+        self.initial_direction = str(initial_direction or "down").strip().lower()
+        if self.initial_direction not in {"up", "down"}:
+            self.initial_direction = "down"
         self.checkpoints = CheckpointStore()
+
+    def _navigate_target(self, target: str) -> NavigationResult:
+        return self.controller.navigate_target(
+            target,
+            initial_direction=self.initial_direction,
+        )
 
     def _launch_installed_app(self, target: str, packages: list[str]) -> NavigationResult:
         if len(packages) != 1:
@@ -98,7 +112,7 @@ class OpenPathNavigator:
             return None
 
         if self.checkpoints.matches_current(current):
-            return self.controller.navigate_target(target)
+            return self._navigate_target(target)
 
         # A failed navigation may have legitimately moved deeper into the same
         # foreground app before verification failed (for example, after opening
@@ -113,7 +127,7 @@ class OpenPathNavigator:
         if match.resolution is not Resolution.FOUND or match.node is None:
             return None
 
-        return self.controller.navigate_target(target)
+        return self._navigate_target(target)
 
     def navigate(self, goal: str) -> PathResult:
         targets = parse_open_path(goal)
@@ -124,7 +138,7 @@ class OpenPathNavigator:
         resumed_from_checkpoint = False
 
         for index, target in enumerate(targets):
-            result = self.controller.navigate_target(target)
+            result = self._navigate_target(target)
 
             # Direct package launch is only a safe fallback for the first
             # destination. Later destinations must be reached through the
