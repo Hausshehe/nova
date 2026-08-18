@@ -3,11 +3,15 @@
 The model is a proposal source only. Its output is validated into Nova's
 strict Hypothesis contract before the Researcher can reserve budget for it.
 No model response can alter research gates or grant execution authority.
+
+The API key is shared with Nova's normal AI router through GROQ_API_KEY; this
+module does not introduce a second credential or secret store.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib import error, request
@@ -17,7 +21,7 @@ from .researcher import HypothesisProposal
 
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-oss-20b"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 
 HYPOTHESIS_SCHEMA: dict[str, Any] = {
@@ -82,15 +86,9 @@ def build_research_prompt(question: ResearchQuestion, prior_context: str = "") -
         "You are Nova's research hypothesis generator. Propose exactly one "
         "falsifiable trading hypothesis. Do not claim success. Do not provide "
         "execution instructions, account actions, order sizes, live-trading "
-        "commands, or changes to research gates. The hypothesis must be "
-        "testable with deterministic OHLCV rules and must explicitly state a "
-        "falsifier. Avoid duplicating prior research.\n\n"
-        "The rule language is strictly limited to these deterministic forms:\n"
-        "entry: close > prior_high(N)\n"
-        "exit: close < prior_low(N)\n"
-        "filters: none\n"
-        "costs: a plain-text description of explicit transaction costs\n"
-        "Use positive integer N only. Do not invent another rule syntax.\n\n"
+        "commands, or changes to research gates. The hypothesis must use only "
+        "the supported deterministic research rule DSL and must explicitly "
+        "state a falsifier. Avoid duplicating prior research.\n\n"
         f"Research question: {question.question}\n"
         f"Symbol: {question.symbol}\n"
         f"Timeframe: {question.timeframe}\n"
@@ -124,26 +122,33 @@ def _default_transport(api_key: str, model: str, endpoint: str, timeout: float) 
 
 
 class GroqHypothesisGenerator:
-    """Generate one structured hypothesis from Groq without adding dependencies."""
+    """Generate one structured hypothesis from Nova's existing Groq credential."""
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         *,
-        model: str = DEFAULT_MODEL,
-        endpoint: str = DEFAULT_ENDPOINT,
+        model: str | None = None,
+        endpoint: str | None = None,
         timeout: float = 30.0,
         transport: Transport | None = None,
     ) -> None:
-        if not api_key.strip():
-            raise ValueError("Groq API key is required")
-        if not model.strip():
+        resolved_key = (api_key if api_key is not None else os.environ.get("GROQ_API_KEY", "")).strip()
+        resolved_model = (model or os.environ.get("GROQ_MODEL", DEFAULT_MODEL)).strip()
+        resolved_endpoint = (endpoint or os.environ.get("GROQ_URL", DEFAULT_ENDPOINT)).strip()
+        if not resolved_key:
+            raise ValueError("GROQ_API_KEY is required")
+        if not resolved_model:
             raise ValueError("Groq model is required")
+        if not resolved_endpoint:
+            raise ValueError("Groq endpoint is required")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        self.model = model
-        self.endpoint = endpoint
-        self._transport = transport or _default_transport(api_key, model, endpoint, timeout)
+        self.model = resolved_model
+        self.endpoint = resolved_endpoint
+        self._transport = transport or _default_transport(
+            resolved_key, resolved_model, resolved_endpoint, timeout
+        )
 
     def propose(self, question: ResearchQuestion, prior_context: str = "") -> HypothesisProposal:
         prompt = build_research_prompt(question, prior_context)
@@ -152,7 +157,7 @@ class GroqHypothesisGenerator:
             "messages": [
                 {
                     "role": "system",
-                    "content": "Return exactly one research hypothesis as structured JSON."
+                    "content": "Return exactly one research hypothesis as structured JSON.",
                 },
                 {"role": "user", "content": prompt},
             ],
