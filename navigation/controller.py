@@ -109,13 +109,21 @@ class NavigationController:
             if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
                 return self._bounded_observation_failure(target, history, recovery_snapshot, progress, total_scrolls, direction, "Activation verification failed and the recovery observation was unreliable.")
 
-            recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
-            source_target_present = self._source_target_label_present(recovery_snapshot, current_match)
-            if recovery_progress.meaningful and not source_target_present:
-                recovered_verification = VerificationResult(True, recovery_snapshot, "A meaningful live UI transition was verified during bounded activation recovery after the activated source control disappeared.")
+            # A failed verifier is followed by one bounded re-observation. A
+            # meaningful change is accepted here only when it also provides
+            # destination-aware evidence for the same semantic target; generic
+            # source disappearance is not enough.
+            recovery_verification = verify_transition(
+                current_snapshot,
+                expected_foreground_package=expected_foreground_package,
+                expected_target=target,
+                timeout_seconds=max(0.1, self.settle_seconds + 0.5),
+                poll_seconds=0,
+            )
+            if recovery_verification.success:
                 history.append(NavigationState.VERIFY)
                 history.append(NavigationState.SUCCESS)
-                return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
+                return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_verification.snapshot, match=current_match, action=last_action, verification=recovery_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activation was verified during bounded recovery.")
 
             recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
             if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
@@ -125,7 +133,7 @@ class NavigationController:
             current_match = recovery_match
             re_resolved = True
 
-        failure_message = "Activation verification failed after safely re-resolved target for the bounded retry." if re_resolved else (last_verification.reason if last_verification else "Activation verification failed.")
+        failure_message = "Activation verification failed after safely re-resolving the target for the bounded retry." if re_resolved else (last_verification.reason if last_verification else "Activation verification failed.")
         return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=failure_message)
 
     def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
