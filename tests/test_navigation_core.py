@@ -5,6 +5,7 @@ from navigation.controller import NavigationController, NavigationState
 from navigation.progress import compare_snapshots
 from navigation.resolver import resolve_target
 from navigation.state import ObservationQuality, Resolution, ScreenSnapshot
+from navigation.verifier import verify_transition
 
 
 class NavigationCoreTests(unittest.TestCase):
@@ -90,6 +91,29 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertEqual(result.resolution, Resolution.AMBIGUOUS)
         self.assertIsNone(result.node)
         self.assertIn("Multiple visible controls", result.reason)
+
+    def test_verifier_rejects_incidental_bounds_only_change(self):
+        before = self._snapshot(text=("Apps", "Display"))
+        after = self._snapshot(text=("Apps", "Display"))
+        with patch("navigation.verifier.observe_screen", return_value=after):
+            result = verify_transition(
+                before,
+                timeout_seconds=0.2,
+                poll_seconds=0,
+            )
+        self.assertFalse(result.success)
+        self.assertIn("meaningful semantic UI transition", result.reason)
+
+    def test_verifier_accepts_meaningful_text_transition(self):
+        before = self._snapshot(text=("Apps", "Display", "Battery"))
+        after = self._snapshot(text=("App list", "Assistant", "Screen time"))
+        with patch("navigation.verifier.observe_screen", return_value=after):
+            result = verify_transition(
+                before,
+                timeout_seconds=0.2,
+                poll_seconds=0,
+            )
+        self.assertTrue(result.success)
 
 
 if __name__ == "__main__":
