@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-from .state import Resolution, ScreenSnapshot
+from .state import ObservationQuality, Resolution, ScreenSnapshot
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ def resolve_target(
     target = " ".join(str(target or "").split())
     if not target:
         return TargetMatch(Resolution.INVALID_OBSERVATION, target, reason="Target is empty.")
-    if snapshot.observation_quality is not snapshot.observation_quality.VALID:
+    if snapshot.observation_quality is not ObservationQuality.VALID:
         return TargetMatch(
             Resolution.INVALID_OBSERVATION,
             target,
@@ -149,8 +149,11 @@ def resolve_target(
     if direct is not None:
         return direct
 
-    package_names = {str(package).strip().lower() for package in (installed_packages or ()) if str(package).strip()}
-    target_words = _words(target)
+    package_names = {
+        str(package).strip().lower()
+        for package in (installed_packages or ())
+        if str(package).strip()
+    }
     package_match = any(
         target.lower() == package.rsplit(".", 1)[-1].replace("_", " ")
         or target.lower().replace(" ", "") in package.replace(".", "")
