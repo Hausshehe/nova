@@ -15,7 +15,7 @@ from navigation.actions import scroll
 from navigation.diagnostics import DiagnosticTrace
 from navigation.observer import observe_screen
 from navigation.resolver import resolve_target
-from navigation.state import ScreenSnapshot
+from navigation.state import Resolution, ScreenSnapshot
 
 
 def _node_summary(node):
@@ -88,6 +88,15 @@ def run_one_scroll(target: str, direction: str = "down") -> DiagnosticTrace:
         )
         return trace
 
+    if before_match.resolution in {Resolution.INVALID_OBSERVATION, Resolution.AMBIGUOUS}:
+        trace.record(
+            "failure",
+            "unsafe_before_resolution",
+            message="The target resolution was not safe enough to justify a scroll.",
+            resolution=before_match.resolution.value,
+        )
+        return trace
+
     if before_match.node is not None:
         trace.record(
             "decision",
@@ -150,6 +159,14 @@ def run_one_scroll(target: str, direction: str = "down") -> DiagnosticTrace:
 
     after_match = resolve_target(after, target)
     trace.record("target_resolution", "after_scroll", match=_match_data(after_match))
+
+    if after_match.resolution is Resolution.AMBIGUOUS:
+        trace.record(
+            "failure",
+            "ambiguous_after_resolution",
+            message="The fresh post-scroll hierarchy contains competing target candidates; activation is unsafe.",
+        )
+        return trace
 
     if after_match.node is not None:
         trace.record(
