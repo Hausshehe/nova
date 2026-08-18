@@ -11,155 +11,51 @@ public class NovaClickReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-
-        Log.i(TAG, "🔥 NovaClickReceiver.onReceive() CALLED");
+        Log.i(TAG, "NovaClickReceiver.onReceive() CALLED");
 
         if (intent == null) {
-            Log.w(TAG, "CLICK_TEXT: intent is null");
             setResultCode(0);
             return;
         }
 
         String action = intent.getAction();
-
         Log.i(TAG, "NovaClickReceiver action=" + action);
 
         if ("com.infoney.nova.OPEN_BLUETOOTH".equals(action)) {
-
-            Log.i(TAG, "Received OPEN_BLUETOOTH");
-
-            if (NovaAccessibilityService.instance != null) {
-
-                Log.i(
-                        TAG,
-                        "OPEN_BLUETOOTH: accessibility service instance EXISTS"
-                );
-
-                boolean result =
-                        NovaAccessibilityService.instance
-                                .openBluetoothAndClick();
-
-                Log.i(
-                        TAG,
-                        "OPEN_BLUETOOTH result=" + result
-                );
-
-            } else {
-
-                Log.w(
-                        TAG,
-                        "OPEN_BLUETOOTH: accessibility service unavailable"
-                );
-            }
-
+            boolean result = NovaAccessibilityService.instance != null
+                    && NovaAccessibilityService.instance.openBluetoothAndClick();
+            setResultCode(result ? 1 : 0);
             return;
         }
 
         if ("com.infoney.nova.CLICK_SWITCH".equals(action)) {
-
-            Log.i(TAG, "Received CLICK_SWITCH");
-
-            if (NovaAccessibilityService.instance == null) {
-
-                Log.w(
-                        TAG,
-                        "CLICK_SWITCH: accessibility service instance is NULL"
-                );
-
-                return;
-            }
-
-            Log.i(
-                    TAG,
-                    "CLICK_SWITCH: accessibility service instance EXISTS"
-            );
-
-            boolean result =
-                    NovaAccessibilityService.instance.clickSwitch();
-
-            Log.i(
-                    TAG,
-                    "CLICK_SWITCH result=" + result
-            );
-
+            boolean result = NovaAccessibilityService.instance != null
+                    && NovaAccessibilityService.instance.clickSwitch();
+            setResultCode(result ? 1 : 0);
             return;
         }
 
         if ("com.infoney.nova.CLICK_ELEMENT".equals(action)) {
+            String target = intent.getStringExtra("target");
+            boolean result = NovaAccessibilityService.instance != null
+                    && NovaAccessibilityService.instance.clickElement(target);
+            Log.i(TAG, "CLICK_ELEMENT result=" + result + " target=" + target);
+            setResultCode(result ? 1 : 0);
+            return;
+        }
 
-            String target =
-                    intent.getStringExtra("target");
-
-            Log.i(
-                    TAG,
-                    "Received CLICK_ELEMENT: " + target
-            );
-
-            if (NovaAccessibilityService.instance == null) {
-
-                Log.w(
-                        TAG,
-                        "CLICK_ELEMENT: accessibility service instance is NULL"
-                );
-
-                return;
-            }
-
-            Log.i(
-                    TAG,
-                    "CLICK_ELEMENT: accessibility service instance EXISTS"
-            );
-
-            boolean result =
-                    NovaAccessibilityService.instance
-                            .clickElement(target);
-
-            Log.i(
-                    TAG,
-                    "CLICK_ELEMENT result=" + result
-            );
-
+        if ("com.infoney.nova.SCROLL_WINDOW".equals(action)) {
+            String direction = intent.getStringExtra("direction");
+            boolean result = NovaAccessibilityService.instance != null
+                    && NovaAccessibilityService.instance.scrollWindow(direction);
+            Log.i(TAG, "SCROLL_WINDOW result=" + result + " direction=" + direction);
+            setResultCode(result ? 1 : 0);
             return;
         }
 
         if ("com.infoney.nova.CLICK_TEXT".equals(action)) {
-
-            String text =
-                    intent.getStringExtra("text");
-
-            Log.i(
-                    TAG,
-                    "Received CLICK_TEXT: " + text
-            );
-
-            if (NovaAccessibilityService.instance == null) {
-
-                Log.w(
-                        TAG,
-                        "CLICK_TEXT: accessibility service instance is NULL"
-                );
-
-                setResultCode(0);
-                return;
-            }
-
-            Log.i(
-                    TAG,
-                    "CLICK_TEXT: accessibility service instance EXISTS"
-            );
-
-            boolean result =
-                    NovaAccessibilityService.handleClickText(text);
-
-            Log.i(
-                    TAG,
-                    "CLICK_TEXT: handleClickText returned="
-                            + result
-            );
-
-            // Propagate the actual accessibility click result back to the
-            // `am broadcast` caller.  Broadcast delivery alone is not proof
-            // that the requested UI element was clicked.
+            String text = intent.getStringExtra("text");
+            boolean result = NovaAccessibilityService.handleClickText(text);
             setResultCode(result ? 1 : 0);
         }
     }
