@@ -39,6 +39,7 @@ class PostScrollActivationTests(unittest.TestCase):
     def test_target_visible_after_scroll_is_activated_without_extra_scroll(self):
         initial = self._snapshot(("Battery", "Display"))
         after_scroll = self._snapshot(("Battery", "Apps"))
+        refreshed_after_scroll = self._snapshot(("Battery", "Apps"))
         destination = self._snapshot(("App list", "Assistant"))
         scroll_result = ActionResult(True, "SCROLL", "simulated")
         tap_result = ActionResult(True, "TAP", "simulated")
@@ -52,7 +53,7 @@ class PostScrollActivationTests(unittest.TestCase):
 
         with patch(
             "navigation.controller.observe_screen",
-            side_effect=[initial, after_scroll],
+            side_effect=[initial, after_scroll, refreshed_after_scroll],
         ), patch("navigation.controller.scroll", return_value=scroll_result) as scroll, patch(
             "navigation.controller.activate_node", return_value=tap_result
         ) as activate, patch(
