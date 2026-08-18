@@ -98,11 +98,6 @@ def _score(label, target, node=None):
     label_words = _words(label_n)
     overlap = _semantic_word_overlap(target_words, label_words)
 
-    # Exact target-word coverage is strong, but do not treat every longer
-    # label containing the same word as equally good. A broad target such as
-    # "Apps" should prefer the closest UI label rather than an arbitrary
-    # "App ..." sub-destination. This uses the live label itself, not a list
-    # of Android-specific aliases.
     if overlap == 1.0:
         target_ratio = SequenceMatcher(None, target_n, label_n).ratio()
         extras = max(0, len(label_words - target_words))
@@ -161,9 +156,11 @@ def _find_app_collection_handoff(nodes):
     """Find a generic app-collection entry before searching for an app.
 
     When a requested installed app is not directly visible, a settings-style
-    hub may expose a collection entry such as an app list alongside other
-    actions. This ranks live labels by generic collection semantics instead
-    of encoding a device-specific screen name.
+    hub may expose a collection entry alongside other actions. This ranks live
+    labels by generic collection semantics instead of encoding a device-
+    specific screen name. Some OEM accessibility trees expose the text node as
+    non-clickable while its parent carries the action, so bounds/actionability
+    are accepted when a usable node is present.
     """
     candidates = []
     collection_words = {"list", "browse", "installed", "all"}
@@ -172,8 +169,6 @@ def _find_app_collection_handoff(nodes):
 
     for node in nodes or []:
         if not isinstance(node, dict) or not node.get("enabled", True):
-            continue
-        if not node.get("clickable"):
             continue
 
         label = _label(node)
@@ -184,11 +179,24 @@ def _find_app_collection_handoff(nodes):
         app_score = len(words & app_words)
         collection_score = len(words & collection_words)
         action_score = len(words & action_words)
-        if not app_score or not collection_score or action_score:
+        if not app_score or not collection_score:
             continue
 
-        score = (app_score * 4) + (collection_score * 6) - (action_score * 8)
-        score += SequenceMatcher(None, "app list", " ".join(sorted(words))).ratio()
+        # Collection intent is stronger than generic "app" overlap. Explicit
+        # update/upgrade actions are excluded because they are a sibling action,
+        # not the collection containing installed apps.
+        score = (app_score * 5) + (collection_score * 12) - (action_score * 20)
+        score += SequenceMatcher(None, "app list", label.lower()).ratio() * 3
+
+        # Prefer a truly actionable node, but do not reject a text node merely
+        # because an OEM hierarchy places clickability on its parent.
+        if node.get("clickable"):
+            score += 2
+        elif node.get("focusable") or node.get("bounds"):
+            score += 0.5
+        else:
+            continue
+
         candidates.append((score, _candidate_tiebreak(label, "app list", node), node, label))
 
     if not candidates:
@@ -323,10 +331,6 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                     "message": "Target found and activated using the current UI hierarchy.",
                 }
 
-            # If the requested destination is an installed app but the app is
-            # not currently visible, first enter a live app collection when
-            # the current screen exposes one. This is an adaptive handoff,
-            # not a hard-coded Settings/App List path.
             if target_is_app and not handoff_used:
                 handoff = _find_app_collection_handoff(observed.get("nodes"))
                 if handoff:
