@@ -48,8 +48,17 @@ def compile_long_flat_rules(rules: dict[str, str]) -> Signal:
     def signal(bars: Sequence[Bar], index: int) -> bool:
         if index < max(entry_n, exit_n):
             return False
-        return bars[index].close > _window_value(bars, index, entry_n, high=True) and not (
-            bars[index].close < _window_value(bars, index, exit_n, high=False)
-        )
+
+        # Derive the desired long/flat state from the most recent transition.
+        # This keeps the signal stateless and safe to reuse across train,
+        # validation, and test segments.
+        for cursor in range(index, max(entry_n, exit_n) - 1, -1):
+            entry_hit = bars[cursor].close > _window_value(bars, cursor, entry_n, high=True)
+            exit_hit = bars[cursor].close < _window_value(bars, cursor, exit_n, high=False)
+            if exit_hit:
+                return False
+            if entry_hit:
+                return True
+        return False
 
     return signal
