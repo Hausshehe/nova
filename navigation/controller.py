@@ -92,7 +92,12 @@ class NavigationController:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
 
             history.extend((NavigationState.WAIT_FOR_TRANSITION, NavigationState.VERIFY))
-            last_verification = verify_transition(current_snapshot, expected_foreground_package=expected_foreground_package, expected_target=target, timeout_seconds=self.verification_timeout)
+            # The clicked label is a pre-transition target, not necessarily a
+            # label that survives on the destination screen. Verification must
+            # therefore establish a meaningful live transition (and package,
+            # when one is explicitly expected) without requiring the old label
+            # to remain visible.
+            last_verification = verify_transition(current_snapshot, expected_foreground_package=expected_foreground_package, timeout_seconds=self.verification_timeout)
             if last_verification.success:
                 history.append(NavigationState.SUCCESS)
                 return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=last_verification.snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified.")
