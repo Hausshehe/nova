@@ -5,8 +5,10 @@ on:
   push:
     branches:
       - rebuild-navigation-engine
+      - diagnostic-one-scroll
   pull_request:
     branches:
+      - rebuild-navigation-engine
       - fix-adaptive-app-list-handoff
       - main
 
@@ -35,4 +37,5 @@ jobs:
           tests.test_navigation_observer
           tests.test_accessibility_snapshot
           tests.test_navigation_recovery_regression
+          tests.test_navigation_diagnostic_probe
           -v
