@@ -1,0 +1,3 @@
+# Nova Windows research environment
+# Gate 0 needs only the official MetaTrader 5 Python integration.
+MetaTrader5
