@@ -45,10 +45,10 @@ class ExperimentRecord:
     final_decision: Decision
 
     def to_dict(self) -> dict:
+        """Serialize the complete record without double-converting nested dataclasses."""
         payload = asdict(self)
         payload["hypothesis"]["rules"] = dict(sorted(self.hypothesis.rules.items()))
         for segment in payload["segments"]:
-            segment["metrics"] = asdict(segment["metrics"])
             segment["decision"]["decision"] = segment["decision"]["decision"].value
         payload["final_decision"] = self.final_decision.value
         return payload
