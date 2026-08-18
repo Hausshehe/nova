@@ -14,6 +14,7 @@ from .resolver import TargetMatch, resolve_target
 from .state import ObservationQuality, Resolution, ScreenSnapshot
 from .verifier import VerificationResult, verify_transition
 
+
 class NavigationState(str, Enum):
     START = "START"
     OBSERVE = "OBSERVE"
@@ -28,6 +29,7 @@ class NavigationState(str, Enum):
     RECOVER = "RECOVER"
     SUCCESS = "SUCCESS"
     FAILURE = "FAILURE"
+
 
 @dataclass(frozen=True)
 class NavigationResult:
@@ -44,6 +46,7 @@ class NavigationResult:
     direction: str = "down"
     message: str = ""
     history: Tuple[NavigationState, ...] = field(default_factory=tuple)
+
 
 class NavigationController:
     """Bounded adaptive controller that never reverses on one bad observation."""
@@ -76,6 +79,17 @@ class NavigationController:
             if " ".join(label.split()).lower() == source_label:
                 return True
         return False
+
+    def _refresh_activation_target(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, Optional[TargetMatch]]:
+        """Refresh live target geometry immediately before a post-scroll tap."""
+        history_snapshot = snapshot
+        refreshed = observe_screen(previous=history_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+        if refreshed.observation_quality is not ObservationQuality.VALID:
+            return refreshed, None
+        refreshed_match = resolve_target(refreshed, target, installed_packages=installed_packages)
+        if refreshed_match.resolution is Resolution.FOUND and refreshed_match.node is not None:
+            return refreshed, refreshed_match
+        return refreshed, None
 
     def _activate_with_bounded_recovery(self, target: str, snapshot: ScreenSnapshot, match: TargetMatch, *, installed_packages: Optional[Iterable[str]], expected_foreground_package: Optional[str], history: list[NavigationState], total_scrolls: int, direction: str, progress: Optional[Progress]) -> NavigationResult:
         """Activate a target, allowing only bounded re-observe/re-resolve retries."""
@@ -231,11 +245,18 @@ class NavigationController:
             if post_scroll_match.resolution is Resolution.AMBIGUOUS:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=after, match=post_scroll_match, scroll_count=total_scrolls, direction=current_direction, message=post_scroll_match.reason)
             if post_scroll_match.resolution is Resolution.FOUND and post_scroll_match.node is not None:
-                return self._activate_with_bounded_recovery(target, after, post_scroll_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+                refreshed_after, refreshed_match = self._refresh_activation_target(after, target, installed_packages=installed_packages)
+                if refreshed_match is not None and refreshed_match.node is not None:
+                    history.append(NavigationState.REOBSERVE)
+                    return self._activate_with_bounded_recovery(target, refreshed_after, refreshed_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+                after = refreshed_after
 
             stabilized_after, stabilized_match = self._stabilize_after_scroll(after, target, installed_packages=installed_packages)
             if stabilized_match is not None and stabilized_match.resolution is Resolution.FOUND and stabilized_match.node is not None:
-                return self._activate_with_bounded_recovery(target, stabilized_after, stabilized_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+                refreshed_stable, refreshed_match = self._refresh_activation_target(stabilized_after, target, installed_packages=installed_packages)
+                if refreshed_match is not None and refreshed_match.node is not None:
+                    history.append(NavigationState.REOBSERVE)
+                    return self._activate_with_bounded_recovery(target, refreshed_stable, refreshed_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
             after = stabilized_after
 
             progress = compare_snapshots(snapshot, after)
