@@ -77,12 +77,37 @@ class NavigationController:
         history.append(NavigationState.RECOVER)
         return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=snapshot, progress=progress, scroll_count=scroll_count, direction=direction, message=message)
 
+    @staticmethod
+    def _source_target_label_present(snapshot: ScreenSnapshot, match: TargetMatch) -> bool:
+        """Return whether the exact label we activated is still visible.
+
+        Recovery must distinguish a genuinely disappeared source control from a
+        fuzzy semantic match such as ``Apps`` -> ``App list``. Using the exact
+        activated label is deliberately conservative and prevents same-screen
+        changes from being accepted as destination transitions.
+        """
+        source_label = " ".join(str(match.label or "").split()).lower()
+        if not source_label:
+            return False
+        for node in snapshot.visible_nodes:
+            if not isinstance(node, dict) or not node.get("enabled", True):
+                continue
+            label = (
+                str(node.get("text") or "").strip()
+                or str(node.get("content_description") or "").strip()
+                or str(node.get("resource_id") or "").strip()
+            )
+            if " ".join(label.split()).lower() == source_label:
+                return True
+        return False
+
     def _activate_with_bounded_recovery(self, target: str, snapshot: ScreenSnapshot, match: TargetMatch, *, installed_packages: Optional[Iterable[str]], expected_foreground_package: Optional[str], history: list[NavigationState], total_scrolls: int, direction: str, progress: Optional[Progress]) -> NavigationResult:
         """Activate a target, allowing only bounded re-observe/re-resolve retries."""
         current_snapshot = snapshot
         current_match = match
         last_action: Optional[ActionResult] = None
         last_verification: Optional[VerificationResult] = None
+        re_resolved = False
 
         for attempt in range(self.max_activation_retries + 1):
             history.append(NavigationState.ACTIVATE)
@@ -105,30 +130,35 @@ class NavigationController:
             if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
                 return self._bounded_observation_failure(target, history, recovery_snapshot, progress, total_scrolls, direction, "Activation verification failed and the recovery observation was unreliable.")
 
-            # A destination does not need to preserve the source target label.
-            # However, a meaningful observation change is not enough by itself:
-            # the source target must also stop resolving. This prevents a scroll,
-            # animation, or other same-screen change from being mistaken for a
-            # successful activation when the target is still present.
             recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
-            recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
-            if recovery_progress.meaningful and recovery_match.resolution is not Resolution.FOUND:
+            source_target_present = self._source_target_label_present(recovery_snapshot, current_match)
+
+            # A destination does not need to preserve the source target label.
+            # But a meaningful observation change is not enough by itself:
+            # the exact control that Nova activated must have disappeared.
+            # This intentionally ignores fuzzy matches such as "App list" for
+            # the source target "Apps" so same-screen changes cannot be marked
+            # as successful activation.
+            if recovery_progress.meaningful and not source_target_present:
                 recovered_verification = VerificationResult(
                     True,
                     recovery_snapshot,
-                    "A meaningful live UI transition was verified during bounded activation recovery after the source target disappeared.",
+                    "A meaningful live UI transition was verified during bounded activation recovery after the activated source control disappeared.",
                 )
                 history.append(NavigationState.VERIFY)
                 history.append(NavigationState.SUCCESS)
                 return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
 
+            recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
             if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, match=recovery_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message="Activation verification failed and the target was not safely re-resolved for a bounded retry.")
 
             current_snapshot = recovery_snapshot
             current_match = recovery_match
+            re_resolved = True
 
-        return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=(last_verification.reason if last_verification else "Activation verification failed."))
+        failure_message = "Activation verification failed after safely re-resolving the target for the bounded retry." if re_resolved else (last_verification.reason if last_verification else "Activation verification failed.")
+        return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=failure_message)
 
     def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
         history = [NavigationState.START]
