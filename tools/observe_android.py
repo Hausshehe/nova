@@ -54,18 +54,25 @@ def _infer_foreground_from_nodes(nodes):
 
 
 def _stable_foreground_package(hierarchy_package=""):
-    """Prefer a fresh focus result and retry briefly during Activity changes."""
+    """Prefer the hierarchy package; probe focus only when hierarchy is empty.
+
+    The hierarchy was already captured by uiautomator, so synchronously probing
+    dumpsys here adds latency and can itself hang on OEM builds. When the
+    hierarchy has a package, it is the more useful and immediate observation.
+    """
+    if hierarchy_package:
+        return hierarchy_package
+
     last = ""
     for attempt in range(FOREGROUND_RETRIES):
         current = _foreground_package()
         if current:
             last = current
-            if not hierarchy_package or current == hierarchy_package:
-                return current
+            return current
         if attempt + 1 < FOREGROUND_RETRIES:
             time.sleep(FOREGROUND_RETRY_DELAY)
 
-    return hierarchy_package or last
+    return last
 
 
 def _parse_hierarchy(xml_text, include_nodes):
