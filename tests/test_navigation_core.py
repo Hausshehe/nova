@@ -250,6 +250,35 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("invalid live bounds", result.message)
 
+    def test_reversal_requires_validated_no_progress(self):
+        first = self._snapshot(text=("A", "B", "C"))
+        unchanged1 = self._snapshot(text=("A", "B", "C"))
+        unchanged2 = self._snapshot(text=("A", "B", "C"))
+        reverse_progress = self._snapshot(text=("D", "E", "F"))
+        target_screen = self._snapshot(text=("YouTube",))
+        action = ActionResult(True, "SCROLL", "simulated")
+        tap = ActionResult(True, "TAP", "simulated")
+        verification = VerificationResult(True, target_screen, "simulated verified transition")
+        controller = NavigationController(
+            observation_retries=1,
+            max_scrolls=4,
+            no_progress_before_reversal=2,
+            settle_seconds=0,
+        )
+
+        with patch(
+            "navigation.controller.observe_screen",
+            side_effect=[first, unchanged1, unchanged2, reverse_progress, target_screen],
+        ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
+            "navigation.controller.activate_node", return_value=tap
+        ), patch("navigation.controller.verify_transition", return_value=verification):
+            result = controller.navigate_target("YouTube")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.direction, "up")
+        self.assertGreaterEqual(do_scroll.call_count, 3)
+        self.assertIn(NavigationState.SUCCESS, result.history)
+
 
 if __name__ == "__main__":
     unittest.main()
