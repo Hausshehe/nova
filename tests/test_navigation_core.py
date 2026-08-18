@@ -268,7 +268,7 @@ class NavigationCoreTests(unittest.TestCase):
             command = run_root.call_args.args[0]
 
         self.assertTrue(result.success)
-        self.assertEqual(command, "/system/bin/input swipe 360 447 360 1153 350")
+        self.assertEqual(command, "/system/bin/input swipe 360 450 360 1150 350")
 
     def test_scroll_rejects_invalid_region(self):
         snapshot = SimpleNamespace(scrollable_regions=({"bounds": "invalid"},))
@@ -294,7 +294,7 @@ class NavigationCoreTests(unittest.TestCase):
 
         with patch(
             "navigation.controller.observe_screen",
-            side_effect=[first, unchanged1, unchanged2, reverse_progress, target_screen],
+            side_effect=[first, unchanged1, unchanged2, reverse_progress, target_screen, target_screen],
         ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
             "navigation.controller.activate_node", return_value=tap
         ), patch("navigation.controller.verify_transition", return_value=verification):
