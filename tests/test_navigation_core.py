@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
-from navigation.actions import ActionResult
+from navigation.actions import ActionResult, activate_node, scroll
 from navigation.controller import NavigationController, NavigationState
 from navigation.progress import compare_snapshots
 from navigation.resolver import resolve_target
@@ -196,6 +197,58 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertEqual(scroll.call_count, 2)
         self.assertGreaterEqual(observe.call_count, 3)
         self.assertIn("refusing to reverse direction", result.message)
+
+    def test_valid_actionable_ancestor_uses_live_center(self):
+        node = {
+            "text": "Apps",
+            "enabled": True,
+            "clickable": False,
+            "bounds": "[100,100][200,200]",
+            "actionable_ancestor": {
+                "enabled": True,
+                "clickable": True,
+                "bounds": "[50,50][250,250]",
+            },
+        }
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch("navigation.actions.run_root", return_value=completed) as run_root:
+            result = activate_node(node)
+            command = run_root.call_args.args[0]
+
+        self.assertTrue(result.success)
+        self.assertEqual(command, "input tap 150 150")
+
+    def test_invalid_actionable_ancestor_is_rejected(self):
+        node = {
+            "text": "Apps",
+            "enabled": True,
+            "clickable": False,
+            "bounds": "[100,100][200,200]",
+            "actionable_ancestor": {
+                "enabled": True,
+                "clickable": True,
+                "bounds": "[300,300][400,400]",
+            },
+        }
+        result = activate_node(node)
+        self.assertFalse(result.success)
+        self.assertIn("do not contain", result.message)
+
+    def test_scroll_uses_live_region_and_requested_direction(self):
+        snapshot = SimpleNamespace(scrollable_regions=({"bounds": "[10,100][710,1500]"},))
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch("navigation.actions.run_root", return_value=completed) as run_root:
+            result = scroll(snapshot, "up")
+            command = run_root.call_args.args[0]
+
+        self.assertTrue(result.success)
+        self.assertEqual(command, "/system/bin/input swipe 360 447 360 1153 350")
+
+    def test_scroll_rejects_invalid_region(self):
+        snapshot = SimpleNamespace(scrollable_regions=({"bounds": "invalid"},))
+        result = scroll(snapshot, "down")
+        self.assertFalse(result.success)
+        self.assertIn("invalid live bounds", result.message)
 
 
 if __name__ == "__main__":
