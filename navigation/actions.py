@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -73,13 +74,18 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
     if center is None:
         return ActionResult(False, "TAP", "Target has no valid live bounds.", bounds)
 
+    # Give Android a short, intentional hand-off from observation to input.
+    # This is deliberately small: the controller already verifies live bounds,
+    # while this pause prevents an immediate tap from racing a settling UI.
+    time.sleep(0.12)
+
     x, y = center
     result = run_root(f"input tap {x} {y}")
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "Tap failed").strip()
         return ActionResult(False, "TAP", message, bounds)
 
-    return ActionResult(True, "TAP", "Live target bounds activated successfully.", bounds)
+    return ActionResult(True, "TAP", "Live target bounds activated successfully after a short settling hand-off.", bounds)
 
 
 def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
@@ -130,9 +136,13 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
     if start_y == end_y:
         return ActionResult(False, "SCROLL", "Computed scroll gesture has no movement.", region.get("bounds", ""))
 
-    result = run_root(f"/system/bin/input swipe {x} {start_y} {x} {end_y} 350")
+    # Scale gesture duration with the actual observed movement. Larger moves
+    # take longer, reducing the abrupt visual jump that can race hierarchy
+    # updates on Android while still keeping recovery gestures responsive.
+    duration_ms = max(420, min(750, 300 + int(distance * 0.80)))
+    result = run_root(f"/system/bin/input swipe {x} {start_y} {x} {end_y} {duration_ms}")
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "Scroll failed").strip()
         return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
 
-    return ActionResult(True, "SCROLL", f"Live scrollable region swiped using {ratio:.2f} of its observed height.", region.get("bounds", ""))
+    return ActionResult(True, "SCROLL", f"Live scrollable region swiped using {ratio:.2f} of its observed height over {duration_ms}ms.", region.get("bounds", ""))
