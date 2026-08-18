@@ -42,28 +42,37 @@ def _bounds_tuple(value: str):
 
 
 def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected_target: str) -> tuple[bool, bool]:
-    """Require the activated semantic target to leave or move from its old state."""
+    """Require a target-consistent transition, not merely a generic UI change."""
     before_match = resolve_target(before, expected_target)
     after_match = resolve_target(after, expected_target)
 
-    if before_match.resolution is not Resolution.FOUND or before_match.node is None:
-        return True, after_match.resolution is Resolution.FOUND and after_match.node is not None
+    before_found = before_match.resolution is Resolution.FOUND and before_match.node is not None
+    after_found = after_match.resolution is Resolution.FOUND and after_match.node is not None
 
-    if after_match.resolution is not Resolution.FOUND or after_match.node is None:
-        return True, False
-
-    before_bounds = _bounds_tuple(before_match.node.get("bounds", ""))
-    after_bounds = _bounds_tuple(after_match.node.get("bounds", ""))
-    if before_bounds is None or after_bounds is None:
+    # A target appearing on a result screen is valid destination evidence.
+    if not before_found and after_found:
         return True, True
 
-    motion = max(
-        abs(before_bounds[0] - after_bounds[0]),
-        abs(before_bounds[1] - after_bounds[1]),
-        abs(before_bounds[2] - after_bounds[2]),
-        abs(before_bounds[3] - after_bounds[3]),
-    )
-    return motion >= 40, True
+    # A target disappearing after activation is valid source-transition evidence.
+    if before_found and not after_found:
+        return True, False
+
+    # If the target remains visible, only substantial movement can make the
+    # transition target-consistent; incidental accessibility jitter is not enough.
+    if before_found and after_found:
+        before_bounds = _bounds_tuple(before_match.node.get("bounds", ""))
+        after_bounds = _bounds_tuple(after_match.node.get("bounds", ""))
+        if before_bounds is None or after_bounds is None:
+            return False, True
+        motion = max(
+            abs(before_bounds[0] - after_bounds[0]),
+            abs(before_bounds[1] - after_bounds[1]),
+            abs(before_bounds[2] - after_bounds[2]),
+            abs(before_bounds[3] - after_bounds[3]),
+        )
+        return motion >= 40, True
+
+    return False, False
 
 
 def _meaningful_transition(before: Optional[ScreenSnapshot], after: ScreenSnapshot) -> bool:
@@ -84,10 +93,10 @@ def verify_transition(
 ) -> VerificationResult:
     """Wait for and verify a meaningful post-action UI transition.
 
-    When an expected target is supplied, a generic UI change is not enough:
-    the target must disappear from the resulting hierarchy or move
-    substantially from its pre-action live bounds. This prevents delayed
-    scroll/layout changes from being mistaken for a successful activation.
+    With an expected target, both pieces of evidence are required: the UI
+    must meaningfully transition and the target must participate in that
+    transition. This prevents delayed scroll/layout changes from being
+    mistaken for a successful activation.
     """
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     last = before
@@ -101,15 +110,15 @@ def verify_transition(
             continue
 
         package_ok = not expected_foreground_package or current.foreground_package == expected_foreground_package
+        meaningful = _meaningful_transition(before, current)
         target_ok = True
         target_resolved = False
         if expected_target:
             target_ok, target_resolved = _target_transitioned(before, current, expected_target)
 
-        meaningful = _meaningful_transition(before, current)
-        if package_ok and (target_ok if expected_target else meaningful):
+        if package_ok and meaningful and (target_ok if expected_target else True):
             if expected_target:
-                reason = "Expected foreground package is active and the target transitioned away from its pre-action live state." if expected_foreground_package else "The target transitioned away from its pre-action live state."
+                reason = "Expected foreground package is active and the target participated in a meaningful live UI transition." if expected_foreground_package else "The target participated in a meaningful live UI transition."
             elif expected_foreground_package:
                 reason = "Expected foreground package is active."
             else:
@@ -121,9 +130,5 @@ def verify_transition(
     if last is None:
         last = observe_screen(include_nodes=True, retries=1)
 
-    return VerificationResult(
-        False,
-        last,
-        "No verified activation transition was observed within the bounded verification window.",
-        target_resolved=False,
-    )
+    reason = "No verified target-consistent activation transition was observed within the bounded verification window." if expected_target else "No verified activation transition was observed within the bounded verification window."
+    return VerificationResult(False, last, reason, target_resolved=False)
