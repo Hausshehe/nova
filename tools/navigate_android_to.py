@@ -10,6 +10,7 @@ import re
 from difflib import SequenceMatcher
 
 from tools.android_root import run_root
+from tools.find_android_app import find_android_app
 from tools.observe_android import observe_android
 
 
@@ -156,6 +157,53 @@ def _find_match(nodes, target):
     return score, node, label
 
 
+def _find_app_collection_handoff(nodes):
+    """Find a generic app-collection entry before searching for an app.
+
+    When a requested installed app is not directly visible, a settings-style
+    hub may expose a collection entry such as an app list alongside other
+    actions. This ranks live labels by generic collection semantics instead
+    of encoding a device-specific screen name.
+    """
+    candidates = []
+    collection_words = {"list", "browse", "installed", "all"}
+    app_words = {"app", "application"}
+    action_words = {"update", "upgrade", "restore", "backup"}
+
+    for node in nodes or []:
+        if not isinstance(node, dict) or not node.get("enabled", True):
+            continue
+        if not node.get("clickable"):
+            continue
+
+        label = _label(node)
+        words = _words(label)
+        if not words:
+            continue
+
+        app_score = len(words & app_words)
+        collection_score = len(words & collection_words)
+        action_score = len(words & action_words)
+        if not app_score or not collection_score or action_score:
+            continue
+
+        score = (app_score * 4) + (collection_score * 6) - (action_score * 8)
+        score += SequenceMatcher(None, "app list", " ".join(sorted(words))).ratio()
+        candidates.append((score, _candidate_tiebreak(label, "app list", node), node, label))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    score, _, node, label = candidates[0]
+    return score, node, label
+
+
+def _target_is_installed_app(target):
+    """Use the live package inventory to distinguish an app target generically."""
+    result = find_android_app(target)
+    return bool(result.get("success") and result.get("packages"))
+
+
 def _bounds_center(bounds):
     match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
     if not match:
@@ -229,6 +277,8 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
     directions = [initial_direction, "up" if initial_direction == "down" else "down"]
     scrolls = 0
     last_foreground = ""
+    handoff_used = False
+    target_is_app = _target_is_installed_app(target)
 
     for phase_index, current_direction in enumerate(directions):
         phase_scrolls = 0
@@ -272,6 +322,29 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                     "foreground_package": verification.get("foreground_package", last_foreground),
                     "message": "Target found and activated using the current UI hierarchy.",
                 }
+
+            # If the requested destination is an installed app but the app is
+            # not currently visible, first enter a live app collection when
+            # the current screen exposes one. This is an adaptive handoff,
+            # not a hard-coded Settings/App List path.
+            if target_is_app and not handoff_used:
+                handoff = _find_app_collection_handoff(observed.get("nodes"))
+                if handoff:
+                    score, node, label = handoff
+                    activated, error = _activate(node)
+                    if not activated:
+                        return {
+                            "success": False,
+                            "verified": False,
+                            "target": target,
+                            "matched_label": label,
+                            "scrolls": scrolls,
+                            "message": error,
+                        }
+                    handoff_used = True
+                    previous_signature = None
+                    unchanged_count = 0
+                    continue
 
             state = observed.get("state") or {}
             if not state.get("scrollable") or phase_scrolls >= budget:
