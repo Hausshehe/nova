@@ -10,11 +10,33 @@ from .observer import observe_screen
 from .state import ObservationQuality, ScreenSnapshot
 
 
+MIN_TEXT_CHANGE_RATIO = 0.20
+
+
 @dataclass(frozen=True)
 class VerificationResult:
     success: bool
     snapshot: ScreenSnapshot
     reason: str
+
+
+def _text_change_ratio(before: ScreenSnapshot, after: ScreenSnapshot) -> float:
+    before_text = {text.strip().lower() for text in before.visible_text if text.strip()}
+    after_text = {text.strip().lower() for text in after.visible_text if text.strip()}
+    if not before_text and not after_text:
+        return 0.0
+    union = before_text | after_text
+    if not union:
+        return 0.0
+    return len(before_text ^ after_text) / len(union)
+
+
+def _meaningful_transition(before: Optional[ScreenSnapshot], after: ScreenSnapshot) -> bool:
+    if before is None:
+        return bool(after.visible_nodes or after.visible_text or after.foreground_package)
+    if before.foreground_package != after.foreground_package:
+        return True
+    return _text_change_ratio(before, after) >= MIN_TEXT_CHANGE_RATIO
 
 
 def verify_transition(
@@ -32,18 +54,15 @@ def verify_transition(
         current = observe_screen(previous=last, include_nodes=True, retries=1)
         last = current
 
-        if current.observation_quality is ObservationQuality.TRANSIENT:
-            time.sleep(max(0.0, float(poll_seconds)))
-            continue
-        if current.observation_quality is ObservationQuality.FAILED:
+        if current.observation_quality is not ObservationQuality.VALID:
             time.sleep(max(0.0, float(poll_seconds)))
             continue
 
         if expected_foreground_package:
             if current.foreground_package == expected_foreground_package:
                 return VerificationResult(True, current, "Expected foreground package is active.")
-        elif before is None or current.semantic_signature() != before.semantic_signature():
-            return VerificationResult(True, current, "The live UI changed after the action.")
+        elif _meaningful_transition(before, current):
+            return VerificationResult(True, current, "A meaningful live UI transition was verified.")
 
         time.sleep(max(0.0, float(poll_seconds)))
 
@@ -53,5 +72,5 @@ def verify_transition(
     return VerificationResult(
         False,
         last,
-        "No verified foreground/package change or meaningful UI transition was observed within the bounded verification window.",
+        "No verified foreground/package change or meaningful semantic UI transition was observed within the bounded verification window.",
     )
