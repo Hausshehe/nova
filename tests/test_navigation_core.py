@@ -113,7 +113,7 @@ class NavigationCoreTests(unittest.TestCase):
         with patch("navigation.verifier.observe_screen", return_value=after):
             result = verify_transition(before, timeout_seconds=0.2, poll_seconds=0)
         self.assertFalse(result.success)
-        self.assertIn("meaningful semantic UI transition", result.reason)
+        self.assertIn("target-consistent", result.reason)
 
     def test_verifier_accepts_meaningful_text_transition(self):
         before = self._snapshot(text=("Apps", "Display", "Battery"))
@@ -121,6 +121,32 @@ class NavigationCoreTests(unittest.TestCase):
         with patch("navigation.verifier.observe_screen", return_value=after):
             result = verify_transition(before, timeout_seconds=0.2, poll_seconds=0)
         self.assertTrue(result.success)
+
+    def test_verifier_requires_target_when_requested(self):
+        before = self._snapshot(text=("Apps", "Display"))
+        unrelated = self._snapshot(text=("Battery", "Storage", "Network"))
+        with patch("navigation.verifier.observe_screen", return_value=unrelated):
+            result = verify_transition(
+                before,
+                expected_target="Apps",
+                timeout_seconds=0.2,
+                poll_seconds=0,
+            )
+        self.assertFalse(result.success)
+        self.assertFalse(result.target_resolved)
+
+    def test_verifier_accepts_target_on_result_screen(self):
+        before = self._snapshot(text=("Settings",))
+        after = self._snapshot(text=("Apps", "Display", "Battery"))
+        with patch("navigation.verifier.observe_screen", return_value=after):
+            result = verify_transition(
+                before,
+                expected_target="Apps",
+                timeout_seconds=0.2,
+                poll_seconds=0,
+            )
+        self.assertTrue(result.success)
+        self.assertTrue(result.target_resolved)
 
     def test_adaptive_scroll_keeps_direction_when_progress_is_real(self):
         first = self._snapshot(text=("A", "B", "C"))
