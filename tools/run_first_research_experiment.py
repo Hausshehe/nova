@@ -3,6 +3,10 @@
 This is a thin experiment definition. The deterministic execution, splitting,
 gating, and standardized record are owned by ``trading_research.experiment``.
 
+Every completed experiment is also persisted to Nova's local SQLite experience
+store. Memory records evidence only; it cannot promote a strategy or authorize
+trading.
+
 Hypothesis: a 20/50-day SMA trend-following signal on EURUSD daily bars has
 positive expectancy after explicit transaction costs.
 """
@@ -10,6 +14,7 @@ positive expectancy after explicit transaction costs.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -20,12 +25,14 @@ if str(ROOT) not in sys.path:
 
 from trading_research.contracts import Hypothesis, ResearchGates
 from trading_research.experiment import run_experiment
+from trading_research.memory import ExperienceStore
 
 
 FAST = 20
 SLOW = 50
 FEE_BPS = 1.0
 SLIPPAGE_BPS = 1.0
+DEFAULT_MEMORY = ROOT / "data" / "research" / "experience.sqlite3"
 
 
 def signal(bars, index: int) -> bool:
@@ -53,11 +60,36 @@ def build_hypothesis(symbol: str) -> Hypothesis:
     )
 
 
+def experiment_id(record: dict, output: Path | None) -> str:
+    """Return a stable ID for a named result, otherwise a content-derived ID."""
+    if output is not None:
+        return output.stem
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return "exp-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def persist_experiment(record, payload: dict, memory_path: Path, output: Path | None) -> str:
+    """Persist one completed experiment without granting it any authority."""
+    store = ExperienceStore(memory_path)
+    exp_id = experiment_id(payload, output)
+    store.record_experiment(
+        experiment_id=exp_id,
+        created_at_utc=record.created_at_utc,
+        hypothesis_name=record.hypothesis.name,
+        symbol=record.hypothesis.symbol,
+        timeframe=record.hypothesis.timeframe,
+        final_decision=record.final_decision.value,
+        record=payload,
+    )
+    return exp_id
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", type=Path)
     parser.add_argument("--symbol", default="EURUSD")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--memory", type=Path, default=DEFAULT_MEMORY)
     args = parser.parse_args()
 
     record = run_experiment(
@@ -73,6 +105,9 @@ def main() -> None:
     payload["hypothesis"]["slow_sma"] = SLOW
     text = json.dumps(payload, indent=2, default=str)
     print(text)
+    exp_id = persist_experiment(record, payload, args.memory, args.output)
+    print(f"EXPERIENCE_RECORDED: {exp_id}")
+    print(f"EXPERIENCE_STORE: {args.memory}")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text + "\n", encoding="utf-8")
