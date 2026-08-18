@@ -87,14 +87,9 @@ class NavigationCoreTests(unittest.TestCase):
             observation_quality=ObservationQuality.TRANSIENT,
             message="simulated transient hierarchy",
         )
-        controller = NavigationController(
-            observation_retries=1,
-            max_transient_observations=3,
-            max_scrolls=1,
-        )
+        controller = NavigationController(observation_retries=1, max_transient_observations=3, max_scrolls=1)
         with patch("navigation.controller.observe_screen", return_value=transient) as observe:
             result = controller.navigate_target("Apps")
-
         self.assertFalse(result.success)
         self.assertEqual(result.state, NavigationState.FAILURE)
         self.assertEqual(observe.call_count, 3)
@@ -202,22 +197,22 @@ class NavigationCoreTests(unittest.TestCase):
         snapshot = self._snapshot(text=("A", "B", "C"))
         failed_scroll = ActionResult(False, "SCROLL", "simulated command failure")
         controller = NavigationController(observation_retries=1, max_transient_observations=2, max_scrolls=4, no_progress_before_reversal=2, settle_seconds=0)
-        with patch("navigation.controller.observe_screen", return_value=snapshot) as observe, patch("navigation.controller.scroll", return_value=failed_scroll) as scroll:
+        with patch("navigation.controller.observe_screen", return_value=snapshot) as observe, patch("navigation.controller.scroll", return_value=failed_scroll) as do_scroll:
             result = controller.navigate_target("YouTube")
         self.assertFalse(result.success)
         self.assertEqual(result.direction, "down")
-        self.assertEqual(scroll.call_count, 2)
+        self.assertEqual(do_scroll.call_count, 2)
         self.assertGreaterEqual(observe.call_count, 3)
         self.assertIn("refusing to reverse direction", result.message)
 
-    def test_valid_actionable_ancestor_uses_live_center(self):
+    def test_valid_actionable_ancestor_uses_accessibility_activation(self):
         node = {"text": "Apps", "enabled": True, "clickable": False, "bounds": "[100,100][200,200]", "actionable_ancestor": {"enabled": True, "clickable": True, "bounds": "[50,50][250,250]"}}
-        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch("navigation.actions.run_root", return_value=completed) as run_root:
+        completed = SimpleNamespace(returncode=0, stdout="Broadcast completed: result=1", stderr="")
+        with patch("navigation.actions.subprocess.run", return_value=completed) as run_accessibility:
             result = activate_node(node)
-            command = run_root.call_args.args[0]
         self.assertTrue(result.success)
-        self.assertEqual(command, "input tap 150 150")
+        self.assertEqual(run_accessibility.call_args.args[0][4], "-a")
+        self.assertIn("com.infoney.nova.CLICK_ELEMENT", run_accessibility.call_args.args[0])
 
     def test_invalid_actionable_ancestor_is_rejected(self):
         node = {"text": "Apps", "enabled": True, "clickable": False, "bounds": "[100,100][200,200]", "actionable_ancestor": {"enabled": True, "clickable": True, "bounds": "[300,300][400,400]"}}
@@ -225,14 +220,16 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("do not contain", result.message)
 
-    def test_scroll_uses_live_region_and_requested_direction(self):
+    def test_scroll_uses_accessibility_service_and_requested_direction(self):
         snapshot = SimpleNamespace(scrollable_regions=({"bounds": "[10,100][710,1500]"},))
-        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch("navigation.actions.run_root", return_value=completed) as run_root:
+        completed = SimpleNamespace(returncode=0, stdout="Broadcast completed: result=1", stderr="")
+        with patch("navigation.actions.subprocess.run", return_value=completed) as run_accessibility:
             result = scroll(snapshot, "up")
-            command = run_root.call_args.args[0]
+            command = run_accessibility.call_args.args[0]
         self.assertTrue(result.success)
-        self.assertEqual(command, "/system/bin/input swipe 360 556 360 1044 691")
+        self.assertIn("com.infoney.nova.SCROLL_WINDOW", command)
+        self.assertIn("up", command)
+        self.assertNotIn("input swipe", " ".join(command))
 
     def test_scroll_rejects_invalid_region(self):
         snapshot = SimpleNamespace(scrollable_regions=({"bounds": "invalid"},))
