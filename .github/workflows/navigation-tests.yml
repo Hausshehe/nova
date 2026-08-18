@@ -34,4 +34,5 @@ jobs:
           tests.test_navigation_path_integration
           tests.test_navigation_observer
           tests.test_accessibility_snapshot
+          tests.test_navigation_recovery_regression
           -v
