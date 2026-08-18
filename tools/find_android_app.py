@@ -87,12 +87,23 @@ def find_android_app(app_name):
                 "message": f"Found canonical Android system package for '{app_name}'.",
             }
 
-        if strong:
+        # A single strong exact/suffix identity is safe to use. Multiple strong
+        # identities remain ambiguous: ranking must not turn a real ambiguity
+        # into an arbitrary package choice.
+        if len(strong) == 1:
             return {
                 "success": True,
                 "verified": True,
                 "packages": strong,
-                "message": f"Found {len(strong)} strong package match(es).",
+                "message": f"Found one strong package match for '{app_name}'.",
+            }
+
+        if len(strong) > 1:
+            return {
+                "success": False,
+                "verified": True,
+                "packages": [],
+                "message": f"Installed package matches for '{app_name}' were ambiguous.",
             }
 
         if len(packages) > 1:
