@@ -105,6 +105,21 @@ class NavigationController:
             if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
                 return self._bounded_observation_failure(target, history, recovery_snapshot, progress, total_scrolls, direction, "Activation verification failed and the recovery observation was unreliable.")
 
+            # A destination screen does not necessarily preserve the source
+            # target label. If the fresh recovery snapshot itself proves a
+            # meaningful transition from the pre-action screen, accept that
+            # evidence instead of requiring the old target to remain resolvable.
+            recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
+            if recovery_progress.meaningful:
+                recovered_verification = VerificationResult(
+                    True,
+                    recovery_snapshot,
+                    "A meaningful live UI transition was verified during bounded activation recovery.",
+                )
+                history.append(NavigationState.VERIFY)
+                history.append(NavigationState.SUCCESS)
+                return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
+
             recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
             if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, match=recovery_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message="Activation verification failed and the target was not safely re-resolved for a bounded retry.")
