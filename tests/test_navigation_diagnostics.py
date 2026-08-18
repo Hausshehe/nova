@@ -14,7 +14,10 @@ class NavigationDiagnosticsTests(unittest.TestCase):
 
     def test_trace_records_relative_timing_and_action_duration(self):
         trace = DiagnosticTrace(enabled=True)
-        with patch("navigation.diagnostics.time.monotonic", side_effect=[10.0, 10.0, 10.125]):
+        with patch(
+            "navigation.diagnostics.time.monotonic",
+            side_effect=[10.0, 10.0, 10.125, 10.125],
+        ):
             trace.record("goal", "start", goal="Open Settings")
             trace.start_action("a1", "scroll", direction="down")
             trace.end_action("a1", "scroll", success=True)
