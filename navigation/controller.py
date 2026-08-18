@@ -228,6 +228,16 @@ class NavigationController:
                 snapshot = after
                 continue
 
+            # The post-scroll snapshot is the freshest evidence we have. Resolve
+            # the target immediately against it. If the target is now visible,
+            # activate it before considering another scroll. This prevents a
+            # large follow-up gesture from scrolling past a newly visible target.
+            post_scroll_match = resolve_target(after, target, installed_packages=installed_packages)
+            if post_scroll_match.resolution is Resolution.AMBIGUOUS:
+                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=after, match=post_scroll_match, scroll_count=total_scrolls, direction=current_direction, message=post_scroll_match.reason)
+            if post_scroll_match.resolution is Resolution.FOUND and post_scroll_match.node is not None:
+                return self._activate_with_bounded_recovery(target, after, post_scroll_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+
             progress = compare_snapshots(snapshot, after)
             last_progress = progress
             if progress.meaningful:
