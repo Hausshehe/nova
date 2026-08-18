@@ -10,12 +10,7 @@ from .diagnostics import DiagnosticTrace
 
 
 class TracedNavigationController:
-    """Wrap NavigationController and record a diagnostic execution timeline.
-
-    The wrapped controller is unchanged. Diagnostics observe the controller's
-    public result and timing only, so enabling tracing cannot alter navigation
-    behavior.
-    """
+    """Wrap NavigationController and record a diagnostic execution timeline."""
 
     def __init__(self, controller: Optional[NavigationController] = None, *, trace: Optional[DiagnosticTrace] = None) -> None:
         self.controller = controller or NavigationController()
@@ -37,10 +32,7 @@ class TracedNavigationController:
             expected_foreground_package=expected_foreground_package or "",
         )
         started = time.monotonic()
-        self.trace.decision(
-            "controller_start",
-            target=target,
-        )
+        self.trace.decision("controller_start", target=target)
 
         try:
             result = self.controller.navigate_target(
@@ -60,6 +52,17 @@ class TracedNavigationController:
             raise
 
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        action_data = None
+        if result.action is not None:
+            action_data = {
+                "success": result.action.success,
+                "action": result.action.action,
+                "message": result.action.message,
+                "bounds": result.action.bounds,
+                "duration_ms": result.action.duration_ms,
+                "executor_returncode": result.action.executor_returncode,
+            }
+
         self.trace.record(
             "controller_result",
             result.state.value,
@@ -71,16 +74,7 @@ class TracedNavigationController:
             direction=result.direction,
             message=result.message,
             history=[state.value for state in result.history],
-            action=(
-                {
-                    "success": result.action.success,
-                    "action": result.action.action,
-                    "message": result.action.message,
-                    "bounds": result.action.bounds,
-                }
-                if result.action is not None
-                else None
-            ),
+            action=action_data,
             verification=(
                 {
                     "success": result.verification.success,
@@ -101,9 +95,5 @@ class TracedNavigationController:
                 elapsed_ms=elapsed_ms,
             )
         else:
-            self.trace.decision(
-                "navigation_success",
-                target=target,
-                elapsed_ms=elapsed_ms,
-            )
+            self.trace.decision("navigation_success", target=target, elapsed_ms=elapsed_ms)
         return result
