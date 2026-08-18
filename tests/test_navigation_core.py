@@ -272,7 +272,7 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertGreaterEqual(observe.call_count, 3)
         self.assertIn("refusing to reverse direction", result.message)
 
-    def test_valid_actionable_ancestor_uses_live_center(self):
+    def test_valid_actionable_ancestor_uses_accessibility_semantic_activation(self):
         node = {
             "text": "Apps",
             "enabled": True,
@@ -284,13 +284,16 @@ class NavigationCoreTests(unittest.TestCase):
                 "bounds": "[50,50][250,250]",
             },
         }
-        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch("navigation.actions.run_root", return_value=completed) as run_root:
+        completed = SimpleNamespace(returncode=0, stdout="Broadcast completed: result=1", stderr="")
+        with patch("navigation.actions.subprocess.run", return_value=completed) as transport:
             result = activate_node(node)
-            command = run_root.call_args.args[0]
+            command = transport.call_args.args[0]
 
         self.assertTrue(result.success)
-        self.assertEqual(command, "input tap 150 150")
+        self.assertIn("com.infoney.nova.CLICK_ELEMENT", command)
+        self.assertIn("Apps", command)
+        self.assertEqual(result.bounds, "[50,50][250,250]")
+        self.assertEqual(result.executor_returncode, 0)
 
     def test_invalid_actionable_ancestor_is_rejected(self):
         node = {
@@ -308,15 +311,19 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("do not contain", result.message)
 
-    def test_scroll_uses_live_region_and_requested_direction(self):
+    def test_scroll_uses_accessibility_service_and_requested_direction(self):
         snapshot = SimpleNamespace(scrollable_regions=({"bounds": "[10,100][710,1500]"},))
-        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch("navigation.actions.run_root", return_value=completed) as run_root:
+        completed = SimpleNamespace(returncode=0, stdout="Broadcast completed: result=1", stderr="")
+        with patch("navigation.actions.subprocess.run", return_value=completed) as transport:
             result = scroll(snapshot, "up")
-            command = run_root.call_args.args[0]
+            command = transport.call_args.args[0]
 
         self.assertTrue(result.success)
-        self.assertEqual(command, "/system/bin/input swipe 360 556 360 1044 350")
+        self.assertIn("com.infoney.nova.SCROLL_WINDOW", command)
+        self.assertIn("up", command)
+        self.assertNotIn("input", " ".join(command))
+        self.assertEqual(result.bounds, "[10,100][710,1500]")
+        self.assertEqual(result.executor_returncode, 0)
 
     def test_scroll_rejects_invalid_region(self):
         snapshot = SimpleNamespace(scrollable_regions=({"bounds": "invalid"},))
