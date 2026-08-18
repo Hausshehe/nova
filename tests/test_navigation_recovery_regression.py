@@ -95,9 +95,10 @@ class NavigationRecoveryRegressionTests(unittest.TestCase):
         initial = self._snapshot(("Display", "Battery"), scrollable=True)
         transient_after_scroll = self._snapshot(("Display", "Battery"), scrollable=False)
         stable_after_reobserve = self._snapshot(("Display", "Apps"), scrollable=True)
+        refreshed_target = self._snapshot(("Display", "Apps"), scrollable=True)
         action = ActionResult(True, "SCROLL", "simulated scroll")
         tap = ActionResult(True, "TAP", "simulated tap")
-        verified = VerificationResult(True, stable_after_reobserve, "simulated verified transition")
+        verified = VerificationResult(True, refreshed_target, "simulated verified transition")
 
         controller = NavigationController(
             observation_retries=1,
@@ -108,7 +109,7 @@ class NavigationRecoveryRegressionTests(unittest.TestCase):
 
         with patch(
             "navigation.controller.observe_screen",
-            side_effect=[initial, transient_after_scroll, stable_after_reobserve, stable_after_reobserve],
+            side_effect=[initial, transient_after_scroll, stable_after_reobserve, refreshed_target],
         ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
             "navigation.controller.activate_node", return_value=tap
         ), patch("navigation.controller.verify_transition", return_value=verified):
@@ -118,6 +119,35 @@ class NavigationRecoveryRegressionTests(unittest.TestCase):
         self.assertTrue(result.verified)
         self.assertEqual(do_scroll.call_count, 1)
         self.assertIn(NavigationState.SCROLL, result.history)
+        self.assertIn(NavigationState.SUCCESS, result.history)
+
+    def test_post_scroll_target_is_refreshed_before_activation(self):
+        initial = self._snapshot(("Display", "Battery"), scrollable=True)
+        after_scroll = self._snapshot(("Display", "Apps"), scrollable=True)
+        refreshed = self._snapshot(("Display", "Apps"), scrollable=True)
+        action = ActionResult(True, "SCROLL", "simulated scroll")
+        tap = ActionResult(True, "TAP", "fresh live target activated")
+        verified = VerificationResult(True, refreshed, "simulated verified transition")
+
+        controller = NavigationController(
+            observation_retries=1,
+            max_scrolls=1,
+            max_activation_retries=1,
+            settle_seconds=0,
+        )
+
+        with patch(
+            "navigation.controller.observe_screen",
+            side_effect=[initial, after_scroll, refreshed],
+        ), patch("navigation.controller.scroll", return_value=action), patch(
+            "navigation.controller.activate_node", return_value=tap
+        ) as activate, patch("navigation.controller.verify_transition", return_value=verified):
+            result = controller.navigate_target("Apps")
+
+        self.assertTrue(result.success)
+        self.assertEqual(activate.call_count, 1)
+        self.assertEqual(activate.call_args.args[0].get("text"), "Apps")
+        self.assertIn(NavigationState.REOBSERVE, result.history)
         self.assertIn(NavigationState.SUCCESS, result.history)
 
 
