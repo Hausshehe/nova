@@ -71,6 +71,9 @@ class NavigationActionSafetyTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(accessibility_run.called)
         self.assertEqual(result.bounds, "[50,50][250,250]")
+        self.assertEqual(result.executor_returncode, 0)
+        self.assertIsNotNone(result.duration_ms)
+        self.assertEqual(result.transport_output, "Broadcast completed: result=1")
         command = accessibility_run.call_args.args[0]
         self.assertIn("com.infoney.nova.CLICK_ELEMENT", command)
         self.assertIn("Apps", command)
@@ -91,6 +94,9 @@ class NavigationActionSafetyTests(unittest.TestCase):
             result = activate_node(node)
 
         self.assertFalse(result.success)
+        self.assertEqual(result.executor_returncode, 0)
+        self.assertIsNotNone(result.duration_ms)
+        self.assertEqual(result.transport_output, "Accessibility Service rejected the requested action (result=0); no root fallback was attempted.")
         self.assertIn("Accessibility Service", result.message)
 
     def test_scroll_uses_accessibility_service_not_root_input(self):
@@ -107,6 +113,9 @@ class NavigationActionSafetyTests(unittest.TestCase):
             result = scroll(snapshot, "down")
 
         self.assertTrue(result.success)
+        self.assertEqual(result.executor_returncode, 0)
+        self.assertIsNotNone(result.duration_ms)
+        self.assertEqual(result.transport_output, "Broadcast completed: result=1")
         command = accessibility_run.call_args.args[0]
         self.assertIn("com.infoney.nova.SCROLL_WINDOW", command)
         self.assertIn("down", command)
