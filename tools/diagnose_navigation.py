@@ -1,16 +1,18 @@
 """Run one evidence-driven accessibility navigation hop.
 
 This probe intentionally does not call the full NavigationController. It captures
-one observation -> target resolution -> semantic scroll -> fresh observation ->
-target resolution cycle so a real-device failure can be localized without
-changing production navigation behavior.
+one setup -> observation -> target resolution -> semantic scroll -> fresh
+observation -> target resolution cycle so a real-device failure can be localized
+without changing production navigation behavior.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +24,10 @@ from navigation.diagnostics import DiagnosticTrace
 from navigation.observer import observe_screen
 from navigation.resolver import resolve_target
 from navigation.state import Resolution, ScreenSnapshot
+
+DEFAULT_SETTINGS_PACKAGE = "com.android.settings"
+DEFAULT_SETUP_TIMEOUT_SECONDS = 5.0
+DEFAULT_SETUP_POLL_SECONDS = 0.20
 
 
 def _node_summary(node):
@@ -79,6 +85,72 @@ def _match_data(match, *, compact: bool = False):
     if not compact:
         data["node"] = _node_summary(match.node) if match.node is not None else None
     return data
+
+
+def _launch_settings(trace: DiagnosticTrace, *, timeout_seconds: float = DEFAULT_SETUP_TIMEOUT_SECONDS) -> bool:
+    """Launch Settings as deterministic probe setup, then wait for its live package."""
+    started = time.monotonic()
+    command = ["am", "start", "-a", "android.settings.SETTINGS"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        trace.record(
+            "setup",
+            "launch_settings_failed",
+            requested=True,
+            command=command,
+            success=False,
+            error=repr(exc),
+            elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+        )
+        return False
+
+    trace.record(
+        "setup",
+        "launch_settings",
+        requested=True,
+        command=command,
+        success=result.returncode == 0,
+        executor_returncode=result.returncode,
+        transport_output="\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        ),
+        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+    )
+    if result.returncode != 0:
+        return False
+
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        snapshot = observe_screen(previous=None, include_nodes=True, retries=1, settle_seconds=0.0)
+        if snapshot.foreground_package == DEFAULT_SETTINGS_PACKAGE:
+            trace.record(
+                "setup",
+                "settings_foreground_confirmed",
+                package=snapshot.foreground_package,
+                observation_quality=snapshot.observation_quality.value,
+                node_count=len(snapshot.visible_nodes),
+                elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
+            return True
+        time.sleep(DEFAULT_SETUP_POLL_SECONDS)
+
+    snapshot = observe_screen(previous=None, include_nodes=True, retries=1, settle_seconds=0.0)
+    trace.record(
+        "setup",
+        "settings_foreground_timeout",
+        expected_package=DEFAULT_SETTINGS_PACKAGE,
+        actual_package=snapshot.foreground_package,
+        observation_quality=snapshot.observation_quality.value,
+        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+    )
+    return False
 
 
 def run_one_scroll(
@@ -220,6 +292,7 @@ def main() -> int:
     parser.add_argument("--direction", choices=("down", "up"), default="down")
     parser.add_argument(
         "--expected-package",
+        default=DEFAULT_SETTINGS_PACKAGE,
         help="Refuse to act unless the live foreground package matches this value.",
     )
     parser.add_argument(
@@ -227,14 +300,25 @@ def main() -> int:
         action="store_true",
         help="Omit per-node dumps so real-device traces stay readable.",
     )
+    parser.add_argument(
+        "--launch-settings",
+        action="store_true",
+        help="Launch Android Settings and wait for it to become foreground before probing.",
+    )
     args = parser.parse_args()
 
-    trace = run_one_scroll(
+    trace = DiagnosticTrace()
+    if args.launch_settings and not _launch_settings(trace):
+        print(json.dumps(trace.as_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+        return 1
+
+    probe_trace = run_one_scroll(
         args.target,
         args.direction,
         expected_package=args.expected_package,
         compact=args.compact,
     )
+    trace.events.extend(probe_trace.events)
     print(json.dumps(trace.as_dict(), indent=2, ensure_ascii=False, sort_keys=True))
 
     return 0 if not any(event["stage"] == "failure" for event in trace.events) else 1
