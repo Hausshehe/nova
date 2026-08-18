@@ -29,6 +29,17 @@ def _rank_package(package, query):
     return score
 
 
+def _is_strong_package_match(package, query):
+    """Recognize exact/suffix package matches without hard-coding app names."""
+    package_lower = str(package or "").lower()
+    query_lower = str(query or "").lower()
+    return bool(
+        package_lower == query_lower
+        or package_lower.endswith("." + query_lower)
+        or package_lower == "com.android." + query_lower
+    )
+
+
 def find_android_app(app_name):
     """Find installed package names related to a human app name."""
     query = str(app_name or "").lower().strip()
@@ -55,6 +66,18 @@ def find_android_app(app_name):
                 "verified": True,
                 "packages": [],
                 "message": f"No installed Android package matched '{app_name}'.",
+            }
+
+        # Substring matches are intentionally ambiguous: generic words such as
+        # "apps" can occur in many unrelated Android package names. Only accept
+        # an unambiguous exact/suffix match, or a single package candidate.
+        strong = [package for package in packages if _is_strong_package_match(package, query)]
+        if not strong and len(packages) > 1:
+            return {
+                "success": False,
+                "verified": True,
+                "packages": [],
+                "message": f"Installed package matches for '{app_name}' were ambiguous.",
             }
 
         return {
