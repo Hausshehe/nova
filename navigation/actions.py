@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -17,6 +18,8 @@ class ActionResult:
     action: str
     message: str = ""
     bounds: str = ""
+    duration_ms: Optional[float] = None
+    executor_returncode: Optional[int] = None
 
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
@@ -49,6 +52,10 @@ def _contains(outer: Tuple[int, int, int, int], inner: Tuple[int, int, int, int]
     )
 
 
+def _execution_metadata(started: float, result) -> tuple[float, int]:
+    return round((time.monotonic() - started) * 1000, 1), int(result.returncode)
+
+
 def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
     """Tap the live node or a validated actionable ancestor using live bounds."""
     if not isinstance(node, dict):
@@ -74,12 +81,28 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
         return ActionResult(False, "TAP", "Target has no valid live bounds.", bounds)
 
     x, y = center
+    started = time.monotonic()
     result = run_root(f"input tap {x} {y}")
+    duration_ms, returncode = _execution_metadata(started, result)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "Tap failed").strip()
-        return ActionResult(False, "TAP", message, bounds)
+        return ActionResult(
+            False,
+            "TAP",
+            message,
+            bounds,
+            duration_ms=duration_ms,
+            executor_returncode=returncode,
+        )
 
-    return ActionResult(True, "TAP", "Live target bounds activated successfully.", bounds)
+    return ActionResult(
+        True,
+        "TAP",
+        "Live target bounds activated successfully.",
+        bounds,
+        duration_ms=duration_ms,
+        executor_returncode=returncode,
+    )
 
 
 def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
@@ -130,9 +153,25 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
     if start_y == end_y:
         return ActionResult(False, "SCROLL", "Computed scroll gesture has no movement.", region.get("bounds", ""))
 
+    started = time.monotonic()
     result = run_root(f"/system/bin/input swipe {x} {start_y} {x} {end_y} 350")
+    duration_ms, returncode = _execution_metadata(started, result)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "Scroll failed").strip()
-        return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
+        return ActionResult(
+            False,
+            "SCROLL",
+            message,
+            region.get("bounds", ""),
+            duration_ms=duration_ms,
+            executor_returncode=returncode,
+        )
 
-    return ActionResult(True, "SCROLL", f"Live scrollable region swiped using {ratio:.2f} of its observed height.", region.get("bounds", ""))
+    return ActionResult(
+        True,
+        "SCROLL",
+        f"Live scrollable region swiped using {ratio:.2f} of its observed height.",
+        region.get("bounds", ""),
+        duration_ms=duration_ms,
+        executor_returncode=returncode,
+    )
