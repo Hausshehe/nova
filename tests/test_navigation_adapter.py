@@ -7,13 +7,14 @@ from tools.navigate_android_to import navigate_android_to
 
 class NavigationAdapterTests(unittest.TestCase):
     def test_adapter_preserves_result_contract_and_direction(self):
+        calls = []
+
         class FakeController:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
-                self.calls = []
 
             def navigate_target(self, target, *, initial_direction):
-                self.calls.append((target, initial_direction))
+                calls.append((target, initial_direction))
                 return SimpleNamespace(
                     success=True,
                     verified=True,
@@ -31,6 +32,7 @@ class NavigationAdapterTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertEqual(result["scrolls"], 2)
         self.assertEqual(result["foreground_package"], "com.android.settings")
+        self.assertEqual(calls, [("Apps", "up")])
 
 
 if __name__ == "__main__":
