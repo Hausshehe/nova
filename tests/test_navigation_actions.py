@@ -66,6 +66,24 @@ class NavigationActionSafetyTests(unittest.TestCase):
         self.assertTrue(run_root.called)
         self.assertEqual(result.bounds, "[50,50][250,250]")
 
+    def test_activation_exposes_android_command_timing(self):
+        node = {
+            "text": "Apps",
+            "clickable": True,
+            "enabled": True,
+            "bounds": "[100,100][200,200]",
+        }
+        command_result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch("navigation.actions.run_root", return_value=command_result), patch(
+            "navigation.actions.time.monotonic",
+            side_effect=[10.0, 10.250],
+        ):
+            result = activate_node(node)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.executor_returncode, 0)
+        self.assertEqual(result.duration_ms, 250.0)
+
 
 if __name__ == "__main__":
     unittest.main()
