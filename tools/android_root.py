@@ -3,23 +3,22 @@
 import os
 import signal
 import subprocess
+import tempfile
+import time
 
 
 DEFAULT_TIMEOUT_SECONDS = 15
+POLL_INTERVAL_SECONDS = 0.05
 
 
 def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
-    """Run a privileged Android command through an interactive root shell.
+    """Run a privileged Android command with a hard, pipe-safe timeout.
 
-    On some rooted Android/Termux setups, especially with Magisk and SELinux,
-    ``su -c <cmd>`` can run the command as root but still fail when Android
-    ``cmd``/``am``/``pm`` services perform Binder IPC. The characteristic
-    failure is ``Failed transaction (2147483646)``.
-
-    An interactive ``su`` session is more reliable on these devices. Feed the
-    command through stdin, then explicitly exit. Keep the subprocess in its
-    own process group so a stuck Android service (for example uiautomator)
-    can still be terminated by the hard timeout.
+    Some Android services, especially uiautomator, can inherit stdout/stderr
+    pipes and keep them open after the shell that launched them is stuck. Using
+    ``communicate(timeout=...)`` in that situation can itself remain blocked.
+    Redirect output to temporary files instead, poll the shell directly, and
+    kill the entire process group when the deadline is reached.
     """
     command = str(command or "").strip()
     if not command:
@@ -30,65 +29,83 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
             stderr="",
         )
 
-    process = subprocess.Popen(
-        ["su"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
+    stdout_path = None
+    stderr_path = None
+    process = None
 
     try:
-        stdout, stderr = process.communicate(
-            command + "\nexit\n",
-            timeout=float(timeout),
-        )
-    except subprocess.TimeoutExpired:
-        # Do not call communicate() again after killing the shell. A child
-        # Android service can inherit stdout/stderr and keep those pipes open,
-        # which would make communicate() hang forever—the exact failure mode
-        # that can freeze Nova during post-action observation.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
+        stdout_file = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
+        stderr_file = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
+        stdout_path = stdout_file.name
+        stderr_path = stderr_file.name
+        stdout_file.close()
+        stderr_file.close()
 
-        try:
-            process.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                pass
+        with open(stdout_path, "wb") as stdout_handle, open(stderr_path, "wb") as stderr_handle:
+            process = subprocess.Popen(
+                ["su"],
+                stdin=subprocess.PIPE,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                text=True,
+                start_new_session=True,
+            )
 
-        try:
-            if process.stdin:
+            try:
+                process.stdin.write(command + "\nexit\n")
+                process.stdin.flush()
                 process.stdin.close()
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
-        except OSError:
-            pass
+            except (BrokenPipeError, OSError):
+                try:
+                    if process.stdin:
+                        process.stdin.close()
+                except OSError:
+                    pass
+
+            deadline = time.monotonic() + float(timeout)
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(POLL_INTERVAL_SECONDS)
+
+            timed_out = process.poll() is None
+            if timed_out:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        with open(stdout_path, "rb") as handle:
+            stdout = handle.read().decode("utf-8", errors="replace")
+        with open(stderr_path, "rb") as handle:
+            stderr = handle.read().decode("utf-8", errors="replace")
+
+        if timed_out:
+            return subprocess.CompletedProcess(
+                args=["su"],
+                returncode=124,
+                stdout=stdout,
+                stderr=f"Command timed out after {timeout} seconds.",
+            )
 
         return subprocess.CompletedProcess(
             args=["su"],
-            returncode=124,
-            stdout="",
-            stderr=f"Command timed out after {timeout} seconds.",
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
         )
 
-    return subprocess.CompletedProcess(
-        args=["su"],
-        returncode=process.returncode,
-        stdout=stdout or "",
-        stderr=stderr or "",
-    )
+    finally:
+        for path in (stdout_path, stderr_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
