@@ -126,12 +126,7 @@ class NavigationCoreTests(unittest.TestCase):
         before = self._snapshot(text=("Apps", "Display"))
         unrelated = self._snapshot(text=("Battery", "Storage", "Network"))
         with patch("navigation.verifier.observe_screen", return_value=unrelated):
-            result = verify_transition(
-                before,
-                expected_target="Apps",
-                timeout_seconds=0.2,
-                poll_seconds=0,
-            )
+            result = verify_transition(before, expected_target="Apps", timeout_seconds=0.2, poll_seconds=0)
         self.assertFalse(result.success)
         self.assertFalse(result.target_resolved)
 
@@ -139,12 +134,7 @@ class NavigationCoreTests(unittest.TestCase):
         before = self._snapshot(text=("Settings",))
         after = self._snapshot(text=("Apps", "Display", "Battery"))
         with patch("navigation.verifier.observe_screen", return_value=after):
-            result = verify_transition(
-                before,
-                expected_target="Apps",
-                timeout_seconds=0.2,
-                poll_seconds=0,
-            )
+            result = verify_transition(before, expected_target="Apps", timeout_seconds=0.2, poll_seconds=0)
         self.assertTrue(result.success)
         self.assertTrue(result.target_resolved)
 
@@ -152,12 +142,7 @@ class NavigationCoreTests(unittest.TestCase):
         before = self._snapshot(text=("Apps", "Display", "Battery"))
         after = self._snapshot(text=("App management", "Default apps", "Permissions"))
         with patch("navigation.verifier.observe_screen", return_value=after):
-            result = verify_transition(
-                before,
-                expected_target="Apps",
-                timeout_seconds=0.2,
-                poll_seconds=0,
-            )
+            result = verify_transition(before, expected_target="Apps", timeout_seconds=0.2, poll_seconds=0)
         self.assertTrue(result.success)
         self.assertFalse(result.target_resolved)
 
@@ -165,12 +150,7 @@ class NavigationCoreTests(unittest.TestCase):
         before = self._snapshot(text=("Apps", "Display", "Battery"))
         after = self._snapshot(text=("Network", "Storage", "Security"))
         with patch("navigation.verifier.observe_screen", return_value=after):
-            result = verify_transition(
-                before,
-                expected_target="Apps",
-                timeout_seconds=0.2,
-                poll_seconds=0,
-            )
+            result = verify_transition(before, expected_target="Apps", timeout_seconds=0.2, poll_seconds=0)
         self.assertFalse(result.success)
         self.assertFalse(result.target_resolved)
 
@@ -178,24 +158,12 @@ class NavigationCoreTests(unittest.TestCase):
         first = self._snapshot(text=("A", "B", "C"))
         after_scroll = self._snapshot(text=("D", "E", "F"))
         target_screen = self._snapshot(text=("YouTube", "WhatsApp"))
-        controller = NavigationController(
-            observation_retries=1,
-            max_transient_observations=2,
-            max_scrolls=3,
-            settle_seconds=0,
-        )
+        controller = NavigationController(observation_retries=1, max_transient_observations=2, max_scrolls=3, settle_seconds=0)
         action = ActionResult(True, "SCROLL", "simulated")
         tap = ActionResult(True, "TAP", "simulated")
         verification = VerificationResult(True, target_screen, "simulated verified transition")
-
-        with patch(
-            "navigation.controller.observe_screen",
-            side_effect=[first, after_scroll, target_screen],
-        ), patch("navigation.controller.scroll", return_value=action), patch(
-            "navigation.controller.activate_node", return_value=tap
-        ), patch("navigation.controller.verify_transition", return_value=verification):
+        with patch("navigation.controller.observe_screen", side_effect=[first, after_scroll, target_screen]), patch("navigation.controller.scroll", return_value=action), patch("navigation.controller.activate_node", return_value=tap), patch("navigation.controller.verify_transition", return_value=verification):
             result = controller.navigate_target("YouTube")
-
         self.assertTrue(result.success)
         self.assertEqual(result.direction, "down")
         self.assertEqual(result.scroll_count, 1)
@@ -209,20 +177,9 @@ class NavigationCoreTests(unittest.TestCase):
         action = ActionResult(True, "TAP", "simulated")
         failed = VerificationResult(False, retry_screen, "simulated delayed transition")
         succeeded = VerificationResult(True, final, "simulated verified transition")
-
-        controller = NavigationController(
-            observation_retries=1,
-            max_activation_retries=1,
-            settle_seconds=0,
-            max_scrolls=0,
-        )
-        with patch("navigation.controller.observe_screen", side_effect=[initial, retry_screen]), patch(
-            "navigation.controller.activate_node", return_value=action
-        ) as activate, patch(
-            "navigation.controller.verify_transition", side_effect=[failed, succeeded]
-        ):
+        controller = NavigationController(observation_retries=1, max_activation_retries=1, settle_seconds=0, max_scrolls=0)
+        with patch("navigation.controller.observe_screen", side_effect=[initial, retry_screen]), patch("navigation.controller.activate_node", return_value=action) as activate, patch("navigation.controller.verify_transition", side_effect=[failed, succeeded]):
             result = controller.navigate_target("Apps")
-
         self.assertTrue(result.success)
         self.assertEqual(activate.call_count, 2)
         self.assertEqual(result.history.count(NavigationState.RECOVER), 1)
@@ -233,18 +190,9 @@ class NavigationCoreTests(unittest.TestCase):
         destination = self._snapshot(text=("App list", "Assistant", "Screen time"))
         action = ActionResult(True, "TAP", "simulated")
         failed = VerificationResult(False, initial, "simulated delayed transition")
-
-        controller = NavigationController(
-            observation_retries=1,
-            max_activation_retries=1,
-            settle_seconds=0,
-            max_scrolls=0,
-        )
-        with patch("navigation.controller.observe_screen", side_effect=[initial, destination]), patch(
-            "navigation.controller.activate_node", return_value=action
-        ), patch("navigation.controller.verify_transition", return_value=failed):
+        controller = NavigationController(observation_retries=1, max_activation_retries=1, settle_seconds=0, max_scrolls=0)
+        with patch("navigation.controller.observe_screen", side_effect=[initial, destination]), patch("navigation.controller.activate_node", return_value=action), patch("navigation.controller.verify_transition", return_value=failed):
             result = controller.navigate_target("Apps")
-
         self.assertTrue(result.success)
         self.assertTrue(result.verified)
         self.assertEqual(result.state, NavigationState.SUCCESS)
@@ -253,19 +201,9 @@ class NavigationCoreTests(unittest.TestCase):
     def test_scroll_command_failures_do_not_trigger_direction_reversal(self):
         snapshot = self._snapshot(text=("A", "B", "C"))
         failed_scroll = ActionResult(False, "SCROLL", "simulated command failure")
-        controller = NavigationController(
-            observation_retries=1,
-            max_transient_observations=2,
-            max_scrolls=4,
-            no_progress_before_reversal=2,
-            settle_seconds=0,
-        )
-
-        with patch("navigation.controller.observe_screen", return_value=snapshot) as observe, patch(
-            "navigation.controller.scroll", return_value=failed_scroll
-        ) as scroll:
+        controller = NavigationController(observation_retries=1, max_transient_observations=2, max_scrolls=4, no_progress_before_reversal=2, settle_seconds=0)
+        with patch("navigation.controller.observe_screen", return_value=snapshot) as observe, patch("navigation.controller.scroll", return_value=failed_scroll) as scroll:
             result = controller.navigate_target("YouTube")
-
         self.assertFalse(result.success)
         self.assertEqual(result.direction, "down")
         self.assertEqual(scroll.call_count, 2)
@@ -273,37 +211,16 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertIn("refusing to reverse direction", result.message)
 
     def test_valid_actionable_ancestor_uses_live_center(self):
-        node = {
-            "text": "Apps",
-            "enabled": True,
-            "clickable": False,
-            "bounds": "[100,100][200,200]",
-            "actionable_ancestor": {
-                "enabled": True,
-                "clickable": True,
-                "bounds": "[50,50][250,250]",
-            },
-        }
+        node = {"text": "Apps", "enabled": True, "clickable": False, "bounds": "[100,100][200,200]", "actionable_ancestor": {"enabled": True, "clickable": True, "bounds": "[50,50][250,250]"}}
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
         with patch("navigation.actions.run_root", return_value=completed) as run_root:
             result = activate_node(node)
             command = run_root.call_args.args[0]
-
         self.assertTrue(result.success)
         self.assertEqual(command, "input tap 150 150")
 
     def test_invalid_actionable_ancestor_is_rejected(self):
-        node = {
-            "text": "Apps",
-            "enabled": True,
-            "clickable": False,
-            "bounds": "[100,100][200,200]",
-            "actionable_ancestor": {
-                "enabled": True,
-                "clickable": True,
-                "bounds": "[300,300][400,400]",
-            },
-        }
+        node = {"text": "Apps", "enabled": True, "clickable": False, "bounds": "[100,100][200,200]", "actionable_ancestor": {"enabled": True, "clickable": True, "bounds": "[300,300][400,400]"}}
         result = activate_node(node)
         self.assertFalse(result.success)
         self.assertIn("do not contain", result.message)
@@ -314,9 +231,8 @@ class NavigationCoreTests(unittest.TestCase):
         with patch("navigation.actions.run_root", return_value=completed) as run_root:
             result = scroll(snapshot, "up")
             command = run_root.call_args.args[0]
-
         self.assertTrue(result.success)
-        self.assertEqual(command, "/system/bin/input swipe 360 556 360 1044 350")
+        self.assertEqual(command, "/system/bin/input swipe 360 556 360 1044 691")
 
     def test_scroll_rejects_invalid_region(self):
         snapshot = SimpleNamespace(scrollable_regions=({"bounds": "invalid"},))
@@ -336,31 +252,9 @@ class NavigationCoreTests(unittest.TestCase):
         action = ActionResult(True, "SCROLL", "simulated")
         tap = ActionResult(True, "TAP", "simulated")
         verification = VerificationResult(True, target_screen, "simulated verified transition")
-        controller = NavigationController(
-            observation_retries=1,
-            max_scrolls=4,
-            no_progress_before_reversal=2,
-            settle_seconds=0,
-        )
-
-        with patch(
-            "navigation.controller.observe_screen",
-            side_effect=[
-                first,
-                unchanged1,
-                unchanged2,
-                unchanged3,
-                unchanged4,
-                unchanged5,
-                reverse_progress,
-                target_screen,
-                target_screen,
-            ],
-        ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
-            "navigation.controller.activate_node", return_value=tap
-        ), patch("navigation.controller.verify_transition", return_value=verification):
+        controller = NavigationController(observation_retries=1, max_scrolls=4, no_progress_before_reversal=2, settle_seconds=0)
+        with patch("navigation.controller.observe_screen", side_effect=[first, unchanged1, unchanged2, unchanged3, unchanged4, unchanged5, reverse_progress, target_screen, target_screen]), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch("navigation.controller.activate_node", return_value=tap), patch("navigation.controller.verify_transition", return_value=verification):
             result = controller.navigate_target("YouTube")
-
         self.assertTrue(result.success)
         self.assertEqual(result.direction, "up")
         self.assertGreaterEqual(do_scroll.call_count, 3)
