@@ -9,7 +9,7 @@ from tools.find_android_app import find_android_app
 from tools.launch_android_app import launch_android_app
 
 from .checkpoints import Checkpoint, CheckpointStore
-from .controller import NavigationController, NavigationResult
+from .controller import NavigationController, NavigationResult, NavigationState
 from .goal_parser import parse_open_path
 from .observer import observe_screen
 from .state import ObservationQuality
@@ -40,22 +40,33 @@ class OpenPathNavigator:
                 False,
                 False,
                 target,
-                self.controller.navigate_target(target).state,
+                NavigationState.FAILURE,
                 message="Installed-app identity is ambiguous; refusing to guess a package.",
             )
 
         package = packages[0]
+        before = observe_screen(include_nodes=True, retries=1)
+        if before.observation_quality is not ObservationQuality.VALID:
+            return NavigationResult(
+                False,
+                False,
+                target,
+                NavigationState.RECOVER,
+                snapshot=before,
+                message="Could not obtain a valid pre-launch checkpoint.",
+            )
+
         launch = launch_android_app(package)
         if not launch.get("success"):
             return NavigationResult(
                 False,
                 False,
                 target,
-                self.controller.navigate_target(target).state,
+                NavigationState.FAILURE,
+                snapshot=before,
                 message=launch.get("message", "Application launch failed."),
             )
 
-        before = observe_screen(include_nodes=True, retries=1)
         verification = verify_transition(
             before,
             expected_foreground_package=package,
@@ -65,7 +76,7 @@ class OpenPathNavigator:
             verification.success,
             verification.success,
             target,
-            self.controller.navigate_target(target).state,
+            NavigationState.SUCCESS if verification.success else NavigationState.FAILURE,
             snapshot=verification.snapshot,
             verification=verification,
             message=(
