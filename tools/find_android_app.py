@@ -68,11 +68,20 @@ def find_android_app(app_name):
                 "message": f"No installed Android package matched '{app_name}'.",
             }
 
-        # Substring matches are intentionally ambiguous: generic words such as
-        # "apps" can occur in many unrelated Android package names. Only accept
-        # an unambiguous exact/suffix match, or a single package candidate.
+        # Strong exact/suffix identity outranks unrelated substring matches.
+        # Android can contain Settings-related overlays/providers alongside the
+        # real launchable package. If a strong identity exists, return only the
+        # strong candidate(s); otherwise preserve ambiguity rather than guessing.
         strong = [package for package in packages if _is_strong_package_match(package, query)]
-        if not strong and len(packages) > 1:
+        if strong:
+            return {
+                "success": True,
+                "verified": True,
+                "packages": strong,
+                "message": f"Found {len(strong)} strong package match(es).",
+            }
+
+        if len(packages) > 1:
             return {
                 "success": False,
                 "verified": True,
