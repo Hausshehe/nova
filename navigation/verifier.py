@@ -42,27 +42,16 @@ def _bounds_tuple(value: str):
 
 
 def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected_target: str) -> tuple[bool, bool]:
-    """Require destination-aware semantic evidence for the expected target.
-
-    Seeing the source target disappear is not enough: an unrelated screen can
-    also make the source label disappear. A disappearance is accepted only
-    when the resulting screen provides a semantic successor for that target or
-    the foreground package actually changes.
-    """
+    """Require destination-aware semantic evidence for the expected target."""
     before_match = resolve_target(before, expected_target)
     after_match = resolve_target(after, expected_target)
 
     before_found = before_match.resolution is Resolution.FOUND and before_match.node is not None
     after_found = after_match.resolution is Resolution.FOUND and after_match.node is not None
 
-    # A target appearing on a destination/result screen is valid evidence only
-    # when it was not already the source target on the previous screen.
     if not before_found and after_found:
         return True, True
 
-    # If the source target remains visible, it may still have transitioned if
-    # its live bounds moved substantially (for example, an expanded destination
-    # or a meaningful layout transition). Small accessibility jitter is ignored.
     if before_found and after_found:
         before_label = " ".join(str(before_match.label or "").split()).lower()
         after_label = " ".join(str(after_match.label or "").split()).lower()
@@ -78,16 +67,9 @@ def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected
         )
         return motion >= 40 or before_label != after_label, True
 
-    # The source target disappeared. Treat it as a valid activation transition
-    # only when the resulting semantic match changed to a different label or
-    # the foreground package changed. This is intentionally not "disappearance
-    # alone", which would accept arbitrary unrelated screen changes.
     if before_found and not after_found:
         if before.foreground_package != after.foreground_package:
             return True, False
-        after_label = " ".join(str(after_match.label or "").split()).lower()
-        if after_label and after_label != " ".join(str(before_match.label or "").split()).lower():
-            return True, True
         return False, False
 
     return False, False
@@ -101,6 +83,22 @@ def _meaningful_transition(before: Optional[ScreenSnapshot], after: ScreenSnapsh
     return _text_change_ratio(before, after) >= MIN_TEXT_CHANGE_RATIO
 
 
+def _candidate_evidence(
+    before: Optional[ScreenSnapshot],
+    current: ScreenSnapshot,
+    *,
+    expected_foreground_package: Optional[str],
+    expected_target: Optional[str],
+) -> tuple[bool, bool]:
+    package_ok = not expected_foreground_package or current.foreground_package == expected_foreground_package
+    meaningful = _meaningful_transition(before, current)
+    target_resolved = False
+    target_ok = True
+    if expected_target:
+        target_ok, target_resolved = _target_transitioned(before, current, expected_target)
+    return package_ok and meaningful and (target_ok if expected_target else True), target_resolved
+
+
 def verify_transition(
     before: Optional[ScreenSnapshot],
     *,
@@ -109,11 +107,11 @@ def verify_transition(
     timeout_seconds: float = 3.0,
     poll_seconds: float = 0.25,
 ) -> VerificationResult:
-    """Wait for and verify a meaningful post-action UI transition.
+    """Verify a stable post-action transition using two fresh observations.
 
-    With an expected target, meaningful UI change plus destination-aware target
-    evidence is required. This prevents delayed scroll/layout changes or an
-    unrelated screen from being mistaken for successful activation.
+    A single changing snapshot can still belong to a settling scroll or layout
+    animation. When an expected target is supplied, a candidate transition must
+    survive a second fresh observation before activation is considered verified.
     """
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     last = before
@@ -126,21 +124,37 @@ def verify_transition(
             time.sleep(max(0.0, float(poll_seconds)))
             continue
 
-        package_ok = not expected_foreground_package or current.foreground_package == expected_foreground_package
-        meaningful = _meaningful_transition(before, current)
-        target_ok = True
-        target_resolved = False
-        if expected_target:
-            target_ok, target_resolved = _target_transitioned(before, current, expected_target)
-
-        if package_ok and meaningful and (target_ok if expected_target else True):
-            if expected_target:
-                reason = "Expected foreground package is active and the target participated in a meaningful destination-aware live UI transition." if expected_foreground_package else "The target participated in a meaningful destination-aware live UI transition."
-            elif expected_foreground_package:
-                reason = "Expected foreground package is active."
+        candidate, target_resolved = _candidate_evidence(
+            before,
+            current,
+            expected_foreground_package=expected_foreground_package,
+            expected_target=expected_target,
+        )
+        if candidate:
+            confirmation = observe_screen(previous=current, include_nodes=True, retries=1)
+            if confirmation.observation_quality is ObservationQuality.VALID:
+                confirmed, confirmed_target_resolved = _candidate_evidence(
+                    before,
+                    confirmation,
+                    expected_foreground_package=expected_foreground_package,
+                    expected_target=expected_target,
+                )
+                if confirmed:
+                    if expected_target:
+                        reason = "A stable destination-aware live UI transition was verified after activation."
+                    elif expected_foreground_package:
+                        reason = "Expected foreground package is active and the post-action UI remained stable."
+                    else:
+                        reason = "A stable meaningful live UI transition was verified."
+                    return VerificationResult(
+                        True,
+                        confirmation,
+                        reason,
+                        target_resolved=target_resolved or confirmed_target_resolved,
+                    )
+                last = confirmation
             else:
-                reason = "A meaningful live UI transition was verified."
-            return VerificationResult(True, current, reason, target_resolved=target_resolved)
+                last = confirmation
 
         time.sleep(max(0.0, float(poll_seconds)))
 
@@ -150,6 +164,6 @@ def verify_transition(
     return VerificationResult(
         False,
         last,
-        "No verified target-consistent activation transition was observed within the bounded verification window.",
+        "No stable target-consistent activation transition was observed within the bounded verification window.",
         target_resolved=False,
     )
