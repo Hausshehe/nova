@@ -276,12 +276,13 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("invalid live bounds", result.message)
 
-    def test_reversal_requires_validated_no_progress(self):
+    def test_reversal_requires_two_validated_no_progress_cycles(self):
         first = self._snapshot(text=("A", "B", "C"))
         unchanged1 = self._snapshot(text=("A", "B", "C"))
         unchanged2 = self._snapshot(text=("A", "B", "C"))
         unchanged3 = self._snapshot(text=("A", "B", "C"))
         unchanged4 = self._snapshot(text=("A", "B", "C"))
+        unchanged5 = self._snapshot(text=("A", "B", "C"))
         reverse_progress = self._snapshot(text=("D", "E", "F"))
         target_screen = self._snapshot(text=("YouTube",))
         action = ActionResult(True, "SCROLL", "simulated")
@@ -296,7 +297,16 @@ class NavigationCoreTests(unittest.TestCase):
 
         with patch(
             "navigation.controller.observe_screen",
-            side_effect=[first, unchanged1, unchanged2, unchanged3, unchanged4, reverse_progress, target_screen, target_screen],
+            side_effect=[
+                first,
+                unchanged1,
+                unchanged2,
+                unchanged3,
+                unchanged4,
+                unchanged5,
+                reverse_progress,
+                target_screen,
+            ],
         ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
             "navigation.controller.activate_node", return_value=tap
         ), patch("navigation.controller.verify_transition", return_value=verification):
