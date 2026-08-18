@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from trading_research.data import Bar, chronological_split, load_csv
+from trading_research.data import Bar, chronological_split, load_csv, validate_ohlcv_rows
 
 
 class TradingResearchDataTests(unittest.TestCase):
@@ -63,6 +63,52 @@ class TradingResearchDataTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "high"):
             bar.validate()
+
+    def test_normalized_ohlcv_rows_pass_contract(self):
+        rows = [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "open": 1.1,
+                "high": 1.2,
+                "low": 1.0,
+                "close": 1.15,
+                "volume": 42,
+            },
+            {
+                "timestamp": "2026-01-01T00:15:00Z",
+                "open": 1.15,
+                "high": 1.25,
+                "low": 1.1,
+                "close": 1.2,
+                "volume": 43,
+            },
+        ]
+        report = validate_ohlcv_rows(rows)
+        self.assertTrue(report.ok)
+        self.assertEqual(report.reasons, ())
+
+    def test_normalized_ohlcv_rows_reject_bad_order(self):
+        rows = [
+            {
+                "timestamp": "2026-01-01T00:15:00Z",
+                "open": 1.1,
+                "high": 1.2,
+                "low": 1.0,
+                "close": 1.15,
+                "volume": 42,
+            },
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "open": 1.15,
+                "high": 1.25,
+                "low": 1.1,
+                "close": 1.2,
+                "volume": 43,
+            },
+        ]
+        report = validate_ohlcv_rows(rows)
+        self.assertFalse(report.ok)
+        self.assertIn("timestamps_not_strictly_increasing", report.reasons[0])
 
 
 if __name__ == "__main__":
