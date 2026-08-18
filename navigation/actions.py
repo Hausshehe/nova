@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from tools.android_root import run_root
+
+
+ACCESSIBILITY_CLICK_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -50,8 +54,49 @@ def _contains(outer: Tuple[int, int, int, int], inner: Tuple[int, int, int, int]
     )
 
 
+def _semantic_label(node: Dict[str, Any]) -> str:
+    return (
+        str(node.get("text") or "").strip()
+        or str(node.get("content_description") or "").strip()
+        or str(node.get("resource_id") or "").strip()
+    )
+
+
+def _accessibility_click(label: str) -> Tuple[bool, str]:
+    """Ask Nova's accessibility service to click a semantic live target."""
+    label = " ".join(str(label or "").split())
+    if not label:
+        return False, "The target has no semantic label for accessibility activation."
+
+    try:
+        result = subprocess.run(
+            [
+                "am",
+                "broadcast",
+                "-n",
+                "com.infoney.nova/.NovaClickReceiver",
+                "-a",
+                "com.infoney.nova.CLICK_ELEMENT",
+                "--es",
+                "target",
+                label,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=ACCESSIBILITY_CLICK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return False, f"Accessibility activation transport unavailable: {exc}"
+
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    if result.returncode == 0 and re.search(r"result=1\b", output):
+        return True, "Semantic target activated through the Accessibility Service."
+    return False, output or "Accessibility Service did not report a successful semantic activation."
+
+
 def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
-    """Tap the live node or a validated actionable ancestor using live bounds."""
+    """Activate a live semantic node, preferring Accessibility over root coordinates."""
     if not isinstance(node, dict):
         return ActionResult(False, "TAP", "No target node was supplied.")
     if not node.get("enabled", True):
@@ -74,18 +119,22 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
     if center is None:
         return ActionResult(False, "TAP", "Target has no valid live bounds.", bounds)
 
-    # Give Android a short, intentional hand-off from observation to input.
-    # This is deliberately small: the controller already verifies live bounds,
-    # while this pause prevents an immediate tap from racing a settling UI.
-    time.sleep(0.12)
+    label = _semantic_label(node)
+    if label:
+        accessibility_success, accessibility_message = _accessibility_click(label)
+        if accessibility_success:
+            return ActionResult(True, "TAP", accessibility_message, bounds)
 
+    # Fallback remains coordinate-free at the decision layer: coordinates are
+    # calculated only from the current live target/actionable-ancestor bounds.
+    time.sleep(0.12)
     x, y = center
     result = run_root(f"input tap {x} {y}")
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "Tap failed").strip()
         return ActionResult(False, "TAP", message, bounds)
 
-    return ActionResult(True, "TAP", "Live target bounds activated successfully after a short settling hand-off.", bounds)
+    return ActionResult(True, "TAP", "Live target bounds activated through the bounded root fallback.", bounds)
 
 
 def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
@@ -136,9 +185,6 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
     if start_y == end_y:
         return ActionResult(False, "SCROLL", "Computed scroll gesture has no movement.", region.get("bounds", ""))
 
-    # Scale gesture duration with the actual observed movement. Larger moves
-    # take longer, reducing the abrupt visual jump that can race hierarchy
-    # updates on Android while still keeping recovery gestures responsive.
     duration_ms = max(420, min(750, 300 + int(distance * 0.80)))
     result = run_root(f"/system/bin/input swipe {x} {start_y} {x} {end_y} {duration_ms}")
     if result.returncode != 0:
