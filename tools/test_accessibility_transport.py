@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import time
 
 RECEIVER = "com.infoney.nova/.NovaClickReceiver"
+_RESULT_RE = re.compile(r"(?:Broadcast completed:\s*)?result=(-?\d+)\b")
+
+
+def _receiver_result(output: str) -> int | None:
+    matches = list(_RESULT_RE.finditer(output or ""))
+    if not matches:
+        return None
+    return int(matches[-1].group(1))
 
 
 def main() -> int:
@@ -43,13 +52,16 @@ def main() -> int:
         output = "\n".join(
             part.strip() for part in (result.stdout, result.stderr) if part.strip()
         )
+        receiver_result = _receiver_result(output)
+        accepted = receiver_result == 1
         payload = {
             "action": args.action,
             "value": args.value,
             "duration_ms": duration_ms,
             "transport_returncode": result.returncode,
+            "receiver_result": receiver_result,
             "output": output,
-            "accepted": result.returncode == 0 and "result=1" in output,
+            "accepted": accepted,
         }
     except subprocess.TimeoutExpired as exc:
         duration_ms = round((time.monotonic() - started) * 1000, 1)
@@ -58,6 +70,7 @@ def main() -> int:
             "value": args.value,
             "duration_ms": duration_ms,
             "transport_returncode": -1,
+            "receiver_result": None,
             "output": str(exc),
             "accepted": False,
             "timed_out": True,
