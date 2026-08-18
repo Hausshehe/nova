@@ -14,7 +14,11 @@ from tools.android_root import run_root
 from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
-OBSERVE_TIMEOUT_SECONDS = 8
+# OEM Settings screens containing large application lists can occasionally
+# stall uiautomator. Retry once rather than letting one transient dump failure
+# consume the entire navigation attempt.
+OBSERVE_TIMEOUT_SECONDS = 7
+OBSERVE_RETRY_DELAY = 0.25
 FOREGROUND_RETRIES = 3
 FOREGROUND_RETRY_DELAY = 0.15
 
@@ -34,12 +38,7 @@ def _foreground_package():
 
 
 def _infer_foreground_from_nodes(nodes):
-    """Infer the foreground package from the UI hierarchy as a fallback.
-
-    Some OEM Android builds can briefly return stale/empty focus information
-    while the accessibility hierarchy already belongs to the new screen. In
-    that case, use the most common non-empty package in the current hierarchy.
-    """
+    """Infer the foreground package from the UI hierarchy as a fallback."""
     packages = [
         node.get("package", "").strip()
         for node in nodes
@@ -51,12 +50,7 @@ def _infer_foreground_from_nodes(nodes):
 
 
 def _stable_foreground_package(hierarchy_package=""):
-    """Prefer a fresh focus result and retry briefly during Activity changes.
-
-    Settings on some OEM builds can report the previous Activity for a short
-    period immediately after a click. A few very short retries avoid feeding
-    that transient value to Nova as ground truth.
-    """
+    """Prefer a fresh focus result and retry briefly during Activity changes."""
     last = ""
     for attempt in range(FOREGROUND_RETRIES):
         current = _foreground_package()
@@ -70,49 +64,43 @@ def _stable_foreground_package(hierarchy_package=""):
     return hierarchy_package or last
 
 
+def _dump_ui_xml():
+    """Capture the hierarchy, retrying once after a transient dump stall."""
+    command = (
+        f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
+        f">/dev/null 2>&1 && cat {DUMP_PATH}"
+    )
+    last_error = "UI observation failed."
+
+    for attempt in range(2):
+        result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS)
+        if result.returncode == 0 and (result.stdout or "").strip():
+            return result.stdout, ""
+
+        last_error = (
+            result.stderr or result.stdout or "UI observation failed."
+        ).strip()
+        if attempt == 0:
+            time.sleep(OBSERVE_RETRY_DELAY)
+
+    return "", last_error
+
+
 def observe_android(include_nodes=False):
-    """Capture Android UI without allowing observation to block the agent.
-
-    By default only a compact semantic summary is returned to the caller.
-    ``include_nodes=True`` is reserved for internal tools such as click_node
-    that actually need the raw hierarchy for selector matching.
-    """
+    """Capture Android UI without allowing observation to block the agent."""
     try:
-        # Capture the hierarchy first, then query foreground state. This is
-        # important after an Activity transition: querying focus before the
-        # dump can return the Activity that existed just before the click.
-        command = (
-            f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
-            f">/dev/null 2>&1 && cat {DUMP_PATH}"
-        )
-        result = run_root(
-            command,
-            timeout=OBSERVE_TIMEOUT_SECONDS,
-        )
-
-        if result.returncode != 0:
+        # Capture the hierarchy first, then query foreground state. This keeps
+        # Activity transitions from reporting the screen that existed before a
+        # click.
+        xml_text, error = _dump_ui_xml()
+        if not xml_text:
             foreground_package = _foreground_package()
             return {
                 "success": False,
                 "verified": False,
                 "nodes": [] if include_nodes else None,
                 "foreground_package": foreground_package,
-                "message": (
-                    result.stderr
-                    or result.stdout
-                    or "UI observation failed"
-                ).strip(),
-            }
-
-        xml_text = result.stdout
-        if not xml_text.strip():
-            foreground_package = _foreground_package()
-            return {
-                "success": False,
-                "verified": False,
-                "nodes": [] if include_nodes else None,
-                "foreground_package": foreground_package,
-                "message": "Android UI observation produced no XML snapshot.",
+                "message": error,
             }
 
         root = ET.fromstring(xml_text)
