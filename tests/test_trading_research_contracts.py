@@ -42,6 +42,22 @@ class TradingResearchContractTests(unittest.TestCase):
         self.assertTrue(any(reason.startswith("profit_factor_below_gate") for reason in decision.reasons))
         self.assertTrue(any(reason.startswith("drawdown_above_gate") for reason in decision.reasons))
 
+    def test_insufficient_sample_without_performance_failure_is_inconclusive(self):
+        metrics = BacktestMetrics(
+            trades=20,
+            net_return=0.03,
+            max_drawdown=0.10,
+            profit_factor=1.40,
+            expectancy=0.001,
+            win_rate=0.45,
+            average_win=0.009,
+            average_loss=-0.006,
+        )
+        decision = evaluate_gate(metrics, ResearchGates())
+        self.assertEqual(decision.decision, Decision.INCONCLUSIVE)
+        self.assertTrue(any(reason.startswith("too_few_trades") for reason in decision.reasons))
+        self.assertIn("insufficient_sample_for_promotion", decision.reasons)
+
     def test_candidate_passing_initial_gate_is_promising_not_proven(self):
         metrics = BacktestMetrics(
             trades=240,
