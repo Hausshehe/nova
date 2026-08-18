@@ -25,12 +25,36 @@ class NavigationAdapterTests(unittest.TestCase):
                     history=(SimpleNamespace(value="OBSERVE"), SimpleNamespace(value="SUCCESS")),
                 )
 
-        with patch("tools.navigate_android_to.NavigationController", FakeController):
+        class FakeNavigator:
+            def __init__(self, controller, *, initial_direction):
+                self.controller = controller
+                self.initial_direction = initial_direction
+                self.checkpoints = SimpleNamespace(
+                    latest=SimpleNamespace(
+                        snapshot=SimpleNamespace(foreground_package="com.android.settings")
+                    )
+                )
+
+            def navigate(self, goal):
+                self.controller.navigate_target("Apps", initial_direction=self.initial_direction)
+                return SimpleNamespace(
+                    success=True,
+                    verified=True,
+                    completed_targets=["Apps"],
+                    failed_target="",
+                    checkpoints=1,
+                    resumed_from_checkpoint=False,
+                    message="verified",
+                )
+
+        with patch("tools.navigate_android_to.NavigationController", FakeController), patch(
+            "tools.navigate_android_to.OpenPathNavigator", FakeNavigator
+        ):
             result = navigate_android_to("Apps", max_scrolls=5, direction="up")
 
         self.assertTrue(result["success"])
         self.assertTrue(result["verified"])
-        self.assertEqual(result["scrolls"], 2)
+        self.assertEqual(result["checkpoints"], 1)
         self.assertEqual(result["foreground_package"], "com.android.settings")
         self.assertEqual(calls, [("Apps", "up")])
 
