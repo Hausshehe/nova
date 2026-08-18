@@ -170,14 +170,17 @@ public class NovaAccessibilityService extends AccessibilityService {
     }
 
     private AccessibilityNodeInfo findSwitchNodeInAllWindows() {
+        AccessibilityNodeInfo root = null;
         try {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
+            root = getRootInActiveWindow();
             if (root != null) {
                 AccessibilityNodeInfo found = findSwitchNode(root);
                 if (found != null) return found;
             }
         } catch (Exception e) {
             Log.e(TAG, "SWITCH_SEARCH: active root failed", e);
+        } finally {
+            if (root != null) root.recycle();
         }
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
@@ -186,8 +189,12 @@ public class NovaAccessibilityService extends AccessibilityService {
                     if (window == null) continue;
                     AccessibilityNodeInfo root = window.getRoot();
                     if (root == null) continue;
-                    AccessibilityNodeInfo found = findSwitchNode(root);
-                    if (found != null) return found;
+                    try {
+                        AccessibilityNodeInfo found = findSwitchNode(root);
+                        if (found != null) return found;
+                    } finally {
+                        root.recycle();
+                    }
                 }
             }
         } catch (Exception e) {
@@ -234,14 +241,17 @@ public class NovaAccessibilityService extends AccessibilityService {
 
     private AccessibilityNodeInfo findTargetNodeInAllWindows(String target) {
         final long deadline = System.nanoTime() + TARGET_SEARCH_BUDGET_MS * 1_000_000L;
+        AccessibilityNodeInfo activeRoot = null;
         try {
-            AccessibilityNodeInfo activeRoot = getRootInActiveWindow();
+            activeRoot = getRootInActiveWindow();
             if (activeRoot != null) {
                 AccessibilityNodeInfo found = findMatchingNode(activeRoot, target, deadline, 0);
                 if (found != null) return found;
             }
         } catch (Exception e) {
             Log.e(TAG, "WINDOW_SEARCH: active root failed", e);
+        } finally {
+            if (activeRoot != null) activeRoot.recycle();
         }
         if (System.nanoTime() >= deadline) {
             Log.w(TAG, "WINDOW_SEARCH: target search budget exhausted before window fallback target=" + target);
