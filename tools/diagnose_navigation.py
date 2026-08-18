@@ -10,6 +10,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
+
+# Allow ``python tools/diagnose_navigation.py ...`` to import the repository's
+# top-level ``navigation`` package. When Python executes a script by path,
+# sys.path starts at ``tools/`` rather than the repository root.
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from navigation.actions import scroll
 from navigation.diagnostics import DiagnosticTrace
