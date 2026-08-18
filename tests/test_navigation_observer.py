@@ -7,6 +7,63 @@ from navigation.state import ObservationQuality, ScreenSnapshot
 
 
 class NavigationObserverTests(unittest.TestCase):
+    def test_fresh_accessibility_snapshot_is_preferred_over_uiautomator(self):
+        accessibility = {
+            "source": "accessibility_service",
+            "timestamp_ms": 9999999999999,
+            "foreground_package": "com.android.settings",
+            "nodes": [
+                {
+                    "text": "Apps",
+                    "content_description": "",
+                    "resource_id": "",
+                    "class": "android.widget.TextView",
+                    "package": "com.android.settings",
+                    "bounds": "[0,100][720,180]",
+                    "clickable": False,
+                    "enabled": True,
+                    "actionable_ancestor": {
+                        "bounds": "[0,80][720,200]",
+                        "clickable": True,
+                        "enabled": True,
+                    },
+                }
+            ],
+            "scrollable": ["[0,212][720,1452]"],
+        }
+        with patch("navigation.observer.read_accessibility_snapshot", return_value=accessibility), patch(
+            "navigation.observer.observe_android"
+        ) as uiautomator:
+            result = observe_screen(retries=1, settle_seconds=0)
+
+        uiautomator.assert_not_called()
+        self.assertEqual(result.observation_quality, ObservationQuality.VALID)
+        self.assertEqual(result.foreground_package, "com.android.settings")
+        self.assertEqual(result.visible_text, ("Apps",))
+        self.assertTrue(result.scrollable)
+
+    def test_stale_accessibility_snapshot_falls_back_to_uiautomator(self):
+        observed = {
+            "success": True,
+            "foreground_package": "com.android.settings",
+            "state": {
+                "visible_text": ["Apps"],
+                "interactive": [],
+                "scrollable": [],
+            },
+            "nodes": [
+                {"text": "Apps", "bounds": "[0,100][720,180]", "enabled": True}
+            ],
+        }
+        with patch("navigation.observer.read_accessibility_snapshot", return_value=None), patch(
+            "navigation.observer.observe_android", return_value=observed
+        ) as uiautomator:
+            result = observe_screen(retries=1, settle_seconds=0)
+
+        uiautomator.assert_called_once_with(include_nodes=True)
+        self.assertEqual(result.observation_quality, ObservationQuality.VALID)
+        self.assertEqual(result.visible_text, ("Apps",))
+
     def test_foreground_only_observation_is_transient(self):
         empty = {
             "success": True,
@@ -14,7 +71,9 @@ class NavigationObserverTests(unittest.TestCase):
             "state": {},
             "nodes": [],
         }
-        with patch("navigation.observer.observe_android", return_value=empty):
+        with patch("navigation.observer.read_accessibility_snapshot", return_value=None), patch(
+            "navigation.observer.observe_android", return_value=empty
+        ):
             result = observe_screen(retries=1, settle_seconds=0)
 
         self.assertEqual(result.observation_quality, ObservationQuality.TRANSIENT)
@@ -32,7 +91,9 @@ class NavigationObserverTests(unittest.TestCase):
             "foreground_package": "",
             "message": "uiautomator timeout",
         }
-        with patch("navigation.observer.observe_android", return_value=failed):
+        with patch("navigation.observer.read_accessibility_snapshot", return_value=None), patch(
+            "navigation.observer.observe_android", return_value=failed
+        ):
             result = observe_screen(previous=previous, retries=1, settle_seconds=0)
 
         self.assertEqual(result.observation_quality, ObservationQuality.TRANSIENT)
@@ -53,7 +114,9 @@ class NavigationObserverTests(unittest.TestCase):
                 {"text": "Apps", "bounds": "[0,100][720,180]", "enabled": True}
             ],
         }
-        with patch("navigation.observer.observe_android", return_value=observed):
+        with patch("navigation.observer.read_accessibility_snapshot", return_value=None), patch(
+            "navigation.observer.observe_android", return_value=observed
+        ):
             result = observe_screen(retries=1, settle_seconds=0)
 
         self.assertEqual(result.observation_quality, ObservationQuality.VALID)
