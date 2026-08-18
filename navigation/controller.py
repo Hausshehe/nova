@@ -92,11 +92,6 @@ class NavigationController:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
 
             history.extend((NavigationState.WAIT_FOR_TRANSITION, NavigationState.VERIFY))
-            # The clicked label is a pre-transition target, not necessarily a
-            # label that survives on the destination screen. Verification must
-            # therefore establish a meaningful live transition (and package,
-            # when one is explicitly expected) without requiring the old label
-            # to remain visible.
             last_verification = verify_transition(current_snapshot, expected_foreground_package=expected_foreground_package, timeout_seconds=self.verification_timeout)
             if last_verification.success:
                 history.append(NavigationState.SUCCESS)
@@ -129,6 +124,7 @@ class NavigationController:
         no_progress = 0
         transient_observations = 0
         scroll_action_failures = 0
+        scroll_distance_ratio = 0.35
         last_progress: Optional[Progress] = None
 
         while total_scrolls <= self.max_scrolls:
@@ -157,7 +153,7 @@ class NavigationController:
                 break
 
             history.append(NavigationState.SCROLL)
-            action = scroll(snapshot, current_direction)
+            action = scroll(snapshot, current_direction, distance_ratio=scroll_distance_ratio)
             if not action.success:
                 scroll_action_failures += 1
                 history.append(NavigationState.REOBSERVE)
@@ -167,8 +163,15 @@ class NavigationController:
                     if transient_observations >= self.max_transient_observations:
                         return self._bounded_observation_failure(target, history, recovery_snapshot, last_progress, total_scrolls, current_direction, "Repeated transient observations prevented safe scroll recovery.")
                     continue
+
+                # A failed gesture is a recoverable action failure, not evidence
+                # that the target is behind us. Re-observe the live scroll region
+                # and retry once with a smaller gesture. Direction is unchanged
+                # until the UI itself provides evidence for reversal.
+                scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.70)
                 if scroll_action_failures >= 2:
-                    return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=recovery_snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Repeated scroll actions failed; refusing to reverse direction without evidence of UI progress or boundary state.")
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=recovery_snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Repeated scroll actions failed after bounded recovery attempts; refusing to reverse direction without evidence of UI progress or boundary state.")
+                snapshot = recovery_snapshot
                 continue
 
             scroll_action_failures = 0
@@ -187,6 +190,10 @@ class NavigationController:
             snapshot = after
             if last_progress.meaningful:
                 no_progress = 0
+                # Real movement is evidence that the current direction is useful.
+                # Keep it, but use a moderate gesture size so a fast scroll is
+                # less likely to jump over a nearby semantic destination.
+                scroll_distance_ratio = 0.35
             else:
                 confirm = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
                 if confirm.observation_quality is not ObservationQuality.VALID:
@@ -199,13 +206,20 @@ class NavigationController:
                 if confirmation.meaningful:
                     last_progress = confirmation
                     no_progress = 0
+                    scroll_distance_ratio = 0.30
                 else:
                     no_progress += 1
+                    # Two observations with no meaningful movement are evidence
+                    # of a possible boundary/stall. Before reversal, make the next
+                    # gesture smaller so recovery gathers finer-grained evidence.
+                    scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.75)
 
             if no_progress >= self.no_progress_before_reversal:
                 if current_direction == "down":
                     current_direction = "up"
+                    scroll_distance_ratio = 0.25
                     no_progress = 0
+                    history.append(NavigationState.RECOVER)
                     continue
                 break
 
