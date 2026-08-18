@@ -82,8 +82,13 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
     return ActionResult(True, "TAP", "Live target bounds activated successfully.", bounds)
 
 
-def scroll(snapshot, direction: str) -> ActionResult:
-    """Scroll the largest live scrollable region in the requested direction."""
+def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
+    """Scroll a live region by an adaptive fraction of its observed height.
+
+    No screen coordinates are fixed here. The gesture is derived entirely
+    from the currently observed scrollable region, and callers can reduce the
+    distance during recovery when a previous gesture moved too far or failed.
+    """
     regions = [item for item in snapshot.scrollable_regions if isinstance(item, dict)]
     if not regions:
         return ActionResult(False, "SCROLL", "No live scrollable region is available.")
@@ -106,20 +111,28 @@ def scroll(snapshot, direction: str) -> ActionResult:
     if width < 80 or height < 160:
         return ActionResult(False, "SCROLL", "Scrollable region is too small for a safe gesture.")
 
+    ratio = max(0.20, min(float(distance_ratio), 0.60))
     x = (left + right) // 2
-    upper = top + max(10, int(height * 0.25))
-    lower = top + min(height - 10, int(height * 0.75))
+    center_y = (top + bottom) // 2
+    distance = max(40, int(height * ratio))
     direction = str(direction or "down").lower().strip()
-    if direction == "up":
-        start_y, end_y = upper, lower
-    elif direction == "down":
-        start_y, end_y = lower, upper
+    if direction == "down":
+        start_y = center_y + distance // 2
+        end_y = center_y - distance // 2
+    elif direction == "up":
+        start_y = center_y - distance // 2
+        end_y = center_y + distance // 2
     else:
         return ActionResult(False, "SCROLL", f"Unsupported scroll direction: {direction}.")
+
+    start_y = max(top + 10, min(bottom - 10, start_y))
+    end_y = max(top + 10, min(bottom - 10, end_y))
+    if start_y == end_y:
+        return ActionResult(False, "SCROLL", "Computed scroll gesture has no movement.", region.get("bounds", ""))
 
     result = run_root(f"/system/bin/input swipe {x} {start_y} {x} {end_y} 350")
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "Scroll failed").strip()
         return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
 
-    return ActionResult(True, "SCROLL", "Live scrollable region swiped successfully.", region.get("bounds", ""))
+    return ActionResult(True, "SCROLL", f"Live scrollable region swiped using {ratio:.2f} of its observed height.", region.get("bounds", ""))
