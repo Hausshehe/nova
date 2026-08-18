@@ -54,7 +54,10 @@ class NavigationDiagnosticProbeTests(unittest.TestCase):
         ), patch(
             "tools.diagnose_navigation.scroll",
             return_value=scroll_result,
-        ) as scroll, patch("tools.diagnose_navigation.resolve_target") as resolve:
+        ) as scroll, patch("tools.diagnose_navigation.resolve_target") as resolve, patch(
+            "tools.diagnose_navigation._snapshot_timestamp_ms",
+            side_effect=[1000, 1001],
+        ):
             from navigation.resolver import resolve_target as real_resolve
 
             resolve.side_effect = [
@@ -78,6 +81,7 @@ class NavigationDiagnosticProbeTests(unittest.TestCase):
         self.assertEqual(transport["executor_returncode"], 0)
         self.assertEqual(transport["duration_ms"], 147.2)
         self.assertEqual(transport["transport_output"], "Broadcast completed: result=1")
+        self.assertEqual(transport["before_snapshot_timestamp_ms"], 1000)
 
         comparison = next(event for event in events if event["stage"] == "observation_comparison")
         self.assertTrue(comparison["semantic_signature_changed"])
@@ -85,6 +89,29 @@ class NavigationDiagnosticProbeTests(unittest.TestCase):
         final_decision = events[-1]
         self.assertEqual(final_decision["event"], "activation_ready")
         self.assertEqual(final_decision["action"], "ACTIVATE_NOT_PERFORMED_BY_PROBE")
+
+    def test_probe_stops_when_no_new_snapshot_is_published(self):
+        before = self._snapshot(("Battery", "Display"))
+        scroll_result = ActionResult(
+            True,
+            "SCROLL",
+            "simulated",
+            "[0,212][720,1452]",
+            147.2,
+            0,
+            "Broadcast completed: result=1",
+        )
+
+        with patch("tools.diagnose_navigation.observe_screen", return_value=before), patch(
+            "tools.diagnose_navigation.scroll", return_value=scroll_result
+        ) as scroll, patch(
+            "tools.diagnose_navigation._snapshot_timestamp_ms", return_value=1000
+        ), patch("tools.diagnose_navigation.time.sleep"):
+            trace = run_one_scroll("Apps")
+
+        self.assertEqual(scroll.call_count, 1)
+        self.assertEqual(trace.events[-1]["event"], "post_scroll_observation_timeout")
+        self.assertEqual(trace.events[-1]["stage"], "failure")
 
     def test_launch_settings_waits_for_settings_foreground(self):
         trace_snapshots = [
