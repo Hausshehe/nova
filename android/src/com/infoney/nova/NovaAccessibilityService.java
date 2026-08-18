@@ -15,6 +15,8 @@ import java.util.Set;
 public class NovaAccessibilityService extends AccessibilityService {
 
     private static final String TAG = "NovaAccessibility";
+    private static final long TARGET_SEARCH_BUDGET_MS = 1200L;
+    private static final int MAX_TARGET_SEARCH_DEPTH = 64;
 
     public static NovaAccessibilityService instance;
 
@@ -214,32 +216,51 @@ public class NovaAccessibilityService extends AccessibilityService {
     public boolean clickElement(String target) {
         if (target == null || target.trim().isEmpty()) return false;
         target = target.trim();
+        long started = System.currentTimeMillis();
+        Log.i(TAG, "CLICK_ELEMENT: search start target=" + target);
         AccessibilityNodeInfo node = findTargetNodeInAllWindows(target);
+        long searchMs = System.currentTimeMillis() - started;
+        Log.i(TAG, "CLICK_ELEMENT: search finished target=" + target + " found=" + (node != null) + " elapsed_ms=" + searchMs);
         if (node == null) return false;
-        boolean result = clickNode(node, target);
-        node.recycle();
-        return result;
+        try {
+            long clickStarted = System.currentTimeMillis();
+            boolean result = clickNode(node, target);
+            Log.i(TAG, "CLICK_ELEMENT: click finished target=" + target + " result=" + result + " elapsed_ms=" + (System.currentTimeMillis() - clickStarted));
+            return result;
+        } finally {
+            node.recycle();
+        }
     }
 
     private AccessibilityNodeInfo findTargetNodeInAllWindows(String target) {
+        final long deadline = System.nanoTime() + TARGET_SEARCH_BUDGET_MS * 1_000_000L;
         try {
             AccessibilityNodeInfo activeRoot = getRootInActiveWindow();
             if (activeRoot != null) {
-                AccessibilityNodeInfo found = findMatchingNode(activeRoot, target);
+                AccessibilityNodeInfo found = findMatchingNode(activeRoot, target, deadline, 0);
                 if (found != null) return found;
             }
         } catch (Exception e) {
             Log.e(TAG, "WINDOW_SEARCH: active root failed", e);
         }
+        if (System.nanoTime() >= deadline) {
+            Log.w(TAG, "WINDOW_SEARCH: target search budget exhausted before window fallback target=" + target);
+            return null;
+        }
         try {
             List<AccessibilityWindowInfo> windows = getWindows();
             if (windows != null) {
                 for (AccessibilityWindowInfo window : windows) {
+                    if (System.nanoTime() >= deadline) break;
                     if (window == null) continue;
                     AccessibilityNodeInfo root = window.getRoot();
                     if (root == null) continue;
-                    AccessibilityNodeInfo found = findMatchingNode(root, target);
-                    if (found != null) return found;
+                    try {
+                        AccessibilityNodeInfo found = findMatchingNode(root, target, deadline, 0);
+                        if (found != null) return found;
+                    } finally {
+                        root.recycle();
+                    }
                 }
             }
         } catch (Exception e) {
@@ -248,8 +269,8 @@ public class NovaAccessibilityService extends AccessibilityService {
         return null;
     }
 
-    private AccessibilityNodeInfo findMatchingNode(AccessibilityNodeInfo node, String target) {
-        if (node == null) return null;
+    private AccessibilityNodeInfo findMatchingNode(AccessibilityNodeInfo node, String target, long deadline, int depth) {
+        if (node == null || System.nanoTime() >= deadline || depth > MAX_TARGET_SEARCH_DEPTH) return null;
         String wanted = target.trim().toLowerCase();
         CharSequence text = node.getText();
         CharSequence description = node.getContentDescription();
@@ -266,7 +287,8 @@ public class NovaAccessibilityService extends AccessibilityService {
         }
 
         for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo found = findMatchingNode(node.getChild(i), target);
+            if (System.nanoTime() >= deadline) return null;
+            AccessibilityNodeInfo found = findMatchingNode(node.getChild(i), target, deadline, depth + 1);
             if (found != null) return found;
         }
         return null;
