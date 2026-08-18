@@ -12,33 +12,12 @@ import nova_agent
 import tools.navigate_android_to as navigator
 
 
-
 def _stamp():
     return time.monotonic()
 
 
-
 def _log(message):
     print(f"[NOVA-NAV-DIAG] {message}", flush=True)
-
-
-
-def _wrap(name, function):
-    def wrapped(*args, **kwargs):
-        started = _stamp()
-        _log(f"START {name}")
-        try:
-            result = function(*args, **kwargs)
-            elapsed = _stamp() - started
-            _log(f"END   {name} ({elapsed:.2f}s) result={_compact(result)}")
-            return result
-        except BaseException as exc:
-            elapsed = _stamp() - started
-            _log(f"FAIL  {name} ({elapsed:.2f}s) {type(exc).__name__}: {exc}")
-            raise
-
-    return wrapped
-
 
 
 def _compact(value):
@@ -61,21 +40,32 @@ def _compact(value):
     return type(value).__name__
 
 
-
 def _wrap_observe(function):
     def wrapped(*args, **kwargs):
         started = _stamp()
-        result = function(*args, **kwargs)
+        try:
+            result = function(*args, **kwargs)
+        except BaseException as exc:
+            _log(f"OBSERVE FAIL ({_stamp() - started:.2f}s) {type(exc).__name__}: {exc}")
+            raise
+
         elapsed = _stamp() - started
         state = result.get("state") or {}
+        scrollable = state.get("scrollable") or []
         visible = state.get("visible_text") or []
+        regions = [
+            item.get("bounds", "")
+            for item in scrollable
+            if isinstance(item, dict) and item.get("bounds")
+        ]
         _log(
             "OBSERVE "
             f"{elapsed:.2f}s success={result.get('success')} "
             f"verified={result.get('verified')} "
             f"pkg={result.get('foreground_package', '')} "
             f"nodes={result.get('node_count', 0)} "
-            f"scrollable={bool(state.get('scrollable'))} "
+            f"scrollable_count={len(scrollable)} "
+            f"scrollable_bounds={regions[:4]} "
             f"visible={list(visible)[:8]}"
         )
         return result
@@ -83,71 +73,112 @@ def _wrap_observe(function):
     return wrapped
 
 
-
 def _wrap_find_match(function):
     def wrapped(nodes, target):
         started = _stamp()
         result = function(nodes, target)
-        elapsed = _stamp() - started
-        _log(f"MATCH target={target!r} ({elapsed:.3f}s) -> {_compact(result)}")
+        _log(f"MATCH target={target!r} ({_stamp() - started:.3f}s) -> {_compact(result)}")
         return result
 
     return wrapped
-
 
 
 def _wrap_handoff(function):
     def wrapped(nodes):
         started = _stamp()
         result = function(nodes)
-        elapsed = _stamp() - started
-        _log(f"HANDOFF ({elapsed:.3f}s) -> {_compact(result)}")
+        _log(f"HANDOFF ({_stamp() - started:.3f}s) -> {_compact(result)}")
+        if result:
+            _score, node, label = result
+            ancestor = node.get("actionable_ancestor") if isinstance(node, dict) else None
+            _log(
+                f"HANDOFF NODE label={label!r} clickable={node.get('clickable')} "
+                f"bounds={node.get('bounds','')!r} "
+                f"ancestor_clickable={bool(isinstance(ancestor, dict) and ancestor.get('clickable'))} "
+                f"ancestor_bounds={ancestor.get('bounds','')!r}" if isinstance(ancestor, dict)
+                else f"HANDOFF NODE label={label!r} clickable={node.get('clickable')} bounds={node.get('bounds','')!r} ancestor=None"
+            )
         return result
 
     return wrapped
-
 
 
 def _wrap_target_app(function):
     def wrapped(target):
         started = _stamp()
         result = function(target)
-        elapsed = _stamp() - started
-        _log(f"TARGET-IS-APP target={target!r} ({elapsed:.2f}s) -> {result}")
+        _log(f"TARGET-IS-APP target={target!r} ({_stamp() - started:.2f}s) -> {result}")
         return result
 
     return wrapped
-
 
 
 def _wrap_activate(function):
     def wrapped(node):
         label = navigator._label(node)
+        ancestor = node.get("actionable_ancestor") if isinstance(node, dict) else None
         started = _stamp()
-        _log(f"TAP START label={label!r} bounds={node.get('bounds', '')!r}")
+        _log(
+            f"TAP START label={label!r} node_clickable={node.get('clickable')} "
+            f"node_bounds={node.get('bounds','')!r} "
+            f"ancestor_bounds={ancestor.get('bounds','')!r}" if isinstance(ancestor, dict)
+            else f"TAP START label={label!r} node_clickable={node.get('clickable')} node_bounds={node.get('bounds','')!r} ancestor=None"
+        )
         result = function(node)
-        elapsed = _stamp() - started
-        _log(f"TAP END   label={label!r} ({elapsed:.2f}s) -> {_compact(result)}")
+        _log(f"TAP END   label={label!r} ({_stamp() - started:.2f}s) -> {_compact(result)}")
         return result
 
     return wrapped
-
 
 
 def _wrap_scroll(function):
-    def wrapped(direction):
+    def wrapped(direction, scrollable=None):
         started = _stamp()
-        _log(f"SCROLL START direction={direction}")
-        result = function(direction)
-        elapsed = _stamp() - started
-        _log(f"SCROLL END   direction={direction} ({elapsed:.2f}s) -> {result}")
+        regions = scrollable or []
+        bounds = [
+            item.get("bounds", "")
+            for item in regions
+            if isinstance(item, dict) and item.get("bounds")
+        ]
+        _log(f"SCROLL START direction={direction} regions={bounds[:4]}")
+        result = function(direction, scrollable)
+        _log(f"SCROLL END   direction={direction} ({_stamp() - started:.2f}s) -> {result}")
         return result
 
     return wrapped
 
 
+def _wrap_run_root(function):
+    def wrapped(command, timeout=None):
+        text = str(command or "").strip().replace("\n", " ")
+        interesting = (
+            "uiautomator" in text
+            or "input tap" in text
+            or "input swipe" in text
+            or "dumpsys activity" in text
+        )
+        if not interesting:
+            return function(command, timeout=timeout) if timeout is not None else function(command)
+
+        started = _stamp()
+        result = function(command, timeout=timeout) if timeout is not None else function(command)
+        _log(
+            f"ROOT ({_stamp() - started:.2f}s) rc={result.returncode} "
+            f"cmd={text[:180]!r}"
+        )
+        return result
+
+    return wrapped
+
 
 def install_wrappers():
+    # run_root is imported into both navigator and observer modules, so wrap
+    # each module-local reference to capture the actual primitive used.
+    wrapped_root = _wrap_run_root(navigator.run_root)
+    navigator.run_root = wrapped_root
+    import tools.observe_android as observer
+    observer.run_root = wrapped_root
+
     navigator.observe_android = _wrap_observe(navigator.observe_android)
     navigator._find_match = _wrap_find_match(navigator._find_match)
     navigator._find_app_collection_handoff = _wrap_handoff(
@@ -162,7 +193,6 @@ def install_wrappers():
     # nova_agent already imported navigate_android_to directly, so replace that
     # reference with the navigator module's now-instrumented implementation.
     nova_agent.navigate_android_to = navigator.navigate_android_to
-
 
 
 def main():
