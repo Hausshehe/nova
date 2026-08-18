@@ -36,12 +36,18 @@ def observe_screen(
         snapshot = snapshot_from_observation(observed)
         last_snapshot = snapshot
 
-        if snapshot.valid and snapshot.visible_nodes:
+        has_usable_state = bool(
+            snapshot.visible_nodes
+            or snapshot.visible_text
+            or snapshot.scrollable_regions
+            or snapshot.foreground_package
+        )
+        if snapshot.valid and has_usable_state:
             return snapshot
 
         # An empty hierarchy can be a short-lived accessibility transition.
         # Do not let it immediately trigger scrolling or direction reversal.
-        if snapshot.valid and not snapshot.visible_nodes:
+        if snapshot.valid and not has_usable_state:
             snapshot = ScreenSnapshot(
                 foreground_package=snapshot.foreground_package,
                 visible_nodes=snapshot.visible_nodes,
