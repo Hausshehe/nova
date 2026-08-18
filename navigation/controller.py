@@ -51,7 +51,7 @@ class NavigationResult:
 class NavigationController:
     """Bounded adaptive controller that never reverses on one bad observation."""
 
-    def __init__(self, *, observation_retries: int = 2, verification_timeout: float = 3.0, settle_seconds: float = 0.25, max_scrolls: int = 8, no_progress_before_reversal: int = 2, max_transient_observations: int = 4, max_activation_retries: int = 1):
+    def __init__(self, *, observation_retries: int = 2, verification_timeout: float = 3.0, settle_seconds: float = 0.45, max_scrolls: int = 8, no_progress_before_reversal: int = 2, max_transient_observations: int = 4, max_activation_retries: int = 1):
         self.observation_retries = max(1, int(observation_retries))
         self.verification_timeout = max(0.1, float(verification_timeout))
         self.settle_seconds = max(0.0, float(settle_seconds))
@@ -81,8 +81,9 @@ class NavigationController:
         return False
 
     def _refresh_activation_target(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, Optional[TargetMatch]]:
-        """Refresh live target geometry immediately before a post-scroll tap."""
+        """Refresh live target geometry after the UI has settled, immediately before a post-scroll tap."""
         history_snapshot = snapshot
+        time.sleep(self.settle_seconds)
         refreshed = observe_screen(previous=history_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
         if refreshed.observation_quality is not ObservationQuality.VALID:
             return refreshed, None
