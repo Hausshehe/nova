@@ -15,6 +15,8 @@ from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
 OBSERVE_TIMEOUT_SECONDS = 12
+OBSERVE_RETRIES = 2
+OBSERVE_RETRY_DELAY = 0.2
 FOREGROUND_RETRIES = 3
 FOREGROUND_RETRY_DELAY = 0.15
 
@@ -112,14 +114,21 @@ def _parse_hierarchy(xml_text, include_nodes):
 
 
 def observe_android(include_nodes=False):
-    """Capture Android UI without allowing observation to block the agent."""
+    """Capture Android UI with bounded retries for transient dump failures."""
     try:
         command = (
             f"rm -f {DUMP_PATH} && "
             f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
             f">/dev/null 2>&1 && cat {DUMP_PATH}"
         )
-        result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS)
+
+        result = None
+        for attempt in range(OBSERVE_RETRIES):
+            result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS)
+            if result.returncode == 0 and (result.stdout or "").strip():
+                break
+            if attempt + 1 < OBSERVE_RETRIES:
+                time.sleep(OBSERVE_RETRY_DELAY)
 
         if result.returncode != 0:
             cached = run_root(f"cat {DUMP_PATH}", timeout=2)
