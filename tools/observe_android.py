@@ -14,11 +14,7 @@ from tools.android_root import run_root
 from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
-# OEM Settings screens containing large application lists can occasionally
-# stall uiautomator. Retry once rather than letting one transient dump failure
-# consume the entire navigation attempt.
-OBSERVE_TIMEOUT_SECONDS = 7
-OBSERVE_RETRY_DELAY = 0.25
+OBSERVE_TIMEOUT_SECONDS = 8
 FOREGROUND_RETRIES = 3
 FOREGROUND_RETRY_DELAY = 0.15
 
@@ -64,43 +60,44 @@ def _stable_foreground_package(hierarchy_package=""):
     return hierarchy_package or last
 
 
-def _dump_ui_xml():
-    """Capture the hierarchy, retrying once after a transient dump stall."""
-    command = (
-        f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
-        f">/dev/null 2>&1 && cat {DUMP_PATH}"
-    )
-    last_error = "UI observation failed."
-
-    for attempt in range(2):
-        result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS)
-        if result.returncode == 0 and (result.stdout or "").strip():
-            return result.stdout, ""
-
-        last_error = (
-            result.stderr or result.stdout or "UI observation failed."
-        ).strip()
-        if attempt == 0:
-            time.sleep(OBSERVE_RETRY_DELAY)
-
-    return "", last_error
-
-
 def observe_android(include_nodes=False):
     """Capture Android UI without allowing observation to block the agent."""
     try:
-        # Capture the hierarchy first, then query foreground state. This keeps
-        # Activity transitions from reporting the screen that existed before a
-        # click.
-        xml_text, error = _dump_ui_xml()
-        if not xml_text:
+        # Bound uiautomator itself as well as the outer root shell. On some
+        # rooted Android/OEM builds the dump command can stall after a scroll;
+        # the shell timeout prevents that child from holding Nova indefinitely.
+        command = (
+            f"timeout 6 /system/bin/uiautomator dump --compressed {DUMP_PATH} "
+            f">/dev/null 2>&1 && cat {DUMP_PATH}"
+        )
+        result = run_root(
+            command,
+            timeout=OBSERVE_TIMEOUT_SECONDS,
+        )
+
+        if result.returncode != 0:
             foreground_package = _foreground_package()
             return {
                 "success": False,
                 "verified": False,
                 "nodes": [] if include_nodes else None,
                 "foreground_package": foreground_package,
-                "message": error,
+                "message": (
+                    result.stderr
+                    or result.stdout
+                    or "UI observation failed"
+                ).strip(),
+            }
+
+        xml_text = result.stdout
+        if not xml_text.strip():
+            foreground_package = _foreground_package()
+            return {
+                "success": False,
+                "verified": False,
+                "nodes": [] if include_nodes else None,
+                "foreground_package": foreground_package,
+                "message": "Android UI observation produced no XML snapshot.",
             }
 
         root = ET.fromstring(xml_text)
