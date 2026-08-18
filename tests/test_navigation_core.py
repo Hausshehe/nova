@@ -10,7 +10,7 @@ from navigation.verifier import VerificationResult, verify_transition
 
 
 class NavigationCoreTests(unittest.TestCase):
-    def _snapshot(self, *, text, package="com.android.settings", scrollable=True):
+    def _snapshot(self, *, text, package="com.android.settings", scrollable=True, y_offset=0):
         nodes = tuple(
             {
                 "text": value,
@@ -18,12 +18,12 @@ class NavigationCoreTests(unittest.TestCase):
                 "resource_id": "",
                 "class": "android.widget.TextView",
                 "package": package,
-                "bounds": f"[0,{index * 100}][720,{index * 100 + 80}]",
+                "bounds": f"[0,{index * 100 + y_offset}][720,{index * 100 + 80 + y_offset}]",
                 "clickable": False,
                 "enabled": True,
                 "focusable": False,
                 "actionable_ancestor": {
-                    "bounds": f"[0,{index * 100}][720,{index * 100 + 80}]",
+                    "bounds": f"[0,{index * 100 + y_offset}][720,{index * 100 + 80 + y_offset}]",
                     "clickable": True,
                     "enabled": True,
                 },
@@ -66,6 +66,19 @@ class NavigationCoreTests(unittest.TestCase):
         snapshot = self._snapshot(text=("A", "B", "C"))
         result = compare_snapshots(snapshot, snapshot)
         self.assertFalse(result.meaningful)
+
+    def test_small_accessibility_bounds_jitter_is_not_progress(self):
+        before = self._snapshot(text=("A", "B", "C"), y_offset=0)
+        after = self._snapshot(text=("A", "B", "C"), y_offset=5)
+        result = compare_snapshots(before, after)
+        self.assertFalse(result.meaningful)
+
+    def test_substantial_stable_node_motion_is_progress(self):
+        before = self._snapshot(text=("A", "B", "C"), y_offset=0)
+        after = self._snapshot(text=("A", "B", "C"), y_offset=100)
+        result = compare_snapshots(before, after)
+        self.assertTrue(result.meaningful)
+        self.assertIn("moved substantially", result.reason)
 
     def test_repeated_transient_observations_are_bounded(self):
         transient = ScreenSnapshot(
