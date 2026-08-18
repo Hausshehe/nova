@@ -55,3 +55,13 @@ def test_proposal_requires_source_and_valid_hypothesis():
     researcher = Researcher()
     with pytest.raises(ValueError, match="proposal source is required"):
         researcher.accept_proposal(HypothesisProposal(_hypothesis(), source=""))
+
+
+def test_researcher_budget_can_be_reset_explicitly():
+    researcher = Researcher(ResearchBudget(max_hypotheses=1, max_revisions=0))
+    researcher.accept_proposal(HypothesisProposal(_hypothesis("h1"), source="test"))
+    with pytest.raises(ResearchBudgetExhausted):
+        researcher.accept_proposal(HypothesisProposal(_hypothesis("h2"), source="test"))
+    researcher.reset_run()
+    researcher.accept_proposal(HypothesisProposal(_hypothesis("h2"), source="test"))
+    assert researcher.accepted_count == 1
