@@ -77,12 +77,11 @@ class NavigationController:
         history.append(NavigationState.RECOVER)
         return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=snapshot, progress=progress, scroll_count=scroll_count, direction=direction, message=message)
 
-    @staticmethod
-    def _source_target_label_present(snapshot: ScreenSnapshot, match: TargetMatch) -> bool:
-        """Return whether the exact label we activated is still visible.
+    def _source_target_label_present(self, snapshot: ScreenSnapshot, match: TargetMatch) -> bool:
+        """Check whether the exact activated source label remains visible.
 
-        Recovery must distinguish a genuinely disappeared source control from a
-        fuzzy semantic match such as ``Apps`` -> ``App list``. Using the exact
+        Recovery deliberately uses the exact activated label instead of a fuzzy
+        semantic match such as ``Apps`` -> ``App list``. Using the exact
         activated label is deliberately conservative and prevents same-screen
         changes from being accepted as destination transitions.
         """
@@ -157,7 +156,7 @@ class NavigationController:
             current_match = recovery_match
             re_resolved = True
 
-        failure_message = "Activation verification failed after safely re-resolving the target for the bounded retry." if re_resolved else (last_verification.reason if last_verification else "Activation verification failed.")
+        failure_message = "Activation verification failed after safely re-resolved the target for the bounded retry." if re_resolved else (last_verification.reason if last_verification else "Activation verification failed.")
         return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=failure_message)
 
     def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
@@ -209,6 +208,11 @@ class NavigationController:
                     if transient_observations >= self.max_transient_observations:
                         return self._bounded_observation_failure(target, history, recovery_snapshot, last_progress, total_scrolls, current_direction, "Repeated transient observations prevented safe scroll recovery.")
                     continue
+
+                # A failed gesture is a recoverable action failure, not evidence
+                # that the target is behind us. Re-observe the live scroll region
+                # and retry once with a smaller gesture. Direction is unchanged
+                # until the UI itself provides evidence for reversal.
                 scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.70)
                 if scroll_action_failures >= 2:
                     return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=recovery_snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Repeated scroll actions failed after bounded recovery attempts; refusing to reverse direction without evidence of UI progress or boundary state.")
