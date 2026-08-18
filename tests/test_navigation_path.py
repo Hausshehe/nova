@@ -11,8 +11,8 @@ class FakeController:
     def __init__(self):
         self.calls = []
 
-    def navigate_target(self, target):
-        self.calls.append(target)
+    def navigate_target(self, target, *, initial_direction):
+        self.calls.append((target, initial_direction))
         return NavigationResult(
             False,
             False,
@@ -38,6 +38,7 @@ class NavigationPathTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.failed_target, "Settings")
         find_app.assert_called_once_with("Settings")
+        self.assertEqual(controller.calls, [("Settings", "down")])
 
     def test_single_app_step_may_use_package_fallback(self):
         controller = FakeController()
@@ -80,8 +81,8 @@ class NavigationPathTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def navigate_target(self, target):
-                self.calls.append(target)
+            def navigate_target(self, target, *, initial_direction):
+                self.calls.append((target, initial_direction))
                 if target == "Settings":
                     return NavigationResult(
                         True,
@@ -91,7 +92,7 @@ class NavigationPathTests(unittest.TestCase):
                         snapshot=checkpoint,
                         message="settings verified",
                     )
-                if self.calls.count("Apps") == 1:
+                if sum(1 for called_target, _ in self.calls if called_target == "Apps") == 1:
                     return NavigationResult(
                         False,
                         False,
@@ -119,7 +120,7 @@ class NavigationPathTests(unittest.TestCase):
         self.assertTrue(result.verified)
         self.assertTrue(result.resumed_from_checkpoint)
         self.assertEqual(result.completed_targets, ["Settings", "Apps"])
-        self.assertEqual(controller.calls, ["Settings", "Apps", "Apps"])
+        self.assertEqual(controller.calls, [("Settings", "down"), ("Apps", "down"), ("Apps", "down")])
         self.assertEqual(result.checkpoints, 2)
 
     def test_checkpoint_resume_requires_matching_screen(self):
@@ -138,8 +139,8 @@ class NavigationPathTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def navigate_target(self, target):
-                self.calls.append(target)
+            def navigate_target(self, target, *, initial_direction):
+                self.calls.append((target, initial_direction))
                 if target == "Settings":
                     return NavigationResult(True, True, target, NavigationState.SUCCESS, snapshot=checkpoint)
                 return NavigationResult(False, False, target, NavigationState.FAILURE, snapshot=checkpoint, message="failure")
@@ -151,7 +152,7 @@ class NavigationPathTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertFalse(result.resumed_from_checkpoint)
-        self.assertEqual(controller.calls, ["Settings", "Apps"])
+        self.assertEqual(controller.calls, [("Settings", "down"), ("Apps", "down")])
 
 
 if __name__ == "__main__":
