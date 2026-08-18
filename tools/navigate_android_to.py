@@ -211,7 +211,14 @@ def _bounds_center(bounds):
 
 
 def _activate(node):
-    center = _bounds_center(node.get("bounds", ""))
+    """Activate a semantic node using its nearest live actionable ancestor."""
+    candidate = node
+    if not node.get("clickable"):
+        ancestor = node.get("actionable_ancestor")
+        if isinstance(ancestor, dict) and ancestor.get("enabled", True):
+            candidate = ancestor
+
+    center = _bounds_center(candidate.get("bounds", ""))
     if center is None:
         return False, "Matching node has invalid bounds."
     x, y = center
@@ -296,9 +303,6 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
 
             last_foreground = observed.get("foreground_package", "")
 
-            # Installed-app targets must enter the generic app collection before
-            # normal semantic matching. This prevents sibling actions such as
-            # "App update" from winning the handoff.
             if target_is_app and not handoff_used:
                 handoff = _find_app_collection_handoff(observed.get("nodes"))
                 if handoff:
