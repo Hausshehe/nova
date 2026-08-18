@@ -306,6 +306,7 @@ class NavigationCoreTests(unittest.TestCase):
                 unchanged5,
                 reverse_progress,
                 target_screen,
+                target_screen,
             ],
         ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
             "navigation.controller.activate_node", return_value=tap
