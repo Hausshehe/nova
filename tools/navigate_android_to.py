@@ -210,6 +210,13 @@ def _bounds_center(bounds):
     return (x1 + x2) // 2, (y1 + y2) // 2
 
 
+def _bounds_rect(bounds):
+    match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+    if not match:
+        return None
+    return tuple(map(int, match.groups()))
+
+
 def _activate(node):
     """Activate a semantic node using its nearest live actionable ancestor."""
     candidate = node
@@ -228,11 +235,36 @@ def _activate(node):
     return True, ""
 
 
-def _scroll(direction):
+def _scroll(direction, scrollable=None):
+    """Scroll inside the live scrollable region reported by the UI hierarchy."""
+    regions = [item for item in (scrollable or []) if isinstance(item, dict)]
+    regions.sort(
+        key=lambda item: (
+            _bounds_rect(item.get("bounds", "")) or (0, 0, 0, 0)
+        ),
+        reverse=True,
+    )
+
+    rect = _bounds_rect(regions[0].get("bounds", "")) if regions else None
+    if rect is None:
+        return False
+
+    x1, y1, x2, y2 = rect
+    width = x2 - x1
+    height = y2 - y1
+    if width < 80 or height < 160:
+        return False
+
+    x = max(x1 + 10, min(x2 - 10, (x1 + x2) // 2))
+    top = y1 + max(10, int(height * 0.25))
+    bottom = y1 + min(height - 10, int(height * 0.75))
+
     if direction == "up":
-        command = "/system/bin/input swipe 540 300 540 700 350"
+        start_y, end_y = top, bottom
     else:
-        command = "/system/bin/input swipe 540 700 540 300 350"
+        start_y, end_y = bottom, top
+
+    command = f"/system/bin/input swipe {x} {start_y} {x} {end_y} 350"
     result = run_root(command)
     return result.returncode == 0
 
@@ -362,7 +394,7 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
             if unchanged_count >= 2:
                 break
 
-            if not _scroll(current_direction):
+            if not _scroll(current_direction, state.get("scrollable")):
                 break
 
             scrolls += 1
