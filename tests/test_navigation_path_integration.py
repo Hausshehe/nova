@@ -79,7 +79,7 @@ class OpenPathIntegrationTests(unittest.TestCase):
         app_list = ScreenSnapshot(
             foreground_package="com.android.settings",
             observation_quality=ObservationQuality.VALID,
-            visible_text=("App list", "Assistant", "Screen time"),
+            visible_text=("App list", "Assistant", "Screen time", "YouTube"),
         )
 
         class ScriptedController:
