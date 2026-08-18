@@ -86,9 +86,9 @@ class OpenPathIntegrationTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def navigate_target(self, target):
-                self.calls.append(target)
-                occurrence = self.calls.count(target)
+            def navigate_target(self, target, *, initial_direction):
+                self.calls.append((target, initial_direction))
+                occurrence = sum(1 for called_target, _ in self.calls if called_target == target)
                 snapshots = {"Settings": settings, "Apps": apps, "YouTube": app_list}
                 if target == "YouTube" and occurrence == 1:
                     return NavigationResult(
@@ -120,7 +120,10 @@ class OpenPathIntegrationTests(unittest.TestCase):
         self.assertTrue(result.verified)
         self.assertTrue(result.resumed_from_checkpoint)
         self.assertEqual(result.completed_targets, ["Settings", "Apps", "YouTube"])
-        self.assertEqual(controller.calls, ["Settings", "Apps", "YouTube", "YouTube"])
+        self.assertEqual(
+            controller.calls,
+            [("Settings", "down"), ("Apps", "down"), ("YouTube", "down"), ("YouTube", "down")],
+        )
         find_app.assert_not_called()
 
 
