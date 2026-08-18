@@ -120,6 +120,28 @@ class ExperienceStore:
                 ),
             )
 
+    def list_experiment_hypotheses(self) -> list[dict[str, Any]]:
+        """Return previously recorded hypotheses in chronological order.
+
+        Only the stored hypothesis payload is exposed. The memory layer does
+        not interpret results or promote strategies.
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT record_json FROM experiments
+                ORDER BY created_at_utc ASC, experiment_id ASC
+                """
+            ).fetchall()
+
+        hypotheses: list[dict[str, Any]] = []
+        for row in rows:
+            record = json.loads(row["record_json"])
+            hypothesis = record.get("hypothesis")
+            if isinstance(hypothesis, dict):
+                hypotheses.append(hypothesis)
+        return hypotheses
+
     def register_strategy(
         self,
         *,
