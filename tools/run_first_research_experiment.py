@@ -16,7 +16,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+# When this file is executed directly (``python tools/...py``), Python puts
+# ``tools/`` on sys.path rather than the repository root. Add the root so the
+# trading_research package is importable without requiring PYTHONPATH setup.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from trading_research.backtest import run_long_flat
 from trading_research.contracts import BacktestMetrics, Hypothesis, ResearchGates, evaluate_gate
