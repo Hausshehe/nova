@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import patch
 
+from navigation.controller import NavigationController, NavigationState
 from navigation.progress import compare_snapshots
 from navigation.resolver import resolve_target
 from navigation.state import ObservationQuality, Resolution, ScreenSnapshot
@@ -30,20 +32,12 @@ class NavigationCoreTests(unittest.TestCase):
             foreground_package=package,
             visible_nodes=nodes,
             visible_text=tuple(text),
-            scrollable_regions=(
-                {"bounds": "[0,212][720,1452]"},
-            )
-            if scrollable
-            else (),
+            scrollable_regions=({"bounds": "[0,212][720,1452]"},) if scrollable else (),
         )
 
     def test_apps_prefers_visible_settings_destination(self):
         snapshot = self._snapshot(text=("Battery", "Apps", "Display"))
-        result = resolve_target(
-            snapshot,
-            "Apps",
-            installed_packages=("com.example.apps", "com.google.android.youtube"),
-        )
+        result = resolve_target(snapshot, "Apps", installed_packages=("com.example.apps", "com.google.android.youtube"))
         self.assertEqual(result.resolution, Resolution.FOUND)
         self.assertEqual(result.label, "Apps")
 
@@ -70,6 +64,25 @@ class NavigationCoreTests(unittest.TestCase):
         snapshot = self._snapshot(text=("A", "B", "C"))
         result = compare_snapshots(snapshot, snapshot)
         self.assertFalse(result.meaningful)
+
+    def test_repeated_transient_observations_are_bounded(self):
+        transient = ScreenSnapshot(
+            foreground_package="com.android.settings",
+            observation_quality=ObservationQuality.TRANSIENT,
+            message="simulated transient hierarchy",
+        )
+        controller = NavigationController(
+            observation_retries=1,
+            max_transient_observations=3,
+            max_scrolls=1,
+        )
+        with patch("navigation.controller.observe_screen", return_value=transient) as observe:
+            result = controller.navigate_target("Apps")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.state, NavigationState.FAILURE)
+        self.assertEqual(observe.call_count, 3)
+        self.assertIn("bounded recovery budget", result.message)
 
 
 if __name__ == "__main__":
