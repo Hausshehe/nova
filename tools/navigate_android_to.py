@@ -15,6 +15,10 @@ from tools.find_android_app import find_android_app
 from tools.observe_android import observe_android
 
 
+RECOVERY_DELAY_SECONDS = 0.20
+MAX_SCROLL_RECOVERY_ATTEMPTS = 1
+
+
 def _label(node):
     return (
         (node.get("text") or "").strip()
@@ -149,15 +153,7 @@ def _find_match(nodes, target):
 
 
 def _find_app_collection_handoff(nodes):
-    """Find a generic app-collection entry before searching for an app.
-
-    When a requested installed app is not directly visible, a settings-style
-    hub may expose a collection entry alongside other actions. This ranks live
-    labels by generic collection semantics instead of encoding a device-
-    specific screen name. Some OEM accessibility trees expose the text node as
-    non-clickable while its parent carries the action, so bounds/actionability
-    are accepted when a usable node is present.
-    """
+    """Find a generic app-collection entry before searching for an app."""
     candidates = []
     collection_words = {"list", "browse", "installed", "all"}
     app_words = {"app", "application"}
@@ -240,9 +236,7 @@ def _scroll(direction, scrollable=None):
     """Scroll inside the live scrollable region reported by the UI hierarchy."""
     regions = [item for item in (scrollable or []) if isinstance(item, dict)]
     regions.sort(
-        key=lambda item: (
-            _bounds_rect(item.get("bounds", "")) or (0, 0, 0, 0)
-        ),
+        key=lambda item: (_bounds_rect(item.get("bounds", "")) or (0, 0, 0, 0)),
         reverse=True,
     )
 
@@ -271,7 +265,7 @@ def _scroll(direction, scrollable=None):
 
 
 def _ui_signature(observed):
-    """Create a small position-independent signature for detecting scroll stalls."""
+    """Create a position-independent signature for detecting scroll progress."""
     state = observed.get("state") or {}
     visible = tuple(str(value).strip().lower() for value in state.get("visible_text", []) if str(value).strip())
     scrollable = tuple(
@@ -283,12 +277,7 @@ def _ui_signature(observed):
 
 
 def _split_target_path(target):
-    """Split a natural-language target chain into sequential destinations.
-
-    This is generic grammar handling only. It does not contain Android screen
-    names, app names, aliases, coordinates, or assumptions about how many hops
-    any particular destination requires.
-    """
+    """Split a natural-language target chain into sequential destinations."""
     text = re.sub(r"\s+", " ", str(target or "").strip())
     if not text:
         return []
@@ -299,6 +288,16 @@ def _split_target_path(target):
         flags=re.IGNORECASE,
     )
     return [part.strip(" ,") for part in parts if part.strip(" ,")]
+
+
+def _observe_with_recovery(include_nodes=True):
+    """Observe the live UI and retry once when a transient result is unusable."""
+    observed = observe_android(include_nodes=include_nodes)
+    if observed.get("success"):
+        return observed
+
+    time.sleep(RECOVERY_DELAY_SECONDS)
+    return observe_android(include_nodes=include_nodes)
 
 
 def _navigate_single_target(target, max_scrolls=8, direction="down"):
@@ -322,9 +321,10 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
         phase_scrolls = 0
         previous_signature = None
         unchanged_count = 0
+        recovery_attempts = 0
 
         while phase_scrolls <= budget:
-            observed = observe_android(include_nodes=True)
+            observed = _observe_with_recovery(include_nodes=True)
             if not observed.get("success"):
                 return {
                     "success": False,
@@ -339,7 +339,7 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
             if target_is_app and not handoff_used:
                 handoff = _find_app_collection_handoff(observed.get("nodes"))
                 if handoff:
-                    score, node, label = handoff
+                    _, node, label = handoff
                     activated, error = _activate(node)
                     if not activated:
                         return {
@@ -353,6 +353,8 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                     handoff_used = True
                     previous_signature = None
                     unchanged_count = 0
+                    recovery_attempts = 0
+                    time.sleep(RECOVERY_DELAY_SECONDS)
                     continue
 
             match = _find_match(observed.get("nodes"), target)
@@ -369,7 +371,7 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                         "message": error,
                     }
 
-                verification = observe_android(include_nodes=False)
+                verification = _observe_with_recovery(include_nodes=False)
                 return {
                     "success": True,
                     "verified": bool(verification.get("success")),
@@ -390,26 +392,44 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                 unchanged_count += 1
             else:
                 unchanged_count = 0
+                recovery_attempts = 0
             previous_signature = signature
 
             if unchanged_count >= 2:
-                # Confirm the apparent stall with a fresh observation. Android
-                # Settings can briefly return an identical hierarchy while a
-                # scroll transition is still settling. Only stop when the
-                # re-observation confirms that nothing changed.
-                time.sleep(0.25)
-                retry = observe_android(include_nodes=True)
-                if retry.get("success"):
-                    retry_signature = _ui_signature(retry)
-                    if retry_signature != signature:
-                        observed = retry
-                        previous_signature = retry_signature
-                        unchanged_count = 0
+                if recovery_attempts < MAX_SCROLL_RECOVERY_ATTEMPTS:
+                    recovery_attempts += 1
+                    time.sleep(RECOVERY_DELAY_SECONDS)
+                    retry = _observe_with_recovery(include_nodes=True)
+                    if retry.get("success"):
+                        retry_signature = _ui_signature(retry)
                         last_foreground = retry.get("foreground_package", last_foreground)
-                        continue
+                        if retry_signature != signature:
+                            previous_signature = retry_signature
+                            unchanged_count = 0
+                            recovery_attempts = 0
+                            observed = retry
+                            continue
+
+                        retry_state = retry.get("state") or {}
+                        if retry_state.get("scrollable") and _scroll(current_direction, retry_state.get("scrollable")):
+                            scrolls += 1
+                            phase_scrolls += 1
+                            unchanged_count = 0
+                            continue
                 break
 
             if not _scroll(current_direction, state.get("scrollable")):
+                if recovery_attempts < MAX_SCROLL_RECOVERY_ATTEMPTS:
+                    recovery_attempts += 1
+                    time.sleep(RECOVERY_DELAY_SECONDS)
+                    refreshed = _observe_with_recovery(include_nodes=True)
+                    refreshed_state = refreshed.get("state") or {}
+                    if refreshed.get("success") and refreshed_state.get("scrollable"):
+                        if _scroll(current_direction, refreshed_state.get("scrollable")):
+                            scrolls += 1
+                            phase_scrolls += 1
+                            recovery_attempts = 0
+                            continue
                 break
 
             scrolls += 1
@@ -430,13 +450,7 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
 
 
 def navigate_android_to(target, max_scrolls=8, direction="down"):
-    """Find and activate one or more human-named UI targets sequentially.
-
-    The target may contain a natural-language chain such as
-    "first, then open second". Each destination is searched from the live UI
-    after the previous destination changes the screen. This keeps multi-hop
-    navigation generic and adaptive instead of encoding app-specific paths.
-    """
+    """Find and activate one or more human-named UI targets sequentially."""
     targets = _split_target_path(target)
     if not targets:
         return {"success": False, "verified": False, "message": "Target cannot be empty."}
@@ -445,11 +459,7 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
     completed = []
 
     for current_target in targets:
-        result = _navigate_single_target(
-            current_target,
-            max_scrolls=max_scrolls,
-            direction=direction,
-        )
+        result = _navigate_single_target(current_target, max_scrolls=max_scrolls, direction=direction)
         total_scrolls += int(result.get("scrolls", 0))
 
         if not result.get("success") or not result.get("verified"):
@@ -461,10 +471,7 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
                 "failed_target": current_target,
                 "scrolls": total_scrolls,
                 "foreground_package": result.get("foreground_package", ""),
-                "message": result.get(
-                    "message",
-                    f"Could not complete navigation to '{current_target}'.",
-                ),
+                "message": result.get("message", f"Could not complete navigation to '{current_target}'."),
             }
 
         completed.append({
