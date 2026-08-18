@@ -114,30 +114,47 @@ class GateDecision:
 
 
 def evaluate_gate(metrics: BacktestMetrics, gates: ResearchGates) -> GateDecision:
-    """Apply deterministic rejection/promotion gates to one backtest."""
+    """Apply deterministic gates to one backtest.
+
+    Insufficient sample size is an evidence-status problem, not proof that the
+    hypothesis is false. Therefore a result with too few trades is
+    ``INCONCLUSIVE`` unless an independent performance gate has also failed.
+    ``PROMISING`` means the initial gates pass; it is never proof of
+    profitability.
+    """
     metrics.validate()
     gates.validate()
 
-    reasons: list[str] = []
+    sample_reasons: list[str] = []
+    performance_reasons: list[str] = []
+
     if metrics.trades < gates.minimum_trades:
-        reasons.append(f"too_few_trades:{metrics.trades}<{gates.minimum_trades}")
+        sample_reasons.append(f"too_few_trades:{metrics.trades}<{gates.minimum_trades}")
     if metrics.profit_factor < gates.minimum_profit_factor:
-        reasons.append(
+        performance_reasons.append(
             f"profit_factor_below_gate:{metrics.profit_factor:.4f}<{gates.minimum_profit_factor:.4f}"
         )
     if metrics.expectancy <= gates.minimum_expectancy:
-        reasons.append(
+        performance_reasons.append(
             f"expectancy_not_positive:{metrics.expectancy:.6f}<={gates.minimum_expectancy:.6f}"
         )
     if metrics.max_drawdown > gates.maximum_drawdown:
-        reasons.append(
+        performance_reasons.append(
             f"drawdown_above_gate:{metrics.max_drawdown:.4f}>{gates.maximum_drawdown:.4f}"
         )
     if metrics.win_rate < gates.minimum_win_rate:
-        reasons.append(
+        performance_reasons.append(
             f"win_rate_below_gate:{metrics.win_rate:.4f}<{gates.minimum_win_rate:.4f}"
         )
 
-    if reasons:
-        return GateDecision(Decision.REJECT, tuple(reasons))
+    if performance_reasons:
+        return GateDecision(
+            Decision.REJECT,
+            tuple(sample_reasons + performance_reasons),
+        )
+    if sample_reasons:
+        return GateDecision(
+            Decision.INCONCLUSIVE,
+            tuple(sample_reasons + ("insufficient_sample_for_promotion",)),
+        )
     return GateDecision(Decision.PROMISING, ("all_initial_gates_passed",))
