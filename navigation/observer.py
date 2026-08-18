@@ -14,6 +14,16 @@ DEFAULT_SETTLE_SECONDS = 0.25
 DEFAULT_RETRIES = 2
 
 
+def _has_navigation_state(snapshot: ScreenSnapshot) -> bool:
+    """Require actual UI hierarchy information before calling a snapshot valid."""
+    return bool(
+        snapshot.visible_nodes
+        or snapshot.actionable_nodes
+        or snapshot.visible_text
+        or snapshot.scrollable_regions
+    )
+
+
 def observe_screen(
     previous: Optional[ScreenSnapshot] = None,
     *,
@@ -21,12 +31,11 @@ def observe_screen(
     retries: int = DEFAULT_RETRIES,
     settle_seconds: float = DEFAULT_SETTLE_SECONDS,
 ) -> ScreenSnapshot:
-    """Capture a live screen without allowing one bad observation to steer navigation.
+    """Capture a live screen without letting an empty/transient dump steer navigation.
 
-    The existing Android observer remains responsible for bounded shell/UI-dump
-    execution. This layer adds navigation-specific classification and a small
-    settle/retry policy. A failed observation is never silently converted into
-    a valid empty screen.
+    Foreground-package information alone is insufficient for navigation because
+    Android can briefly report the package while accessibility content is empty
+    or stale during a transition.
     """
     attempts = max(1, int(retries))
     last_snapshot: Optional[ScreenSnapshot] = None
@@ -36,18 +45,10 @@ def observe_screen(
         snapshot = snapshot_from_observation(observed)
         last_snapshot = snapshot
 
-        has_usable_state = bool(
-            snapshot.visible_nodes
-            or snapshot.visible_text
-            or snapshot.scrollable_regions
-            or snapshot.foreground_package
-        )
-        if snapshot.valid and has_usable_state:
+        if snapshot.valid and _has_navigation_state(snapshot):
             return snapshot
 
-        # An empty hierarchy can be a short-lived accessibility transition.
-        # Do not let it immediately trigger scrolling or direction reversal.
-        if snapshot.valid and not has_usable_state:
+        if snapshot.valid:
             snapshot = ScreenSnapshot(
                 foreground_package=snapshot.foreground_package,
                 visible_nodes=snapshot.visible_nodes,
@@ -56,7 +57,7 @@ def observe_screen(
                 visible_text=snapshot.visible_text,
                 timestamp=snapshot.timestamp,
                 observation_quality=ObservationQuality.TRANSIENT,
-                message="Android returned an empty UI hierarchy; waiting for a stable snapshot.",
+                message="Android reported a foreground package but no usable navigation UI; waiting for a stable hierarchy.",
             )
             last_snapshot = snapshot
 
