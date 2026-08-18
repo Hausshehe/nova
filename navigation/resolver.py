@@ -10,6 +10,10 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 from .state import ObservationQuality, Resolution, ScreenSnapshot
 
 
+MIN_MATCH_SCORE = 50.0
+AMBIGUITY_SCORE_GAP = 4.0
+
+
 @dataclass(frozen=True)
 class TargetMatch:
     """A semantic match resolved against the current live screen."""
@@ -98,19 +102,36 @@ def _iter_nodes(snapshot: ScreenSnapshot) -> Iterable[Dict[str, Any]]:
             yield node
 
 
-def _best_ui_match(snapshot: ScreenSnapshot, target: str) -> Optional[TargetMatch]:
+def _candidate_matches(snapshot: ScreenSnapshot, target: str):
     candidates = []
     for node in _iter_nodes(snapshot):
         label = _label(node)
         score = _semantic_score(label, target, node)
-        if score >= 50.0:
+        if score >= MIN_MATCH_SCORE:
             candidates.append((score, _tiebreak(label, target, node), node, label))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates
 
+
+def _best_ui_match(snapshot: ScreenSnapshot, target: str) -> Optional[TargetMatch]:
+    candidates = _candidate_matches(snapshot, target)
     if not candidates:
         return None
 
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     score, _, node, label = candidates[0]
+    if len(candidates) > 1:
+        second_score, _, _, second_label = candidates[1]
+        if second_label != label and score - second_score <= AMBIGUITY_SCORE_GAP:
+            return TargetMatch(
+                resolution=Resolution.AMBIGUOUS,
+                target=target,
+                score=score,
+                reason=(
+                    f"Multiple visible controls are similarly close to '{target}': "
+                    f"'{label}' ({score:.1f}) and '{second_label}' ({second_score:.1f})."
+                ),
+            )
+
     return TargetMatch(
         resolution=Resolution.FOUND,
         target=target,
@@ -127,13 +148,11 @@ def resolve_target(
     *,
     installed_packages: Optional[Iterable[str]] = None,
 ) -> TargetMatch:
-    """Resolve a target using screen context before installed-app identity.
+    """Resolve a target using the current screen before installed-app identity.
 
-    A logical target is first interpreted as something represented by the
-    current screen. Installed-package information is only a fallback signal,
-    preventing generic labels such as ``Apps`` from being reclassified as an
-    installed application merely because package inventory happens to contain
-    a loose match.
+    Visible UI wins. Installed-package information is only a fallback signal,
+    so a Settings destination such as ``Apps`` cannot be silently reclassified
+    as an installed application.
     """
     target = " ".join(str(target or "").split())
     if not target:
@@ -154,9 +173,10 @@ def resolve_target(
         for package in (installed_packages or ())
         if str(package).strip()
     }
+    compact_target = target.lower().replace(" ", "")
     package_match = any(
         target.lower() == package.rsplit(".", 1)[-1].replace("_", " ")
-        or target.lower().replace(" ", "") in package.replace(".", "")
+        or compact_target in package.replace(".", "")
         for package in package_names
     )
     if package_match and snapshot.scrollable:
