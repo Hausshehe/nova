@@ -31,14 +31,13 @@ def main() -> None:
     parser.add_argument("--model", default=None)
     args = parser.parse_args()
 
-    api_key = os.environ.get("GROQ_API_KEY", "")
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
-        raise SystemExit("GROQ_API_KEY is required")
+        raise SystemExit(
+            "GROQ_API_KEY is required; use the same key already configured for Nova's normal AI router."
+        )
 
-    generator_kwargs = {}
-    if args.model:
-        generator_kwargs["model"] = args.model
-    generator = GroqHypothesisGenerator(api_key, **generator_kwargs)
+    generator = GroqHypothesisGenerator(model=args.model)
     memory = ExperienceStore(args.memory)
     session = AutonomousResearchSession(
         generator=generator,
