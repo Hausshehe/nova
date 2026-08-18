@@ -319,8 +319,6 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
 
     for phase_index, current_direction in enumerate(directions):
         phase_scrolls = 0
-        previous_signature = None
-        unchanged_count = 0
 
         while phase_scrolls <= budget:
             observed = observe_android(include_nodes=True)
@@ -350,8 +348,6 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
                             "message": error,
                         }
                     handoff_used = True
-                    previous_signature = None
-                    unchanged_count = 0
                     continue
 
             match = _find_match(observed.get("nodes"), target)
@@ -382,16 +378,6 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
 
             state = observed.get("state") or {}
             if not state.get("scrollable") or phase_scrolls >= budget:
-                break
-
-            signature = _ui_signature(observed)
-            if signature == previous_signature:
-                unchanged_count += 1
-            else:
-                unchanged_count = 0
-            previous_signature = signature
-
-            if unchanged_count >= 2:
                 break
 
             if not _scroll(current_direction, state.get("scrollable")):
