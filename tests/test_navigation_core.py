@@ -202,6 +202,28 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertEqual(result.history.count(NavigationState.RECOVER), 1)
         self.assertEqual(result.history.count(NavigationState.SUCCESS), 1)
 
+    def test_recovery_accepts_meaningful_destination_without_source_target(self):
+        initial = self._snapshot(text=("Apps", "Display", "Battery"))
+        destination = self._snapshot(text=("App list", "Assistant", "Screen time"))
+        action = ActionResult(True, "TAP", "simulated")
+        failed = VerificationResult(False, initial, "simulated delayed transition")
+
+        controller = NavigationController(
+            observation_retries=1,
+            max_activation_retries=1,
+            settle_seconds=0,
+            max_scrolls=0,
+        )
+        with patch("navigation.controller.observe_screen", side_effect=[initial, destination]), patch(
+            "navigation.controller.activate_node", return_value=action
+        ), patch("navigation.controller.verify_transition", return_value=failed):
+            result = controller.navigate_target("Apps")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.verified)
+        self.assertEqual(result.state, NavigationState.SUCCESS)
+        self.assertIn("during bounded recovery", result.message)
+
     def test_scroll_command_failures_do_not_trigger_direction_reversal(self):
         snapshot = self._snapshot(text=("A", "B", "C"))
         failed_scroll = ActionResult(False, "SCROLL", "simulated command failure")
