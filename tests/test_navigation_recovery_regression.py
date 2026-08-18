@@ -74,6 +74,23 @@ class NavigationRecoveryRegressionTests(unittest.TestCase):
         self.assertTrue(result.verified)
         self.assertEqual(result.state, NavigationState.SUCCESS)
 
+    def test_geometry_mismatch_gets_fresh_resolution_before_tap_retry(self):
+        initial = self._snapshot(("Apps", "Display"))
+        refreshed = self._snapshot(("Apps", "Display"))
+        geometry_failure = ActionResult(False, "TAP", "Actionable ancestor bounds do not contain the target bounds.")
+        tap_success = ActionResult(True, "TAP", "fresh live target activated")
+        verified = VerificationResult(True, refreshed, "simulated verified transition")
+
+        with patch("navigation.controller.observe_screen", side_effect=[initial, refreshed]), patch(
+            "navigation.controller.activate_node", side_effect=[geometry_failure, tap_success]
+        ) as activate, patch("navigation.controller.verify_transition", return_value=verified):
+            result = self._controller().navigate_target("Apps")
+
+        self.assertTrue(result.success)
+        self.assertEqual(activate.call_count, 2)
+        self.assertEqual(result.state, NavigationState.SUCCESS)
+        self.assertIn(NavigationState.RECOVER, result.history)
+
 
 if __name__ == "__main__":
     unittest.main()
