@@ -7,6 +7,7 @@ the tool never contains app-specific screen names or planner coordinates.
 """
 
 import re
+import time
 from difflib import SequenceMatcher
 
 from tools.android_root import run_root
@@ -392,6 +393,20 @@ def _navigate_single_target(target, max_scrolls=8, direction="down"):
             previous_signature = signature
 
             if unchanged_count >= 2:
+                # Confirm the apparent stall with a fresh observation. Android
+                # Settings can briefly return an identical hierarchy while a
+                # scroll transition is still settling. Only stop when the
+                # re-observation confirms that nothing changed.
+                time.sleep(0.25)
+                retry = observe_android(include_nodes=True)
+                if retry.get("success"):
+                    retry_signature = _ui_signature(retry)
+                    if retry_signature != signature:
+                        observed = retry
+                        previous_signature = retry_signature
+                        unchanged_count = 0
+                        last_foreground = retry.get("foreground_package", last_foreground)
+                        continue
                 break
 
             if not _scroll(current_direction, state.get("scrollable")):
