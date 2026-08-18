@@ -28,6 +28,7 @@ jobs:
           tests.test_navigation_core
           tests.test_navigation_path
           tests.test_navigation_adapter
+          tests.test_navigation_actions
           tests.test_navigation_path_integration
           tests.test_navigation_observer
           -v
