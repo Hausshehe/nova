@@ -27,6 +27,7 @@ class ActionResult:
 
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+_RECEIVER_RESULT_RE = re.compile(r"(?:Broadcast completed:\s*)?result=(-?\d+)\b")
 
 
 def _parse_bounds(bounds: str) -> Optional[Tuple[int, int, int, int]]:
@@ -65,7 +66,13 @@ def _semantic_label(node: Dict[str, Any]) -> str:
 
 
 def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
-    """Send one bounded semantic command and expose its transport metadata."""
+    """Send one bounded semantic command and expose its transport metadata.
+
+    Android's ``am broadcast`` shell exit code is not the Accessibility receiver's
+    result code. In particular, a receiver returning result=1 can make ``am`` exit
+    with code 1. The receiver result is therefore the authoritative action result;
+    the shell return code remains diagnostic metadata.
+    """
     command = [
         "am",
         "broadcast",
@@ -97,13 +104,17 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
 
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
-    if result.returncode == 0 and re.search(r"result=1\b", output):
-        return True, output or "Accessibility Service command completed successfully.", result.returncode, elapsed_ms
+    match = _RECEIVER_RESULT_RE.search(output)
 
-    if result.returncode == 0 and re.search(r"result=0\b", output):
-        return False, "Accessibility Service rejected the requested action (result=0); no root fallback was attempted.", result.returncode, elapsed_ms
+    if match:
+        receiver_result = int(match.group(1))
+        if receiver_result == 1:
+            return True, output or "Accessibility Service receiver accepted the action.", result.returncode, elapsed_ms
+        if receiver_result == 0:
+            return False, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.", result.returncode, elapsed_ms
+        return False, f"Accessibility Service receiver returned unexpected result={receiver_result}.", result.returncode, elapsed_ms
 
-    return False, output or "Accessibility Service did not report success.", result.returncode, elapsed_ms
+    return False, output or "Accessibility Service did not report a receiver result.", result.returncode, elapsed_ms
 
 
 def _accessibility_click(label: str) -> Tuple[bool, str, int, float]:
