@@ -97,27 +97,13 @@ class NavigationController:
 
             recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
             recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
-
-            # A destination does not need to preserve the source target label.
-            # A meaningful transition is acceptable only when the source match
-            # has genuinely disappeared or weakened substantially. This keeps a
-            # visible source target from being mistaken for successful activation
-            # while allowing destinations such as "App list" to replace "Apps".
             source_disappeared = (
                 recovery_match.resolution is not Resolution.FOUND
-                or (
-                    recovery_match.label != current_match.label
-                    and recovery_match.score < max(0.0, current_match.score - 10.0)
-                )
+                or (recovery_match.label != current_match.label and recovery_match.score < max(0.0, current_match.score - 10.0))
             )
             if recovery_progress.meaningful and source_disappeared:
-                recovered_verification = VerificationResult(
-                    True,
-                    recovery_snapshot,
-                    "A meaningful live UI transition was verified during bounded activation recovery after the source target disappeared or materially weakened.",
-                )
-                history.append(NavigationState.VERIFY)
-                history.append(NavigationState.SUCCESS)
+                recovered_verification = VerificationResult(True, recovery_snapshot, "A meaningful live UI transition was verified during bounded activation recovery after the source target disappeared or materially weakened.")
+                history.extend((NavigationState.VERIFY, NavigationState.SUCCESS))
                 return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
 
             if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
@@ -126,7 +112,10 @@ class NavigationController:
             current_snapshot = recovery_snapshot
             current_match = recovery_match
 
-        return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=(last_verification.reason if last_verification else "Activation verification failed."))
+        final_message = last_verification.reason if last_verification else "Activation verification failed."
+        if current_match is not None and current_match.node is not None and current_match.resolution is Resolution.FOUND:
+            final_message = "Activation verification failed after a bounded retry; the target was safely re-resolved."
+        return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=final_message)
 
     def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
         history = [NavigationState.START]
@@ -171,20 +160,6 @@ class NavigationController:
             bounds = region.get("bounds") if isinstance(region, dict) else None
             if not bounds:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Live scrollable region has no usable bounds.")
-            try:
-                left, top, right, bottom = [int(value) for value in __import__("re").findall(r"\d+", str(bounds))[:4]]
-            except (TypeError, ValueError):
-                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Live scrollable region bounds are invalid.")
-            center_x = max(left + 1, min(right - 1, (left + right) // 2))
-            height = max(1, bottom - top)
-            distance = max(80, int(height * scroll_distance_ratio))
-            distance = min(distance, max(80, height - 2))
-            if current_direction == "down":
-                start_y = max(top + 1, (top + bottom - distance) // 2)
-                end_y = min(bottom - 1, start_y + distance)
-            else:
-                end_y = min(bottom - 1, (top + bottom + distance) // 2)
-                start_y = max(top + 1, end_y - distance)
             action = scroll(current_direction, bounds, distance_ratio=scroll_distance_ratio)
             total_scrolls += 1
             if not action.success:
