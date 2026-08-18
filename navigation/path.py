@@ -96,10 +96,11 @@ class OpenPathNavigator:
         for index, target in enumerate(targets):
             result = self.controller.navigate_target(target)
 
-            if not result.success:
-                # A target not represented by the current screen may be a real
-                # installed application. Discovery is a fallback, never the
-                # primary interpretation of a visible Settings destination.
+            # Direct package launch is only a safe fallback for the first
+            # destination. Later destinations must be reached through the
+            # current screen so a goal such as Settings -> Apps -> YouTube
+            # cannot silently skip the requested App-list interaction.
+            if index == 0 and not result.success:
                 discovery = find_android_app(target)
                 packages = discovery.get("packages") or [] if isinstance(discovery, dict) else []
                 if packages:
