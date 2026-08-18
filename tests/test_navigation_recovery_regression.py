@@ -9,7 +9,7 @@ from navigation.verifier import VerificationResult
 
 
 class NavigationRecoveryRegressionTests(unittest.TestCase):
-    def _snapshot(self, text):
+    def _snapshot(self, text, *, scrollable=True):
         nodes = tuple(
             {
                 "text": value,
@@ -33,15 +33,15 @@ class NavigationRecoveryRegressionTests(unittest.TestCase):
             foreground_package="com.android.settings",
             visible_nodes=nodes,
             visible_text=tuple(text),
-            scrollable_regions=({"bounds": "[0,212][720,1452]"},),
+            scrollable_regions=({"bounds": "[0,212][720,1452]"},) if scrollable else (),
         )
 
-    def _controller(self):
+    def _controller(self, *, max_scrolls=0):
         return NavigationController(
             observation_retries=1,
             max_activation_retries=1,
             settle_seconds=0,
-            max_scrolls=0,
+            max_scrolls=max_scrolls,
         )
 
     def test_recovery_does_not_accept_same_screen_change_while_target_remains(self):
@@ -90,6 +90,35 @@ class NavigationRecoveryRegressionTests(unittest.TestCase):
         self.assertEqual(activate.call_count, 2)
         self.assertEqual(result.state, NavigationState.SUCCESS)
         self.assertIn(NavigationState.RECOVER, result.history)
+
+    def test_transient_post_scroll_hierarchy_gets_bounded_reobserve_before_failure(self):
+        initial = self._snapshot(("Display", "Battery"), scrollable=True)
+        transient_after_scroll = self._snapshot(("Display", "Battery"), scrollable=False)
+        stable_after_reobserve = self._snapshot(("Display", "Apps"), scrollable=True)
+        action = ActionResult(True, "SCROLL", "simulated scroll")
+        tap = ActionResult(True, "TAP", "simulated tap")
+        verified = VerificationResult(True, stable_after_reobserve, "simulated verified transition")
+
+        controller = NavigationController(
+            observation_retries=1,
+            max_scrolls=1,
+            max_activation_retries=1,
+            settle_seconds=0,
+        )
+
+        with patch(
+            "navigation.controller.observe_screen",
+            side_effect=[initial, transient_after_scroll, stable_after_reobserve, stable_after_reobserve],
+        ), patch("navigation.controller.scroll", return_value=action) as do_scroll, patch(
+            "navigation.controller.activate_node", return_value=tap
+        ), patch("navigation.controller.verify_transition", return_value=verified):
+            result = controller.navigate_target("Apps")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.verified)
+        self.assertEqual(do_scroll.call_count, 1)
+        self.assertIn(NavigationState.SCROLL, result.history)
+        self.assertIn(NavigationState.SUCCESS, result.history)
 
 
 if __name__ == "__main__":
