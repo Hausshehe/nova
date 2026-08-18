@@ -23,6 +23,7 @@ public class NovaAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         instance = this;
         Log.i(TAG, "Nova Accessibility Service connected.");
+        AccessibilitySnapshotPublisher.publish(this, "service_connected");
     }
 
     @Override
@@ -34,11 +35,14 @@ public class NovaAccessibilityService extends AccessibilityService {
         Log.i(TAG, "SCREEN: " + packageName);
         Set<String> seen = new HashSet<>();
         scanNode(root, seen);
+        root.recycle();
+        AccessibilitySnapshotPublisher.publish(this, "event:" + event.getEventType());
     }
 
     @Override
     public void onInterrupt() {
         Log.w(TAG, "Accessibility service interrupted.");
+        AccessibilitySnapshotPublisher.publish(this, "service_interrupted");
     }
 
     private void scanNode(AccessibilityNodeInfo node, Set<String> seen) {
