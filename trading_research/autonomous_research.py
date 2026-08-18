@@ -1,20 +1,19 @@
-"""One bounded AI-assisted research cycle.
+"""Bounded AI-assisted research proposal and experiment orchestration.
 
-The cycle is intentionally narrow:
-
-research question -> AI proposal -> strict validation -> novelty/budget gate
-
-The module does not run backtests or grant execution authority. A caller must
-pass the accepted proposal to the deterministic experiment runner.
+The AI is a proposal source only. Deterministic validation, novelty limits,
+backtesting, gates, memory, and strategy lifecycle remain outside the model.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
+from .contracts import Hypothesis, ResearchGates
+from .experiment import ExperimentRecord, Signal, run_experiment
 from .groq_hypothesis import GroqHypothesisGenerator, ResearchQuestion
 from .memory import ExperienceStore
-from .researcher import DuplicateHypothesis, ResearchBudget, Researcher
+from .researcher import DuplicateHypothesis, ResearchBudget, ResearchBudgetExhausted, Researcher
 
 
 @dataclass(frozen=True)
@@ -23,28 +22,71 @@ class ResearchCycleResult:
     message: str
     fingerprint: str | None = None
     source: str | None = None
+    experiment: ExperimentRecord | None = None
 
 
-def run_proposal_cycle(
-    question: ResearchQuestion,
-    *,
-    generator: GroqHypothesisGenerator,
-    memory: ExperienceStore,
-    budget: ResearchBudget | None = None,
-) -> ResearchCycleResult:
-    """Generate and reserve at most one novel hypothesis for this cycle."""
-    researcher = Researcher.from_memory(memory, budget=budget)
-    try:
-        proposal = generator.propose(question)
-        fingerprint = researcher.accept_proposal(proposal)
-    except DuplicateHypothesis:
-        return ResearchCycleResult(
-            status="DUPLICATE_HYPOTHESIS",
-            message="Proposal matched prior research and was not admitted.",
-        )
-    return ResearchCycleResult(
-        status="PROPOSAL_ACCEPTED",
-        message="Novel hypothesis admitted to the bounded research queue.",
-        fingerprint=fingerprint,
-        source=proposal.source,
-    )
+SignalCompiler = Callable[[Hypothesis], Signal]
+
+
+class AutonomousResearchSession:
+    """A bounded session that can admit and test novel AI proposals.
+
+    The session owns one Researcher instance, so its hypothesis and revision
+    budgets cannot reset between proposals. The caller supplies a deterministic
+    signal compiler; the AI never supplies executable Python or changes gates.
+    """
+
+    def __init__(
+        self,
+        *,
+        generator: GroqHypothesisGenerator,
+        memory: ExperienceStore,
+        signal_compiler: SignalCompiler,
+        budget: ResearchBudget | None = None,
+        gates: ResearchGates | None = None,
+        fee_bps: float = 1.0,
+        slippage_bps: float = 1.0,
+        strategy_version: str = "1.0",
+    ) -> None:
+        self.generator = generator
+        self.memory = memory
+        self.signal_compiler = signal_compiler
+        self.gates = gates or ResearchGates()
+        self.fee_bps = fee_bps
+        self.slippage_bps = slippage_bps
+        self.strategy_version = strategy_version
+        self.researcher = Researcher.from_memory(memory, budget=budget)
+
+    def propose_and_test(self, question: ResearchQuestion, *, csv_path: str) -> ResearchCycleResult:
+        """Admit at most one novel hypothesis and immediately run its deterministic test."""
+        try:
+            proposal = self.generator.propose(question)
+            fingerprint = self.researcher.accept_proposal(proposal)
+            signal = self.signal_compiler(proposal.hypothesis)
+            record = run_experiment(
+                csv_path=csv_path,
+                hypothesis=proposal.hypothesis,
+                signal=signal,
+                gates=self.gates,
+                fee_bps=self.fee_bps,
+                slippage_bps=self.slippage_bps,
+                strategy_version=self.strategy_version,
+                memory_store=self.memory,
+            )
+            return ResearchCycleResult(
+                status=record.final_decision.value,
+                message="Hypothesis was validated, tested, gated, and recorded.",
+                fingerprint=fingerprint,
+                source=proposal.source,
+                experiment=record,
+            )
+        except DuplicateHypothesis:
+            return ResearchCycleResult(
+                status="DUPLICATE_HYPOTHESIS",
+                message="Proposal matched prior research and was not tested.",
+            )
+        except ResearchBudgetExhausted as exc:
+            return ResearchCycleResult(
+                status="RESEARCH_BUDGET_EXHAUSTED",
+                message=str(exc),
+            )
