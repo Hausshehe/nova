@@ -155,6 +155,6 @@ def evaluate_gate(metrics: BacktestMetrics, gates: ResearchGates) -> GateDecisio
     if sample_reasons:
         return GateDecision(
             Decision.INCONCLUSIVE,
-            tuple(sample_reasons + ("insufficient_sample_for_promotion",)),
+            tuple(sample_reasons) + ("insufficient_sample_for_promotion",),
         )
     return GateDecision(Decision.PROMISING, ("all_initial_gates_passed",))
