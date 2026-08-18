@@ -120,7 +120,7 @@ def observe_android(include_nodes=False):
     try:
         command = (
             f"rm -f {DUMP_PATH} && "
-            f"/system/bin/uiautomator dump --compressed {DUMP_PATH "
+            f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
             f">/dev/null 2>&1 && cat {DUMP_PATH}"
         )
 
