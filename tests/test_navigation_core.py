@@ -136,6 +136,32 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertIn(NavigationState.SCROLL, result.history)
         self.assertIn(NavigationState.SUCCESS, result.history)
 
+    def test_activation_verification_failure_gets_one_bounded_retry(self):
+        initial = self._snapshot(text=("Apps", "Display"))
+        retry_screen = self._snapshot(text=("Apps", "Display"))
+        final = self._snapshot(text=("App list", "Assistant"))
+        action = ActionResult(True, "TAP", "simulated")
+        failed = VerificationResult(False, retry_screen, "simulated delayed transition")
+        succeeded = VerificationResult(True, final, "simulated verified transition")
+
+        controller = NavigationController(
+            observation_retries=1,
+            max_activation_retries=1,
+            settle_seconds=0,
+            max_scrolls=0,
+        )
+        with patch("navigation.controller.observe_screen", side_effect=[initial, retry_screen]), patch(
+            "navigation.controller.activate_node", return_value=action
+        ) as activate, patch(
+            "navigation.controller.verify_transition", side_effect=[failed, succeeded]
+        ):
+            result = controller.navigate_target("Apps")
+
+        self.assertTrue(result.success)
+        self.assertEqual(activate.call_count, 2)
+        self.assertEqual(result.history.count(NavigationState.RECOVER), 1)
+        self.assertEqual(result.history.count(NavigationState.SUCCESS), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
