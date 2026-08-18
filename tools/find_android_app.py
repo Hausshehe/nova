@@ -40,6 +40,11 @@ def _is_strong_package_match(package, query):
     )
 
 
+def _canonical_android_package(package, query):
+    """Recognize the generic canonical Android system-app package pattern."""
+    return str(package or "").lower() == "com.android." + str(query or "").lower()
+
+
 def find_android_app(app_name):
     """Find installed package names related to a human app name."""
     query = str(app_name or "").lower().strip()
@@ -68,11 +73,40 @@ def find_android_app(app_name):
                 "message": f"No installed Android package matched '{app_name}'.",
             }
 
-        # Substring matches are intentionally ambiguous: generic words such as
-        # "apps" can occur in many unrelated Android package names. Only accept
-        # an unambiguous exact/suffix match, or a single package candidate.
+        # Strong exact/suffix identity outranks unrelated substring matches.
+        # When Android exposes the canonical com.android.<name> system package
+        # alongside vendor/provider variants, prefer the canonical launchable
+        # identity generically instead of hard-coding a specific app name.
         strong = [package for package in packages if _is_strong_package_match(package, query)]
-        if not strong and len(packages) > 1:
+        canonical = [package for package in strong if _canonical_android_package(package, query)]
+        if len(canonical) == 1:
+            return {
+                "success": True,
+                "verified": True,
+                "packages": canonical,
+                "message": f"Found canonical Android system package for '{app_name}'.",
+            }
+
+        # A single strong exact/suffix identity is safe to use. Multiple strong
+        # identities remain ambiguous: ranking must not turn a real ambiguity
+        # into an arbitrary package choice.
+        if len(strong) == 1:
+            return {
+                "success": True,
+                "verified": True,
+                "packages": strong,
+                "message": f"Found one strong package match for '{app_name}'.",
+            }
+
+        if len(strong) > 1:
+            return {
+                "success": False,
+                "verified": True,
+                "packages": [],
+                "message": f"Installed package matches for '{app_name}' were ambiguous.",
+            }
+
+        if len(packages) > 1:
             return {
                 "success": False,
                 "verified": True,

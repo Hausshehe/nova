@@ -23,6 +23,7 @@ public class NovaAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         instance = this;
         Log.i(TAG, "Nova Accessibility Service connected.");
+        AccessibilitySnapshotPublisher.publish(this, "service_connected");
     }
 
     @Override
@@ -34,11 +35,14 @@ public class NovaAccessibilityService extends AccessibilityService {
         Log.i(TAG, "SCREEN: " + packageName);
         Set<String> seen = new HashSet<>();
         scanNode(root, seen);
+        root.recycle();
+        AccessibilitySnapshotPublisher.publish(this, "event:" + event.getEventType());
     }
 
     @Override
     public void onInterrupt() {
         Log.w(TAG, "Accessibility service interrupted.");
+        AccessibilitySnapshotPublisher.publish(this, "service_interrupted");
     }
 
     private void scanNode(AccessibilityNodeInfo node, Set<String> seen) {
@@ -59,102 +63,106 @@ public class NovaAccessibilityService extends AccessibilityService {
     }
 
     public static boolean handleClickText(String text) {
-        if (instance == null) {
-            Log.w(TAG, "CLICK_TEXT: service instance is null");
-            return false;
-        }
+        if (instance == null) return false;
         return instance.clickText(text);
     }
 
     public boolean clickText(String target) {
-        if (target == null || target.trim().isEmpty()) {
-            Log.w(TAG, "CLICK_TEXT: empty target");
-            return false;
-        }
+        if (target == null || target.trim().isEmpty()) return false;
         target = target.trim();
 
-        // Some Android Settings pages have stable platform Intent actions but
-        // expose their rows through a non-clickable accessibility text node.
-        // For these pages, use the platform deep link instead of guessing a
-        // row/container relationship. This is deterministic and avoids the
-        // repeated scroll/click failure seen on vendor Settings UIs.
         String normalized = target.toLowerCase().replace("\u2011", "-").replace("\u2013", "-");
         if ("display & brightness".equals(normalized) || "display and brightness".equals(normalized)) {
             try {
                 Intent intent = new Intent(Settings.ACTION_DISPLAY_SETTINGS);
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
-                Log.i(TAG, "CLICK_TEXT: opened Display & Brightness via ACTION_DISPLAY_SETTINGS");
                 return true;
             } catch (Exception e) {
                 Log.e(TAG, "CLICK_TEXT: ACTION_DISPLAY_SETTINGS failed", e);
             }
         }
 
-        Log.i(TAG, "CLICK_TEXT: searching for: " + target);
-
-        // Settings commonly places the requested row below the current
-        // RecyclerView viewport. Search first, then deterministically scroll
-        // the active accessibility tree and retry. This keeps the planner
-        // from having to guess when/how far to scroll.
         final int maxAttempts = 6;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             AccessibilityNodeInfo node = findTargetNodeInAllWindows(target);
             if (node != null) {
-                Log.i(TAG, "CLICK_TEXT: target found on attempt " + attempt + ", attempting click: " + target);
                 boolean result = clickNode(node, target);
                 node.recycle();
-                Log.i(TAG, "CLICK_TEXT result=" + result + " target=" + target + " attempt=" + attempt);
                 if (result) return true;
-            } else {
-                Log.i(TAG, "CLICK_TEXT: target not visible, attempt=" + attempt + "/" + maxAttempts);
             }
-
-            if (attempt < maxAttempts) {
-                boolean moved = scrollActiveWindowForward();
-                Log.i(TAG, "CLICK_TEXT: auto-scroll moved=" + moved + " before attempt=" + (attempt + 1));
-                if (!moved) break;
+            if (attempt < maxAttempts && scrollWindow("down")) {
                 try {
-                    Thread.sleep(400);
+                    Thread.sleep(250);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
+            } else if (attempt < maxAttempts) {
+                break;
             }
         }
-
-        Log.w(TAG, "CLICK_TEXT: target could not be clicked after auto-scroll retries: " + target);
         return false;
     }
 
-    private boolean scrollActiveWindowForward() {
+    public boolean scrollWindow(String direction) {
+        boolean forward = "down".equalsIgnoreCase(direction);
+        boolean backward = "up".equalsIgnoreCase(direction);
+        if (!forward && !backward) return false;
+
+        AccessibilityNodeInfo root = null;
         try {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) return false;
-            boolean moved = scrollNodeForward(root);
-            root.recycle();
-            return moved;
+            root = getRootInActiveWindow();
+            if (root != null) {
+                boolean moved = scrollNode(root, forward ?
+                        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD :
+                        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD);
+                if (moved) return true;
+            }
         } catch (Exception e) {
-            Log.e(TAG, "CLICK_TEXT: auto-scroll failed", e);
-            return false;
+            Log.e(TAG, "SCROLL_WINDOW: active root failed", e);
+        } finally {
+            if (root != null) root.recycle();
         }
+
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null) {
+                for (AccessibilityWindowInfo window : windows) {
+                    if (window == null) continue;
+                    AccessibilityNodeInfo windowRoot = window.getRoot();
+                    if (windowRoot == null) continue;
+                    try {
+                        if (scrollNode(windowRoot, forward ?
+                                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD :
+                                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)) {
+                            return true;
+                        }
+                    } finally {
+                        windowRoot.recycle();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "SCROLL_WINDOW: window search failed", e);
+        }
+        return false;
     }
 
-    private boolean scrollNodeForward(AccessibilityNodeInfo node) {
+    private boolean scrollNode(AccessibilityNodeInfo node, int action) {
         if (node == null) return false;
-
-        if (node.isScrollable() && node.isEnabled()) {
-            boolean moved = node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
-            Log.i(TAG, "CLICK_TEXT: scroll container=" + node.getClassName() + " moved=" + moved);
-            if (moved) return true;
+        if (node.isScrollable() && node.isEnabled() && node.performAction(action)) {
+            Log.i(TAG, "SCROLL_WINDOW: ACTION_" + action + " succeeded on " + node.getClassName());
+            return true;
         }
-
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child == null) continue;
-            boolean moved = scrollNodeForward(child);
-            child.recycle();
-            if (moved) return true;
+            try {
+                if (scrollNode(child, action)) return true;
+            } finally {
+                child.recycle();
+            }
         }
         return false;
     }
@@ -183,18 +191,13 @@ public class NovaAccessibilityService extends AccessibilityService {
         } catch (Exception e) {
             Log.e(TAG, "SWITCH_SEARCH: getWindows failed", e);
         }
-        Log.w(TAG, "SWITCH_SEARCH: switch not found");
         return null;
     }
 
     private AccessibilityNodeInfo findSwitchNode(AccessibilityNodeInfo node) {
         if (node == null) return null;
         CharSequence className = node.getClassName();
-        CharSequence resourceId = node.getViewIdResourceName();
-        if (className != null && "android.widget.Switch".equals(className.toString())) {
-            Log.i(TAG, "SWITCH_MATCH: class=" + className + " resourceId=" + resourceId + " checked=" + node.isChecked() + " clickable=" + node.isClickable() + " enabled=" + node.isEnabled());
-            return node;
-        }
+        if (className != null && "android.widget.Switch".equals(className.toString())) return node;
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo found = findSwitchNode(node.getChild(i));
             if (found != null) return found;
@@ -209,18 +212,13 @@ public class NovaAccessibilityService extends AccessibilityService {
     }
 
     public boolean clickElement(String target) {
-        if (target == null || target.trim().isEmpty()) {
-            Log.w(TAG, "CLICK_ELEMENT: empty target");
-            return false;
-        }
+        if (target == null || target.trim().isEmpty()) return false;
         target = target.trim();
         AccessibilityNodeInfo node = findTargetNodeInAllWindows(target);
-        if (node == null) {
-            Log.w(TAG, "CLICK_ELEMENT: target not found: " + target);
-            return false;
-        }
-        Log.i(TAG, "CLICK_ELEMENT: found target=" + target + " class=" + node.getClassName() + " clickable=" + node.isClickable() + " enabled=" + node.isEnabled() + " actions=" + node.getActionList());
-        return clickNode(node, target);
+        if (node == null) return false;
+        boolean result = clickNode(node, target);
+        node.recycle();
+        return result;
     }
 
     private AccessibilityNodeInfo findTargetNodeInAllWindows(String target) {
@@ -247,7 +245,6 @@ public class NovaAccessibilityService extends AccessibilityService {
         } catch (Exception e) {
             Log.e(TAG, "WINDOW_SEARCH: getWindows failed", e);
         }
-        Log.w(TAG, "WINDOW_SEARCH: target not found=" + target);
         return null;
     }
 
@@ -282,15 +279,7 @@ public class NovaAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo current = node.getParent();
         int depth = 0;
         while (current != null && depth < 8) {
-            Log.i(TAG, "SMART_CONTROL: ancestor depth=" + depth + " class=" + current.getClassName() + " clickable=" + current.isClickable());
-            if (current.isEnabled() && current.isClickable()) {
-                String className = current.getClassName() != null ? current.getClassName().toString() : "";
-                if (!isScrollContainer(current)) {
-                    Log.i(TAG, "SMART_CONTROL: using nearest clickable ancestor=" + className);
-                    return current;
-                }
-                Log.i(TAG, "SMART_CONTROL: skipping scroll/container ancestor=" + className);
-            }
+            if (current.isEnabled() && current.isClickable() && !isScrollContainer(current)) return current;
             AccessibilityNodeInfo next = current.getParent();
             current.recycle();
             current = next;
@@ -318,25 +307,21 @@ public class NovaAccessibilityService extends AccessibilityService {
 
     private boolean clickNode(AccessibilityNodeInfo node, String target) {
         if (node == null) return false;
-        Log.i(TAG, "CLICK_NODE: target=" + target + " class=" + node.getClassName() + " text=" + node.getText() + " clickable=" + node.isClickable() + " enabled=" + node.isEnabled() + " actions=" + node.getActionList());
-
         if (node.isEnabled() && node.isClickable()) {
-            boolean clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            Log.i(TAG, "CLICK_NODE: direct ACTION_CLICK=" + clicked);
-            if (clicked) return true;
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
         }
 
         AccessibilityNodeInfo parent = node.getParent();
         int depth = 0;
         while (parent != null && depth < 8) {
-            Log.i(TAG, "CLICK_NODE: parent depth=" + depth + " class=" + parent.getClassName() + " clickable=" + parent.isClickable() + " enabled=" + parent.isEnabled());
             if (parent.isEnabled() && parent.isClickable() && !isScrollContainer(parent)) {
                 boolean clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                Log.i(TAG, "CLICK_NODE: parent ACTION_CLICK=" + clicked + " depth=" + depth);
-                if (clicked) {
-                    parent.recycle();
-                    return true;
-                }
+                AccessibilityNodeInfo next = parent.getParent();
+                parent.recycle();
+                if (clicked) return true;
+                parent = next;
+                depth++;
+                continue;
             }
             AccessibilityNodeInfo next = parent.getParent();
             parent.recycle();
@@ -353,24 +338,21 @@ public class NovaAccessibilityService extends AccessibilityService {
         path.moveTo(x, y);
         android.accessibilityservice.GestureDescription.StrokeDescription stroke = new android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 100);
         android.accessibilityservice.GestureDescription gesture = new android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build();
-        boolean dispatched = dispatchGesture(gesture, new android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+        return dispatchGesture(gesture, new android.accessibilityservice.GestureResultCallback() {
             @Override
             public void onCompleted(android.accessibilityservice.GestureDescription gestureDescription) {
-                Log.i(TAG, "CLICK_NODE: gesture COMPLETED target=" + target);
+                Log.i(TAG, "CLICK_NODE: gesture completed target=" + target);
             }
+
             @Override
             public void onCancelled(android.accessibilityservice.GestureDescription gestureDescription) {
-                Log.w(TAG, "CLICK_NODE: gesture CANCELLED target=" + target);
+                Log.w(TAG, "CLICK_NODE: gesture cancelled target=" + target);
             }
         }, null);
-        Log.i(TAG, "CLICK_NODE: gesture dispatched=" + dispatched);
-        return dispatched;
     }
 
     public boolean openBluetoothAndClick() {
-        boolean opened = openBluetoothSettings();
-        if (!opened) return false;
-        return true;
+        return openBluetoothSettings();
     }
 
     public boolean openBluetoothSettings() {
