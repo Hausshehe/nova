@@ -78,6 +78,26 @@ class NavigationActionSafetyTests(unittest.TestCase):
         self.assertIn("com.infoney.nova.CLICK_ELEMENT", command)
         self.assertIn("Apps", command)
 
+    def test_receiver_success_remains_success_when_am_exit_code_is_one(self):
+        node = {
+            "text": "Apps",
+            "clickable": False,
+            "enabled": True,
+            "bounds": "[100,100][200,200]",
+        }
+        accessibility_result = type(
+            "R",
+            (),
+            {"returncode": 1, "stdout": "Broadcast completed: result=1", "stderr": ""},
+        )()
+        with patch("navigation.actions.subprocess.run", return_value=accessibility_result) as accessibility_run:
+            result = activate_node(node)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.executor_returncode, 1)
+        self.assertEqual(result.transport_output, "Broadcast completed: result=1")
+        self.assertTrue(accessibility_run.called)
+
     def test_accessibility_activation_failure_is_reported_without_root_fallback(self):
         node = {
             "text": "Apps",
@@ -96,7 +116,7 @@ class NavigationActionSafetyTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.executor_returncode, 0)
         self.assertIsNotNone(result.duration_ms)
-        self.assertEqual(result.transport_output, "Accessibility Service rejected the requested action (result=0); no root fallback was attempted.")
+        self.assertEqual(result.transport_output, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.")
         self.assertIn("Accessibility Service", result.message)
 
     def test_scroll_uses_accessibility_service_not_root_input(self):
@@ -119,6 +139,24 @@ class NavigationActionSafetyTests(unittest.TestCase):
         command = accessibility_run.call_args.args[0]
         self.assertIn("com.infoney.nova.SCROLL_WINDOW", command)
         self.assertIn("down", command)
+
+    def test_scroll_accepts_receiver_success_with_am_exit_code_one(self):
+        snapshot = self._snapshot(
+            [],
+            scrollable_regions=({"bounds": "[20,100][700,1500]"},),
+        )
+        accessibility_result = type(
+            "R",
+            (),
+            {"returncode": 1, "stdout": "Broadcast completed: result=1", "stderr": ""},
+        )()
+        with patch("navigation.actions.subprocess.run", return_value=accessibility_result) as accessibility_run:
+            result = scroll(snapshot, "down")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.executor_returncode, 1)
+        self.assertEqual(result.transport_output, "Broadcast completed: result=1")
+        self.assertTrue(accessibility_run.called)
 
     def test_scroll_rejects_invalid_region_without_accessibility_call(self):
         snapshot = self._snapshot(
