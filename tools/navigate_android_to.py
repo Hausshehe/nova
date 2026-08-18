@@ -45,7 +45,10 @@ def navigate_android_to(target, max_scrolls=8, direction="down"):
     last_result = None
 
     for current_target in targets:
-        result = controller.navigate_target(current_target)
+        result = controller.navigate_target(
+            current_target,
+            initial_direction=initial_direction,
+        )
         last_result = result
         total_scrolls += result.scroll_count
 
