@@ -4,11 +4,20 @@ import os
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 
 
 DEFAULT_TIMEOUT_SECONDS = 15
 POLL_INTERVAL_SECONDS = 0.05
+
+
+def _reap_process(process):
+    """Reap a process asynchronously after a forced timeout."""
+    try:
+        process.wait(timeout=1.0)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
 
 def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
@@ -19,6 +28,11 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
     ``communicate(timeout=...)`` in that situation can itself remain blocked.
     Redirect output to temporary files instead, poll the shell directly, and
     kill the entire process group when the deadline is reached.
+
+    The timeout path intentionally does not synchronously wait for the killed
+    process to exit. Some Android ``su`` implementations can remain stuck while
+    reaping a child service even after SIGKILL, which would defeat the caller's
+    hard deadline. A tiny daemon reaper cleans up the child asynchronously.
     """
     command = str(command or "").strip()
     if not command:
@@ -75,10 +89,16 @@ def run_root(command, timeout=DEFAULT_TIMEOUT_SECONDS):
                         process.kill()
                     except ProcessLookupError:
                         pass
-                try:
-                    process.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    pass
+
+                # Do not block the caller while reaping. Android su/uiautomator
+                # combinations have been observed to ignore a short synchronous
+                # wait even after the process-group kill.
+                if process.poll() is None:
+                    threading.Thread(
+                        target=_reap_process,
+                        args=(process,),
+                        daemon=True,
+                    ).start()
 
         with open(stdout_path, "rb") as handle:
             stdout = handle.read().decode("utf-8", errors="replace")
