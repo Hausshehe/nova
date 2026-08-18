@@ -28,6 +28,7 @@ jobs:
           tests.test_goal_parser
           tests.test_navigation_core
           tests.test_navigation_actions
+          tests.test_find_android_app
           tests.test_navigation_path
           tests.test_navigation_adapter
           tests.test_navigation_path_integration
