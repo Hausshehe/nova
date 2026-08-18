@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+from tools.accessibility_snapshot import read_accessibility_snapshot
 from tools.observe_android import observe_android
 
 from .state import ObservationQuality, ScreenSnapshot, snapshot_from_observation
@@ -12,6 +13,7 @@ from .state import ObservationQuality, ScreenSnapshot, snapshot_from_observation
 
 DEFAULT_SETTLE_SECONDS = 0.25
 DEFAULT_RETRIES = 2
+ACCESSIBILITY_MAX_AGE_SECONDS = 2.0
 
 
 def _has_navigation_state(snapshot: ScreenSnapshot) -> bool:
@@ -24,6 +26,45 @@ def _has_navigation_state(snapshot: ScreenSnapshot) -> bool:
     )
 
 
+def _accessibility_observation() -> Optional[dict]:
+    """Convert a fresh service snapshot to the existing observer contract."""
+    data = read_accessibility_snapshot(max_age_seconds=ACCESSIBILITY_MAX_AGE_SECONDS)
+    if data is None:
+        return None
+
+    nodes = data.get("nodes") or []
+    visible_text = []
+    interactive = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        for value in (node.get("text"), node.get("content_description")):
+            value = str(value or "").strip()
+            if value and value not in visible_text:
+                visible_text.append(value)
+        if node.get("clickable") and node.get("enabled"):
+            interactive.append(node)
+
+    scrollable = [
+        {"bounds": str(bounds)}
+        for bounds in (data.get("scrollable") or [])
+        if str(bounds).strip()
+    ]
+
+    return {
+        "success": True,
+        "verified": True,
+        "foreground_package": str(data.get("foreground_package", "")),
+        "nodes": nodes,
+        "state": {
+            "visible_text": visible_text,
+            "interactive": interactive,
+            "scrollable": scrollable,
+        },
+        "message": "Fresh accessibility-service snapshot captured successfully.",
+    }
+
+
 def observe_screen(
     previous: Optional[ScreenSnapshot] = None,
     *,
@@ -31,21 +72,30 @@ def observe_screen(
     retries: int = DEFAULT_RETRIES,
     settle_seconds: float = DEFAULT_SETTLE_SECONDS,
 ) -> ScreenSnapshot:
-    """Capture a live screen without letting an empty/transient dump steer navigation.
+    """Capture a live screen using accessibility first and UIAutomator as fallback.
 
-    Foreground-package information alone is insufficient for navigation because
-    Android can briefly report the package while accessibility content is empty
-    or stale during a transition.
+    The accessibility service provides low-latency live hierarchy snapshots.
+    UIAutomator remains the fallback when the service has no fresh snapshot.
+    Foreground-package information alone is never sufficient for navigation.
     """
     attempts = max(1, int(retries))
     last_snapshot: Optional[ScreenSnapshot] = None
 
     for attempt in range(attempts):
-        observed = observe_android(include_nodes=include_nodes)
+        observed = _accessibility_observation()
+        source = "accessibility"
+        if observed is None:
+            observed = observe_android(include_nodes=include_nodes)
+            source = "uiautomator"
+
         snapshot = snapshot_from_observation(observed)
         last_snapshot = snapshot
 
         if snapshot.valid and _has_navigation_state(snapshot):
+            if source == "accessibility":
+                return snapshot
+            # A valid UIAutomator snapshot remains authoritative when the
+            # accessibility service has no fresh data.
             return snapshot
 
         if snapshot.valid:
