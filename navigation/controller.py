@@ -75,11 +75,20 @@ class NavigationController:
         history.append(NavigationState.RECOVER)
         return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=snapshot, progress=progress, scroll_count=scroll_count, direction=direction, message=message)
 
-    def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None) -> NavigationResult:
+    def navigate_target(
+        self,
+        target: str,
+        *,
+        installed_packages: Optional[Iterable[str]] = None,
+        expected_foreground_package: Optional[str] = None,
+        initial_direction: str = "down",
+    ) -> NavigationResult:
         history = [NavigationState.START]
         snapshot: Optional[ScreenSnapshot] = None
         total_scrolls = 0
-        current_direction = "down"
+        current_direction = str(initial_direction or "down").strip().lower()
+        if current_direction not in {"up", "down"}:
+            current_direction = "down"
         no_progress = 0
         transient_observations = 0
         last_progress: Optional[Progress] = None
@@ -97,7 +106,7 @@ class NavigationController:
 
             history.append(NavigationState.RESOLVE_TARGET)
             match = resolve_target(snapshot, target, installed_packages=installed_packages)
-            if match.resolution is Resolution.INVALID_OBSERVATION:
+            if match.resolution in {Resolution.INVALID_OBSERVATION, Resolution.AMBIGUOUS}:
                 return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, scroll_count=total_scrolls, direction=current_direction, message=match.reason)
 
             if match.resolution is Resolution.FOUND and match.node is not None:
