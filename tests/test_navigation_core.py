@@ -148,6 +148,32 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(result.target_resolved)
 
+    def test_verifier_accepts_semantic_destination_after_source_disappears(self):
+        before = self._snapshot(text=("Apps", "Display", "Battery"))
+        after = self._snapshot(text=("App management", "Default apps", "Permissions"))
+        with patch("navigation.verifier.observe_screen", return_value=after):
+            result = verify_transition(
+                before,
+                expected_target="Apps",
+                timeout_seconds=0.2,
+                poll_seconds=0,
+            )
+        self.assertTrue(result.success)
+        self.assertFalse(result.target_resolved)
+
+    def test_verifier_rejects_unrelated_destination_after_source_disappears(self):
+        before = self._snapshot(text=("Apps", "Display", "Battery"))
+        after = self._snapshot(text=("Network", "Storage", "Security"))
+        with patch("navigation.verifier.observe_screen", return_value=after):
+            result = verify_transition(
+                before,
+                expected_target="Apps",
+                timeout_seconds=0.2,
+                poll_seconds=0,
+            )
+        self.assertFalse(result.success)
+        self.assertFalse(result.target_resolved)
+
     def test_adaptive_scroll_keeps_direction_when_progress_is_real(self):
         first = self._snapshot(text=("A", "B", "C"))
         after_scroll = self._snapshot(text=("D", "E", "F"))
