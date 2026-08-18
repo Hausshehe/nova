@@ -301,14 +301,14 @@ def main() -> int:
         help="Omit per-node dumps so real-device traces stay readable.",
     )
     parser.add_argument(
-        "--launch-settings",
+        "--no-launch-settings",
         action="store_true",
-        help="Launch Android Settings and wait for it to become foreground before probing.",
+        help="Do not launch Settings before probing.",
     )
     args = parser.parse_args()
 
     trace = DiagnosticTrace()
-    if args.launch_settings and not _launch_settings(trace):
+    if not args.no_launch_settings and not _launch_settings(trace):
         print(json.dumps(trace.as_dict(), indent=2, ensure_ascii=False, sort_keys=True))
         return 1
 
