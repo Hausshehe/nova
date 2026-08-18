@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -34,11 +35,39 @@ def _text_change_ratio(before: ScreenSnapshot, after: ScreenSnapshot) -> float:
 
 
 def _bounds_tuple(value: str):
-    import re
     match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", str(value or "").strip())
     if not match:
         return None
     return tuple(map(int, match.groups()))
+
+
+def _normalized_words(text: str) -> tuple[str, ...]:
+    words = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    return tuple(words)
+
+
+def _semantic_destination_evidence(before: ScreenSnapshot, after: ScreenSnapshot, target: str) -> bool:
+    """Require a destination label related to the activated target."""
+    target_words = _normalized_words(target)
+    if not target_words:
+        return False
+
+    # A target such as "Apps" can legitimately lead to a destination labeled
+    # "App management" or "App info". Compare the target's lexical stems with
+    # visible destination text rather than requiring the exact source label to
+    # remain present. This stays generic and does not encode Settings-specific
+    # coordinates or screen names.
+    stems = {word[:-1] if word.endswith("s") and len(word) > 3 else word for word in target_words}
+    before_words = set(_normalized_words(target))
+
+    for text in after.visible_text:
+        words = set(_normalized_words(text))
+        if not words:
+            continue
+        if any(word in words or any(candidate.startswith(stem) for candidate in words) for stem in stems for word in [stem]):
+            if words != before_words or len(words) > len(before_words):
+                return True
+    return False
 
 
 def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected_target: str) -> tuple[bool, bool]:
@@ -70,7 +99,7 @@ def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected
     if before_found and not after_found:
         if before.foreground_package != after.foreground_package:
             return True, False
-        return False, False
+        return _semantic_destination_evidence(before, after, expected_target), False
 
     return False, False
 
@@ -107,12 +136,7 @@ def verify_transition(
     timeout_seconds: float = 3.0,
     poll_seconds: float = 0.25,
 ) -> VerificationResult:
-    """Verify a stable post-action transition using two fresh observations.
-
-    A single changing snapshot can still belong to a settling scroll or layout
-    animation. When an expected target is supplied, a candidate transition must
-    survive a second fresh observation before activation is considered verified.
-    """
+    """Verify a stable post-action transition using two fresh observations."""
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     last = before
 
