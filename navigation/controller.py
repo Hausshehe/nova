@@ -89,6 +89,23 @@ class NavigationController:
             history.append(NavigationState.ACTIVATE)
             last_action = activate_node(current_match.node)
             if not last_action.success:
+                # Accessibility can briefly publish inconsistent target/ancestor
+                # geometry while a screen is settling. This is a retryable
+                # observation problem, not permission to relax the safety check.
+                geometry_mismatch = "Actionable ancestor bounds do not contain the target bounds." in last_action.message
+                if geometry_mismatch and attempt < self.max_activation_retries:
+                    history.append(NavigationState.RECOVER)
+                    fresh = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+                    if fresh.observation_quality is not ObservationQuality.VALID:
+                        return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation geometry was inconsistent and the fresh recovery observation was unreliable.")
+                    fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
+                    if fresh_match.resolution is not Resolution.FOUND or fresh_match.node is None:
+                        return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=fresh, match=fresh_match, action=last_action, scroll_count=total_scrolls, direction=direction, message="Activation geometry was inconsistent and the target could not be safely re-resolved for the bounded retry.")
+                    current_snapshot = fresh
+                    current_match = fresh_match
+                    re_resolved = True
+                    continue
+
                 history.append(NavigationState.RECOVER)
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
 
