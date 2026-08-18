@@ -11,7 +11,6 @@ import requests
 from ai_router import call_ai
 from navigation.goal_parser import parse_open_path
 from navigation.path import OpenPathNavigator
-from tools.android_root import run_root
 from tools.executor import execute_tool
 from tools.registry import discover_tools
 
@@ -25,7 +24,6 @@ MAX_GROQ_RETRY_DELAY = 15.0
 MAX_HISTORY_PAIRS = 3
 SIMPLE_OPEN_VERIFY_ATTEMPTS = 6
 SIMPLE_OPEN_VERIFY_DELAY = 0.75
-ROOT_PREFLIGHT_TIMEOUT_SECONDS = 8.0
 AGENT_TOOLS = {
     "observe_android",
     "find_android_app",
@@ -36,6 +34,7 @@ AGENT_TOOLS = {
     "back_android",
     "scroll_android",
 }
+
 
 SYSTEM_PROMPT = """
 You are Nova, a goal-driven Android agent.
@@ -80,17 +79,6 @@ click_text, type_text, back_android, scroll_android.
 There are intentionally no app-specific goal tools. Solve goals by reasoning
 with these generic primitives.
 """
-
-
-def _root_preflight():
-    """Ensure Magisk/root authorization is settled before opening Android UI."""
-    result = run_root("id", timeout=ROOT_PREFLIGHT_TIMEOUT_SECONDS)
-    if result.returncode == 0:
-        return True, "Root authorization is ready."
-    message = (result.stderr or result.stdout or "Root authorization failed.").strip()
-    if result.returncode == 124:
-        message = "Root authorization did not complete within the bounded preflight window. Any Magisk authorization prompt must be handled while Termux is visible."
-    return False, message
 
 
 def _parameter_type(parameter):
@@ -346,10 +334,6 @@ def run_agent(goal):
     goal = str(goal or "").strip()
     if not goal:
         return {"success": False, "message": "Goal cannot be empty."}
-
-    root_ready, root_message = _root_preflight()
-    if not root_ready:
-        return {"success": False, "verified": False, "message": root_message, "steps": 0}
 
     simple_open_path = _simple_open_path_goal(goal)
     if simple_open_path:
