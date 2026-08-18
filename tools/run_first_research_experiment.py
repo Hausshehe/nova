@@ -1,14 +1,10 @@
 """Run Nova's first pre-registered market research experiment.
 
 This is a thin experiment definition. The deterministic execution, splitting,
-gating, and standardized record are owned by ``trading_research.experiment``.
+gating, standardized record, experience memory, and strategy research-state
+sync are owned by the research layers.
 
-Every completed experiment is also persisted to Nova's local SQLite experience
-store. Memory records evidence only; it cannot promote a strategy or authorize
-trading.
-
-Hypothesis: a 20/50-day SMA trend-following signal on EURUSD daily bars has
-positive expectancy after explicit transaction costs.
+Memory records evidence only. It cannot promote a strategy or authorize trading.
 """
 
 from __future__ import annotations
@@ -32,6 +28,7 @@ FAST = 20
 SLOW = 50
 FEE_BPS = 1.0
 SLIPPAGE_BPS = 1.0
+STRATEGY_VERSION = "1.0"
 DEFAULT_MEMORY = ROOT / "data" / "research" / "experience.sqlite3"
 
 
@@ -92,6 +89,7 @@ def main() -> None:
     parser.add_argument("--memory", type=Path, default=DEFAULT_MEMORY)
     args = parser.parse_args()
 
+    memory_store = ExperienceStore(args.memory)
     record = run_experiment(
         csv_path=str(args.csv),
         hypothesis=build_hypothesis(args.symbol),
@@ -99,6 +97,8 @@ def main() -> None:
         gates=ResearchGates(),
         fee_bps=FEE_BPS,
         slippage_bps=SLIPPAGE_BPS,
+        strategy_version=STRATEGY_VERSION,
+        memory_store=memory_store,
     )
     payload = record.to_dict()
     payload["hypothesis"]["fast_sma"] = FAST
@@ -107,6 +107,7 @@ def main() -> None:
     print(text)
     exp_id = persist_experiment(record, payload, args.memory, args.output)
     print(f"EXPERIENCE_RECORDED: {exp_id}")
+    print(f"STRATEGY_REGISTRY_SYNC: {record.hypothesis.name}:{STRATEGY_VERSION} -> {record.final_decision.value}")
     print(f"EXPERIENCE_STORE: {args.memory}")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
