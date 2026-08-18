@@ -18,6 +18,8 @@ from typing import Callable, Sequence
 from .backtest import BacktestResult, run_long_flat
 from .contracts import BacktestMetrics, Decision, GateDecision, Hypothesis, ResearchGates, evaluate_gate
 from .data import Bar, DatasetSplit, chronological_split, load_csv
+from .memory import ExperienceStore
+from .strategy_registry import Strategy, StrategyRegistry
 
 Signal = Callable[[Sequence[Bar], int], bool]
 
@@ -93,6 +95,50 @@ def _segment_record(
     )
 
 
+def _sync_strategy_registry(
+    *,
+    hypothesis: Hypothesis,
+    final_decision: Decision,
+    strategy_version: str,
+    memory_store: ExperienceStore,
+) -> None:
+    """Record research state while preserving lifecycle/execution authority."""
+    registry = StrategyRegistry(memory_store)
+    existing = memory_store.get_strategy(hypothesis.name, strategy_version)
+
+    if existing is None:
+        registry.register(
+            Strategy(
+                name=hypothesis.name,
+                version=strategy_version,
+                status="CANDIDATE",
+                research_state=final_decision.value,
+                hypothesis={
+                    "thesis": hypothesis.thesis,
+                    "symbol": hypothesis.symbol,
+                    "timeframe": hypothesis.timeframe,
+                    "rules": dict(hypothesis.rules),
+                    "expected_edge": hypothesis.expected_edge,
+                    "falsifier": hypothesis.falsifier,
+                    "rationale": hypothesis.rationale,
+                },
+                notes=f"automatic research result: {final_decision.value}",
+            )
+        )
+        return
+
+    # Research runs may update evidence for CANDIDATE strategies only. Existing
+    # APPROVED/RETIRED/BLOCKED lifecycle states require a separate lifecycle
+    # decision and must never be silently changed by a backtest.
+    if existing["status"] == "CANDIDATE":
+        registry.set_research_state(
+            hypothesis.name,
+            strategy_version,
+            final_decision.value,
+            reason=f"automatic research result: {final_decision.value}",
+        )
+
+
 def run_experiment(
     *,
     csv_path: str,
@@ -101,10 +147,19 @@ def run_experiment(
     gates: ResearchGates | None = None,
     fee_bps: float = 1.0,
     slippage_bps: float = 1.0,
+    strategy_version: str = "1.0",
+    memory_store: ExperienceStore | None = None,
 ) -> ExperimentRecord:
-    """Run one bounded, reproducible hypothesis experiment."""
+    """Run one bounded, reproducible hypothesis experiment.
+
+    When a memory store is supplied, the resulting research state is synced to
+    the strategy registry. Registry updates never grant or revoke execution
+    authority for already-approved strategies.
+    """
     if fee_bps < 0 or slippage_bps < 0:
         raise ValueError("fee_bps and slippage_bps cannot be negative")
+    if not strategy_version.strip():
+        raise ValueError("strategy_version is required")
 
     hypothesis.validate()
     active_gates = gates or ResearchGates()
@@ -138,7 +193,7 @@ def run_experiment(
     else:
         final_decision = Decision.PROMISING
 
-    return ExperimentRecord(
+    record = ExperimentRecord(
         schema_version=1,
         created_at_utc=datetime.now(timezone.utc).isoformat(),
         hypothesis=hypothesis,
@@ -153,3 +208,13 @@ def run_experiment(
         segments=segments,
         final_decision=final_decision,
     )
+
+    if memory_store is not None:
+        _sync_strategy_registry(
+            hypothesis=hypothesis,
+            final_decision=final_decision,
+            strategy_version=strategy_version,
+            memory_store=memory_store,
+        )
+
+    return record
