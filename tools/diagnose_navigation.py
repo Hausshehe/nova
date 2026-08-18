@@ -24,10 +24,13 @@ from navigation.diagnostics import DiagnosticTrace
 from navigation.observer import observe_screen
 from navigation.resolver import resolve_target
 from navigation.state import Resolution, ScreenSnapshot
+from tools.accessibility_snapshot import read_accessibility_snapshot
 
 DEFAULT_SETTINGS_PACKAGE = "com.android.settings"
 DEFAULT_SETUP_TIMEOUT_SECONDS = 5.0
 DEFAULT_SETUP_POLL_SECONDS = 0.20
+DEFAULT_POST_SCROLL_TIMEOUT_SECONDS = 3.0
+DEFAULT_POST_SCROLL_POLL_SECONDS = 0.10
 
 
 def _node_summary(node):
@@ -153,6 +156,34 @@ def _launch_settings(trace: DiagnosticTrace, *, timeout_seconds: float = DEFAULT
     return False
 
 
+def _snapshot_timestamp_ms():
+    """Read the publisher timestamp without treating age alone as freshness."""
+    data = read_accessibility_snapshot(max_age_seconds=30.0)
+    if not isinstance(data, dict):
+        return 0
+    try:
+        return int(data.get("timestamp_ms") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _wait_for_new_snapshot(before_timestamp_ms: int, *, timeout_seconds: float = DEFAULT_POST_SCROLL_TIMEOUT_SECONDS) -> int:
+    """Wait for a snapshot published after the scroll request.
+
+    A snapshot that is merely younger than the configured max age can still be
+    the exact pre-action hierarchy. The diagnostic must distinguish 'recent'
+    from 'newer than the action boundary'.
+    """
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    latest = before_timestamp_ms
+    while time.monotonic() < deadline:
+        latest = _snapshot_timestamp_ms()
+        if latest > before_timestamp_ms:
+            return latest
+        time.sleep(DEFAULT_POST_SCROLL_POLL_SECONDS)
+    return latest
+
+
 def run_one_scroll(
     target: str,
     direction: str = "down",
@@ -223,6 +254,7 @@ def run_one_scroll(
         ],
     )
 
+    before_timestamp_ms = _snapshot_timestamp_ms()
     action = scroll(before, direction)
     trace.record(
         "scroll_request",
@@ -235,6 +267,7 @@ def run_one_scroll(
         executor_returncode=action.executor_returncode,
         message=action.message,
         transport_output=action.transport_output,
+        before_snapshot_timestamp_ms=before_timestamp_ms,
     )
 
     if not action.success:
@@ -245,8 +278,23 @@ def run_one_scroll(
         )
         return trace
 
+    after_timestamp_ms = _wait_for_new_snapshot(before_timestamp_ms)
+    if after_timestamp_ms <= before_timestamp_ms:
+        trace.record(
+            "failure",
+            "post_scroll_observation_timeout",
+            message="Accessibility accepted the scroll, but no newer published hierarchy arrived within the bounded diagnostic window.",
+            before_snapshot_timestamp_ms=before_timestamp_ms,
+            latest_snapshot_timestamp_ms=after_timestamp_ms,
+            timeout_seconds=DEFAULT_POST_SCROLL_TIMEOUT_SECONDS,
+        )
+        return trace
+
     after = observe_screen(previous=None, include_nodes=True)
-    trace.record("observation", "after_scroll", snapshot=_snapshot_data(after, compact=compact))
+    trace.record(
+        "observation", "after_scroll", snapshot=_snapshot_data(after, compact=compact),
+        snapshot_timestamp_ms=after_timestamp_ms,
+    )
     trace.record(
         "observation_comparison",
         "after_scroll_vs_before",
