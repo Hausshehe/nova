@@ -40,6 +40,11 @@ def _is_strong_package_match(package, query):
     )
 
 
+def _canonical_android_package(package, query):
+    """Recognize the generic canonical Android system-app package pattern."""
+    return str(package or "").lower() == "com.android." + str(query or "").lower()
+
+
 def find_android_app(app_name):
     """Find installed package names related to a human app name."""
     query = str(app_name or "").lower().strip()
@@ -69,10 +74,19 @@ def find_android_app(app_name):
             }
 
         # Strong exact/suffix identity outranks unrelated substring matches.
-        # Android can contain Settings-related overlays/providers alongside the
-        # real launchable package. If a strong identity exists, return only the
-        # strong candidate(s); otherwise preserve ambiguity rather than guessing.
+        # When Android exposes the canonical com.android.<name> system package
+        # alongside vendor/provider variants, prefer the canonical launchable
+        # identity generically instead of hard-coding a specific app name.
         strong = [package for package in packages if _is_strong_package_match(package, query)]
+        canonical = [package for package in strong if _canonical_android_package(package, query)]
+        if len(canonical) == 1:
+            return {
+                "success": True,
+                "verified": True,
+                "packages": canonical,
+                "message": f"Found canonical Android system package for '{app_name}'.",
+            }
+
         if strong:
             return {
                 "success": True,
