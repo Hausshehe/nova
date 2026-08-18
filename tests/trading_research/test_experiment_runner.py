@@ -1,17 +1,15 @@
-import json
 from datetime import datetime, timedelta, timezone
 
 from trading_research.contracts import Decision, Hypothesis, ResearchGates
 from trading_research.experiment import run_experiment
-from trading_research.data import Bar
 
 
-def _write_csv(path, count=240):
+def _write_csv(path, count=240, slope=0.05):
     start = datetime(2015, 1, 1, tzinfo=timezone.utc)
     with path.open("w", encoding="utf-8", newline="") as handle:
         handle.write("timestamp,open,high,low,close,volume\n")
         for i in range(count):
-            price = 100.0 + i * 0.05
+            price = 100.0 + i * slope
             timestamp = start + timedelta(days=i)
             handle.write(
                 f"{timestamp.isoformat()},{price},{price + 0.1},{price - 0.1},{price},100\n"
@@ -32,7 +30,7 @@ def _hypothesis():
 
 def test_runner_produces_standardized_three_segment_record(tmp_path):
     csv_path = tmp_path / "fixture.csv"
-    _write_csv(csv_path)
+    _write_csv(csv_path, slope=0.05)
 
     def signal(bars, index):
         return index >= 1
@@ -52,20 +50,20 @@ def test_runner_produces_standardized_three_segment_record(tmp_path):
     assert record.split_sizes == {"train": 144, "validation": 48, "test": 48}
     assert [segment.name for segment in record.segments] == ["train", "validation", "test"]
     assert record.final_decision == Decision.PROMISING
-    assert json.dumps(payload, sort_keys=True)
+    assert payload["final_decision"] == "PROMISING"
 
 
-def test_runner_rejects_when_any_segment_has_performance_failure(tmp_path):
+def test_runner_rejects_when_a_segment_has_real_performance_failure(tmp_path):
     csv_path = tmp_path / "fixture.csv"
-    _write_csv(csv_path)
+    _write_csv(csv_path, slope=-0.05)
 
-    def alternating_signal(bars, index):
-        return index % 2 == 0
+    def always_long(bars, index):
+        return index >= 1
 
     record = run_experiment(
         csv_path=str(csv_path),
         hypothesis=_hypothesis(),
-        signal=alternating_signal,
+        signal=always_long,
         gates=ResearchGates(minimum_trades=1),
     )
 
