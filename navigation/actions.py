@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from tools.android_root import run_root
-
 
 ACCESSIBILITY_CLICK_TIMEOUT_SECONDS = 5.0
+ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -62,41 +60,52 @@ def _semantic_label(node: Dict[str, Any]) -> str:
     )
 
 
-def _accessibility_click(label: str) -> Tuple[bool, str]:
-    """Ask Nova's accessibility service to click a semantic live target."""
-    label = " ".join(str(label or "").split())
-    if not label:
-        return False, "The target has no semantic label for accessibility activation."
+def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str]:
+    """Send one bounded semantic command to Nova's Accessibility Service."""
+    command = [
+        "am",
+        "broadcast",
+        "-n",
+        "com.infoney.nova/.NovaClickReceiver",
+        "-a",
+        action,
+    ]
+    if target:
+        command.extend(["--es", "target", " ".join(str(target).split())])
+    if direction:
+        command.extend(["--es", "direction", direction])
 
     try:
         result = subprocess.run(
-            [
-                "am",
-                "broadcast",
-                "-n",
-                "com.infoney.nova/.NovaClickReceiver",
-                "-a",
-                "com.infoney.nova.CLICK_ELEMENT",
-                "--es",
-                "target",
-                label,
-            ],
+            command,
             capture_output=True,
             text=True,
-            timeout=ACCESSIBILITY_CLICK_TIMEOUT_SECONDS,
+            timeout=(
+                ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS
+                if "SCROLL" in action
+                else ACCESSIBILITY_CLICK_TIMEOUT_SECONDS
+            ),
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return False, f"Accessibility activation transport unavailable: {exc}"
+        return False, f"Accessibility command transport unavailable: {exc}"
 
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     if result.returncode == 0 and re.search(r"result=1\b", output):
-        return True, "Semantic target activated through the Accessibility Service."
-    return False, output or "Accessibility Service did not report a successful semantic activation."
+        return True, output or "Accessibility command completed successfully."
+    return False, output or "Accessibility Service did not report success."
+
+
+def _accessibility_click(label: str) -> Tuple[bool, str]:
+    """Ask Nova's Accessibility Service to click a semantic live target."""
+    label = " ".join(str(label or "").split())
+    if not label:
+        return False, "The target has no semantic label for accessibility activation."
+    return _accessibility_broadcast("com.infoney.nova.CLICK_ELEMENT", target=label)
 
 
 def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
-    """Activate a live semantic node, preferring Accessibility over root coordinates."""
+    """Activate a live semantic node exclusively through Accessibility Service."""
     if not isinstance(node, dict):
         return ActionResult(False, "TAP", "No target node was supplied.")
     if not node.get("enabled", True):
@@ -115,34 +124,37 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
             candidate = ancestor
 
     bounds = str(candidate.get("bounds", ""))
-    center = _bounds_center(bounds)
-    if center is None:
+    if _bounds_center(bounds) is None:
         return ActionResult(False, "TAP", "Target has no valid live bounds.", bounds)
 
     label = _semantic_label(node)
-    if label:
-        accessibility_success, accessibility_message = _accessibility_click(label)
-        if accessibility_success:
-            return ActionResult(True, "TAP", accessibility_message, bounds)
+    if not label:
+        return ActionResult(False, "TAP", "The target has no semantic label for accessibility activation.", bounds)
 
-    # Fallback remains coordinate-free at the decision layer: coordinates are
-    # calculated only from the current live target/actionable-ancestor bounds.
-    time.sleep(0.12)
-    x, y = center
-    result = run_root(f"input tap {x} {y}")
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "Tap failed").strip()
-        return ActionResult(False, "TAP", message, bounds)
+    success, message = _accessibility_click(label)
+    if success:
+        return ActionResult(True, "TAP", "Semantic target activated through the Accessibility Service.", bounds)
+    return ActionResult(False, "TAP", message, bounds)
 
-    return ActionResult(True, "TAP", "Live target bounds activated through the bounded root fallback.", bounds)
+
+def _accessibility_scroll(direction: str) -> Tuple[bool, str]:
+    direction = str(direction or "down").strip().lower()
+    if direction not in {"down", "up"}:
+        return False, f"Unsupported scroll direction: {direction}."
+    return _accessibility_broadcast(
+        "com.infoney.nova.SCROLL_WINDOW",
+        direction=direction,
+    )
 
 
 def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
-    """Scroll a live region by an adaptive fraction of its observed height.
+    """Scroll the currently observed live region through Accessibility Service.
 
-    No screen coordinates are fixed here. The gesture is derived entirely
-    from the currently observed scrollable region, and callers can reduce the
-    distance during recovery when a previous gesture moved too far or failed.
+    The Python controller uses the observed region only to validate that a
+    scroll is safe. The actual gesture is semantic: the Accessibility Service
+    performs ACTION_SCROLL_FORWARD/BACKWARD on the live scroll container.
+    This avoids privileged input commands, Magisk prompts, and coordinate
+    gestures that can visibly blink or briefly stall the device.
     """
     regions = [item for item in snapshot.scrollable_regions if isinstance(item, dict)]
     if not regions:
@@ -164,31 +176,14 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
     width = right - left
     height = bottom - top
     if width < 80 or height < 160:
-        return ActionResult(False, "SCROLL", "Scrollable region is too small for a safe gesture.")
+        return ActionResult(False, "SCROLL", "Scrollable region is too small for a safe gesture.", region.get("bounds", ""))
 
-    ratio = max(0.20, min(float(distance_ratio), 0.60))
-    x = (left + right) // 2
-    center_y = (top + bottom) // 2
-    distance = max(40, int(height * ratio))
-    direction = str(direction or "down").lower().strip()
-    if direction == "down":
-        start_y = center_y + distance // 2
-        end_y = center_y - distance // 2
-    elif direction == "up":
-        start_y = center_y - distance // 2
-        end_y = center_y + distance // 2
-    else:
-        return ActionResult(False, "SCROLL", f"Unsupported scroll direction: {direction}.")
-
-    start_y = max(top + 10, min(bottom - 10, start_y))
-    end_y = max(top + 10, min(bottom - 10, end_y))
-    if start_y == end_y:
-        return ActionResult(False, "SCROLL", "Computed scroll gesture has no movement.", region.get("bounds", ""))
-
-    duration_ms = max(420, min(750, 300 + int(distance * 0.80)))
-    result = run_root(f"/system/bin/input swipe {x} {start_y} {x} {end_y} {duration_ms}")
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "Scroll failed").strip()
-        return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
-
-    return ActionResult(True, "SCROLL", f"Live scrollable region swiped using {ratio:.2f} of its observed height over {duration_ms}ms.", region.get("bounds", ""))
+    success, message = _accessibility_scroll(direction)
+    if success:
+        return ActionResult(
+            True,
+            "SCROLL",
+            "Live scrollable region advanced through the Accessibility Service.",
+            region.get("bounds", ""),
+        )
+    return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
