@@ -88,11 +88,15 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return False, f"Accessibility command transport unavailable: {exc}"
+        return False, f"Accessibility Service command transport unavailable: {exc}"
 
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     if result.returncode == 0 and re.search(r"result=1\b", output):
-        return True, output or "Accessibility command completed successfully."
+        return True, output or "Accessibility Service command completed successfully."
+
+    if result.returncode == 0 and re.search(r"result=0\b", output):
+        return False, "Accessibility Service rejected the requested action (result=0); no root fallback was attempted."
+
     return False, output or "Accessibility Service did not report success."
 
 
@@ -148,14 +152,7 @@ def _accessibility_scroll(direction: str) -> Tuple[bool, str]:
 
 
 def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
-    """Scroll the currently observed live region through Accessibility Service.
-
-    The Python controller uses the observed region only to validate that a
-    scroll is safe. The actual gesture is semantic: the Accessibility Service
-    performs ACTION_SCROLL_FORWARD/BACKWARD on the live scroll container.
-    This avoids privileged input commands, Magisk prompts, and coordinate
-    gestures that can visibly blink or briefly stall the device.
-    """
+    """Scroll the currently observed live region through Accessibility Service."""
     regions = [item for item in snapshot.scrollable_regions if isinstance(item, dict)]
     if not regions:
         return ActionResult(False, "SCROLL", "No live scrollable region is available.")
@@ -180,10 +177,5 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
 
     success, message = _accessibility_scroll(direction)
     if success:
-        return ActionResult(
-            True,
-            "SCROLL",
-            "Live scrollable region advanced through the Accessibility Service.",
-            region.get("bounds", ""),
-        )
+        return ActionResult(True, "SCROLL", "Live scrollable region advanced through the Accessibility Service.", region.get("bounds", ""))
     return ActionResult(False, "SCROLL", message, region.get("bounds", ""))
