@@ -11,7 +11,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Sequence
 
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
@@ -45,6 +45,14 @@ class DatasetSplit:
     test: Sequence[Bar]
 
 
+@dataclass(frozen=True)
+class OHLCVValidationReport:
+    """Deterministic validation result for already-normalized OHLCV rows."""
+
+    ok: bool
+    reasons: Sequence[str] = ()
+
+
 def _parse_timestamp(value: str) -> datetime:
     text = value.strip()
     if not text:
@@ -55,6 +63,42 @@ def _parse_timestamp(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def validate_ohlcv_rows(rows: Sequence[dict[str, Any]]) -> OHLCVValidationReport:
+    """Validate normalized OHLCV dictionaries without requiring pandas or MT5."""
+    reasons: list[str] = []
+    previous_timestamp: datetime | None = None
+
+    if not rows:
+        return OHLCVValidationReport(False, ("dataset is empty",))
+
+    for index, row in enumerate(rows, start=1):
+        missing = [column for column in REQUIRED_COLUMNS if column not in row]
+        if missing:
+            reasons.append(f"row_{index}:missing_columns:{','.join(missing)}")
+            continue
+
+        try:
+            timestamp = _parse_timestamp(str(row["timestamp"]))
+            bar = Bar(
+                timestamp=timestamp,
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=float(row["volume"]),
+            )
+            bar.validate()
+        except (TypeError, ValueError) as exc:
+            reasons.append(f"row_{index}:invalid:{exc}")
+            continue
+
+        if previous_timestamp is not None and timestamp <= previous_timestamp:
+            reasons.append(f"row_{index}:timestamps_not_strictly_increasing")
+        previous_timestamp = timestamp
+
+    return OHLCVValidationReport(not reasons, tuple(reasons))
 
 
 def load_csv(path: str | Path) -> list[Bar]:
