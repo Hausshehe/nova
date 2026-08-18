@@ -12,7 +12,7 @@ from .checkpoints import Checkpoint, CheckpointStore
 from .controller import NavigationController, NavigationResult, NavigationState
 from .goal_parser import parse_open_path
 from .observer import observe_screen
-from .state import ObservationQuality
+from .state import ObservationQuality, ScreenSnapshot
 from .verifier import verify_transition
 
 
@@ -24,6 +24,7 @@ class PathResult:
     completed_targets: List[str]
     failed_target: str = ""
     checkpoints: int = 0
+    resumed_from_checkpoint: bool = False
     message: str = ""
 
 
@@ -86,12 +87,24 @@ class OpenPathNavigator:
             ),
         )
 
+    def _retry_from_latest_checkpoint(self, index: int, target: str) -> Optional[NavigationResult]:
+        """Retry one failed target only when the live screen still matches the last checkpoint."""
+        if index <= 0 or self.checkpoints.latest is None:
+            return None
+
+        current = observe_screen(include_nodes=True, retries=1)
+        if not self.checkpoints.matches_current(current):
+            return None
+
+        return self.controller.navigate_target(target)
+
     def navigate(self, goal: str) -> PathResult:
         targets = parse_open_path(goal)
         if not targets:
             return PathResult(False, False, [], [], message="No open-navigation targets were found.")
 
         completed: List[str] = []
+        resumed_from_checkpoint = False
 
         for index, target in enumerate(targets):
             result = self.controller.navigate_target(target)
@@ -107,6 +120,12 @@ class OpenPathNavigator:
                     result = self._launch_installed_app(target, packages)
 
             if not result.success or not result.verified:
+                retry = self._retry_from_latest_checkpoint(index, target)
+                if retry is not None and retry.success and retry.verified:
+                    result = retry
+                    resumed_from_checkpoint = True
+
+            if not result.success or not result.verified:
                 return PathResult(
                     False,
                     False,
@@ -114,10 +133,11 @@ class OpenPathNavigator:
                     completed,
                     failed_target=target,
                     checkpoints=len(self.checkpoints.items),
+                    resumed_from_checkpoint=resumed_from_checkpoint,
                     message=result.message or f"Could not reach '{target}'.",
                 )
 
-            snapshot = result.snapshot
+            snapshot: Optional[ScreenSnapshot] = result.snapshot
             if snapshot is None or snapshot.observation_quality is not ObservationQuality.VALID:
                 return PathResult(
                     False,
@@ -126,6 +146,7 @@ class OpenPathNavigator:
                     completed,
                     failed_target=target,
                     checkpoints=len(self.checkpoints.items),
+                    resumed_from_checkpoint=resumed_from_checkpoint,
                     message=f"'{target}' was activated but no valid checkpoint snapshot was available.",
                 )
 
@@ -145,5 +166,6 @@ class OpenPathNavigator:
             targets,
             completed,
             checkpoints=len(self.checkpoints.items),
+            resumed_from_checkpoint=resumed_from_checkpoint,
             message="All targets were reached and verified with checkpoints.",
         )
