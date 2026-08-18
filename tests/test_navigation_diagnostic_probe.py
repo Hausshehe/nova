@@ -3,18 +3,18 @@ from unittest.mock import patch
 
 from navigation.actions import ActionResult
 from navigation.state import ScreenSnapshot
-from tools.diagnose_navigation import run_one_scroll
+from tools.diagnose_navigation import _launch_settings, run_one_scroll
 
 
 class NavigationDiagnosticProbeTests(unittest.TestCase):
-    def _snapshot(self, text):
+    def _snapshot(self, text, package="com.android.settings"):
         nodes = tuple(
             {
                 "text": value,
                 "content_description": "",
                 "resource_id": "",
                 "class": "android.widget.TextView",
-                "package": "com.android.settings",
+                "package": package,
                 "bounds": f"[0,{index * 100}][720,{index * 100 + 80}]",
                 "clickable": False,
                 "enabled": True,
@@ -29,7 +29,7 @@ class NavigationDiagnosticProbeTests(unittest.TestCase):
             for index, value in enumerate(text)
         )
         return ScreenSnapshot(
-            foreground_package="com.android.settings",
+            foreground_package=package,
             visible_nodes=nodes,
             visible_text=tuple(text),
             scrollable_regions=({"bounds": "[0,212][720,1452]"},),
@@ -85,6 +85,33 @@ class NavigationDiagnosticProbeTests(unittest.TestCase):
         final_decision = events[-1]
         self.assertEqual(final_decision["event"], "activation_ready")
         self.assertEqual(final_decision["action"], "ACTIVATE_NOT_PERFORMED_BY_PROBE")
+
+    def test_launch_settings_waits_for_settings_foreground(self):
+        trace_snapshots = [
+            self._snapshot(("Terminal",), package="com.termux"),
+            self._snapshot(("Settings",), package="com.android.settings"),
+        ]
+        completed = type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "Starting: Intent { act=android.settings.SETTINGS }",
+                "stderr": "",
+            },
+        )()
+        with patch("tools.diagnose_navigation.subprocess.run", return_value=completed) as run, patch(
+            "tools.diagnose_navigation.observe_screen", side_effect=trace_snapshots
+        ), patch("tools.diagnose_navigation.time.sleep"):
+            trace = type("T", (), {"events": []})()
+            self.assertTrue(_launch_settings(trace, timeout_seconds=1.0))
+
+        self.assertEqual(run.call_args.args[0], ["am", "start", "-a", "android.settings.SETTINGS"])
+        self.assertEqual(
+            [event["event"] for event in trace.events],
+            ["launch_settings", "settings_foreground_confirmed"],
+        )
+        self.assertEqual(trace.events[-1]["package"], "com.android.settings")
 
 
 if __name__ == "__main__":
