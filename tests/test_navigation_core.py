@@ -162,6 +162,28 @@ class NavigationCoreTests(unittest.TestCase):
         self.assertEqual(result.history.count(NavigationState.RECOVER), 1)
         self.assertEqual(result.history.count(NavigationState.SUCCESS), 1)
 
+    def test_scroll_command_failures_do_not_trigger_direction_reversal(self):
+        snapshot = self._snapshot(text=("A", "B", "C"))
+        failed_scroll = ActionResult(False, "SCROLL", "simulated command failure")
+        controller = NavigationController(
+            observation_retries=1,
+            max_transient_observations=2,
+            max_scrolls=4,
+            no_progress_before_reversal=2,
+            settle_seconds=0,
+        )
+
+        with patch("navigation.controller.observe_screen", return_value=snapshot) as observe, patch(
+            "navigation.controller.scroll", return_value=failed_scroll
+        ) as scroll:
+            result = controller.navigate_target("YouTube")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.direction, "down")
+        self.assertEqual(scroll.call_count, 2)
+        self.assertGreaterEqual(observe.call_count, 3)
+        self.assertIn("refusing to reverse direction", result.message)
+
 
 if __name__ == "__main__":
     unittest.main()
