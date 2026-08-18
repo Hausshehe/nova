@@ -1,0 +1,219 @@
+"""Deterministic navigation controller built around observe/resolve/act/verify."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Iterable, Optional, Tuple
+
+from .actions import ActionResult, activate_node, scroll
+from .observer import observe_screen
+from .progress import Progress, compare_snapshots
+from .resolver import TargetMatch, resolve_target
+from .state import ObservationQuality, Resolution, ScreenSnapshot
+from .verifier import VerificationResult, verify_transition
+
+
+class NavigationState(str, Enum):
+    START = "START"
+    OBSERVE = "OBSERVE"
+    RESOLVE_TARGET = "RESOLVE_TARGET"
+    ACTIVATE = "ACTIVATE"
+    WAIT_FOR_TRANSITION = "WAIT_FOR_TRANSITION"
+    VERIFY = "VERIFY"
+    SEARCH_VISIBLE = "SEARCH_VISIBLE"
+    SCROLL = "SCROLL"
+    WAIT_AFTER_SCROLL = "WAIT_AFTER_SCROLL"
+    REOBSERVE = "REOBSERVE"
+    RECOVER = "RECOVER"
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
+
+
+@dataclass(frozen=True)
+class NavigationResult:
+    success: bool
+    verified: bool
+    target: str
+    state: NavigationState
+    snapshot: Optional[ScreenSnapshot] = None
+    match: Optional[TargetMatch] = None
+    action: Optional[ActionResult] = None
+    verification: Optional[VerificationResult] = None
+    progress: Optional[Progress] = None
+    scroll_count: int = 0
+    direction: str = "down"
+    message: str = ""
+    history: Tuple[NavigationState, ...] = field(default_factory=tuple)
+
+
+class NavigationController:
+    """Bounded adaptive controller that never reverses on one bad observation."""
+
+    def __init__(self, *, observation_retries: int = 2, verification_timeout: float = 3.0, settle_seconds: float = 0.25, max_scrolls: int = 8, no_progress_before_reversal: int = 2, max_transient_observations: int = 4, max_activation_retries: int = 1):
+        self.observation_retries = max(1, int(observation_retries))
+        self.verification_timeout = max(0.1, float(verification_timeout))
+        self.settle_seconds = max(0.0, float(settle_seconds))
+        self.max_scrolls = max(0, min(int(max_scrolls), 20))
+        self.no_progress_before_reversal = max(2, int(no_progress_before_reversal))
+        self.max_transient_observations = max(1, int(max_transient_observations))
+        self.max_activation_retries = max(0, min(int(max_activation_retries), 2))
+
+    def _result(self, *, target: str, state: NavigationState, history: list[NavigationState], snapshot: Optional[ScreenSnapshot] = None, match: Optional[TargetMatch] = None, action: Optional[ActionResult] = None, verification: Optional[VerificationResult] = None, progress: Optional[Progress] = None, scroll_count: int = 0, direction: str = "down", success: bool = False, message: str = "") -> NavigationResult:
+        return NavigationResult(success=success, verified=success, target=target, state=state, snapshot=snapshot, match=match, action=action, verification=verification, progress=progress, scroll_count=scroll_count, direction=direction, message=message, history=tuple(history))
+
+    def _bounded_observation_failure(self, target, history, snapshot, progress, scroll_count, direction, message):
+        history.append(NavigationState.RECOVER)
+        return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=snapshot, progress=progress, scroll_count=scroll_count, direction=direction, message=message)
+
+    def _activate_with_bounded_recovery(self, target: str, snapshot: ScreenSnapshot, match: TargetMatch, *, installed_packages: Optional[Iterable[str]], expected_foreground_package: Optional[str], history: list[NavigationState], total_scrolls: int, direction: str, progress: Optional[Progress]) -> NavigationResult:
+        """Activate a target, allowing only bounded re-observe/re-resolve retries."""
+        current_snapshot = snapshot
+        current_match = match
+        last_action: Optional[ActionResult] = None
+        last_verification: Optional[VerificationResult] = None
+
+        for attempt in range(self.max_activation_retries + 1):
+            history.append(NavigationState.ACTIVATE)
+            last_action = activate_node(current_match.node)
+            if not last_action.success:
+                history.append(NavigationState.RECOVER)
+                return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
+
+            history.extend((NavigationState.WAIT_FOR_TRANSITION, NavigationState.VERIFY))
+            last_verification = verify_transition(current_snapshot, expected_foreground_package=expected_foreground_package, timeout_seconds=self.verification_timeout)
+            if last_verification.success:
+                history.append(NavigationState.SUCCESS)
+                return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=last_verification.snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified.")
+
+            if attempt >= self.max_activation_retries:
+                break
+
+            history.append(NavigationState.RECOVER)
+            recovery_snapshot = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
+                return self._bounded_observation_failure(target, history, recovery_snapshot, progress, total_scrolls, direction, "Activation verification failed and the recovery observation was unreliable.")
+
+            recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
+            recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
+
+            # A destination does not need to preserve the source target label.
+            # A meaningful transition is acceptable only when the source match
+            # has genuinely disappeared or weakened substantially. This keeps a
+            # visible source target from being mistaken for successful activation
+            # while allowing destinations such as "App list" to replace "Apps".
+            source_disappeared = (
+                recovery_match.resolution is not Resolution.FOUND
+                or (
+                    recovery_match.label != current_match.label
+                    and recovery_match.score < max(0.0, current_match.score - 10.0)
+                )
+            )
+            if recovery_progress.meaningful and source_disappeared:
+                recovered_verification = VerificationResult(
+                    True,
+                    recovery_snapshot,
+                    "A meaningful live UI transition was verified during bounded activation recovery after the source target disappeared or materially weakened.",
+                )
+                history.append(NavigationState.VERIFY)
+                history.append(NavigationState.SUCCESS)
+                return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
+
+            if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
+                return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, match=recovery_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message="Activation verification failed and the target was not safely re-resolved for a bounded retry.")
+
+            current_snapshot = recovery_snapshot
+            current_match = recovery_match
+
+        return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=(last_verification.reason if last_verification else "Activation verification failed."))
+
+    def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
+        history = [NavigationState.START]
+        snapshot: Optional[ScreenSnapshot] = None
+        total_scrolls = 0
+        current_direction = str(initial_direction or "down").strip().lower()
+        if current_direction not in {"up", "down"}:
+            current_direction = "down"
+        no_progress = 0
+        transient_observations = 0
+        scroll_action_failures = 0
+        scroll_distance_ratio = 0.35
+        last_progress: Optional[Progress] = None
+
+        while total_scrolls <= self.max_scrolls:
+            history.append(NavigationState.OBSERVE)
+            snapshot = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            if snapshot.observation_quality is not ObservationQuality.VALID:
+                transient_observations += 1
+                history.append(NavigationState.REOBSERVE)
+                if transient_observations >= self.max_transient_observations:
+                    return self._bounded_observation_failure(target, history, snapshot, last_progress, total_scrolls, current_direction, "Android UI observations remained unreliable within the bounded recovery budget.")
+                continue
+            transient_observations = 0
+
+            history.append(NavigationState.RESOLVE_TARGET)
+            match = resolve_target(snapshot, target, installed_packages=installed_packages)
+            if match.resolution in {Resolution.INVALID_OBSERVATION, Resolution.AMBIGUOUS}:
+                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, scroll_count=total_scrolls, direction=current_direction, message=match.reason)
+
+            if match.resolution is Resolution.FOUND and match.node is not None:
+                return self._activate_with_bounded_recovery(target, snapshot, match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+
+            history.append(NavigationState.SEARCH_VISIBLE)
+            if not snapshot.scrollable:
+                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Target is not visible and the current screen exposes no live scrollable region.")
+            if total_scrolls >= self.max_scrolls:
+                break
+
+            history.append(NavigationState.SCROLL)
+            region = snapshot.scrollable_regions[0]
+            bounds = region.get("bounds") if isinstance(region, dict) else None
+            if not bounds:
+                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Live scrollable region has no usable bounds.")
+            try:
+                left, top, right, bottom = [int(value) for value in __import__("re").findall(r"\d+", str(bounds))[:4]]
+            except (TypeError, ValueError):
+                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Live scrollable region bounds are invalid.")
+            center_x = max(left + 1, min(right - 1, (left + right) // 2))
+            height = max(1, bottom - top)
+            distance = max(80, int(height * scroll_distance_ratio))
+            distance = min(distance, max(80, height - 2))
+            if current_direction == "down":
+                start_y = max(top + 1, (top + bottom - distance) // 2)
+                end_y = min(bottom - 1, start_y + distance)
+            else:
+                end_y = min(bottom - 1, (top + bottom + distance) // 2)
+                start_y = max(top + 1, end_y - distance)
+            action = scroll(current_direction, bounds, distance_ratio=scroll_distance_ratio)
+            total_scrolls += 1
+            if not action.success:
+                scroll_action_failures += 1
+                if scroll_action_failures >= self.no_progress_before_reversal:
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Repeated scroll actions failed; refusing to reverse direction without evidence of UI progress or boundary state.")
+                continue
+            scroll_action_failures = 0
+            history.append(NavigationState.WAIT_AFTER_SCROLL)
+            if self.settle_seconds:
+                time.sleep(self.settle_seconds)
+            history.append(NavigationState.REOBSERVE)
+            after_scroll = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            if after_scroll.observation_quality is not ObservationQuality.VALID:
+                transient_observations += 1
+                if transient_observations >= self.max_transient_observations:
+                    return self._bounded_observation_failure(target, history, after_scroll, last_progress, total_scrolls, current_direction, "Android UI observations remained unreliable after scrolling.")
+                continue
+            transient_observations = 0
+            last_progress = compare_snapshots(snapshot, after_scroll)
+            if last_progress.meaningful:
+                no_progress = 0
+                scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.90)
+            else:
+                no_progress += 1
+                scroll_distance_ratio = min(0.50, scroll_distance_ratio * 1.10)
+                if no_progress >= self.no_progress_before_reversal:
+                    current_direction = "up" if current_direction == "down" else "down"
+                    no_progress = 0
+            snapshot = after_scroll
+
+        return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Target was not safely reached within the bounded navigation budget.")
