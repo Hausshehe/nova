@@ -68,14 +68,61 @@ def _stable_foreground_package(hierarchy_package=""):
     return hierarchy_package or last
 
 
+def _parse_hierarchy(xml_text, include_nodes):
+    """Parse a UI hierarchy XML snapshot into Nova's compact representation."""
+    root = ET.fromstring(xml_text)
+    nodes = []
+    for node in root.iter("node"):
+        attrs = node.attrib
+        text = attrs.get("text", "").strip()
+        description = attrs.get("content-desc", "").strip()
+        resource_id = attrs.get("resource-id", "").strip()
+        class_name = attrs.get("class", "").strip()
+        package = attrs.get("package", "").strip()
+        bounds = attrs.get("bounds", "").strip()
+
+        if not any((text, description, resource_id, class_name)):
+            continue
+
+        nodes.append({
+            "text": text,
+            "content_description": description,
+            "resource_id": resource_id,
+            "class": class_name,
+            "package": package,
+            "bounds": bounds,
+            "clickable": attrs.get("clickable") == "true",
+            "enabled": attrs.get("enabled") == "true",
+            "focusable": attrs.get("focusable") == "true",
+            "scrollable": attrs.get("scrollable") == "true",
+            "selected": attrs.get("selected") == "true",
+            "checked": attrs.get("checked") == "true",
+        })
+    return nodes
+
+
 def observe_android(include_nodes=False):
     """Capture Android UI without allowing observation to block the agent."""
     try:
         command = (
+            f"rm -f {DUMP_PATH} && "
             f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
             f">/dev/null 2>&1 && cat {DUMP_PATH}"
         )
         result = run_root(command, timeout=OBSERVE_TIMEOUT_SECONDS)
+
+        if result.returncode != 0:
+            # A uiautomator dump can time out after writing a usable hierarchy.
+            # Recover that snapshot instead of making the navigator abandon the
+            # current target. The file is removed before each dump, so this
+            # cannot silently reuse an older screen's hierarchy.
+            cached = run_root(f"cat {DUMP_PATH}", timeout=2)
+            if cached.returncode == 0 and (cached.stdout or "").strip():
+                try:
+                    _parse_hierarchy(cached.stdout, include_nodes)
+                    result = cached
+                except ET.ParseError:
+                    pass
 
         if result.returncode != 0:
             foreground_package = _foreground_package()
@@ -100,34 +147,7 @@ def observe_android(include_nodes=False):
                 "message": "Android UI observation produced no XML snapshot.",
             }
 
-        root = ET.fromstring(xml_text)
-        nodes = []
-        for node in root.iter("node"):
-            attrs = node.attrib
-            text = attrs.get("text", "").strip()
-            description = attrs.get("content-desc", "").strip()
-            resource_id = attrs.get("resource-id", "").strip()
-            class_name = attrs.get("class", "").strip()
-            package = attrs.get("package", "").strip()
-            bounds = attrs.get("bounds", "").strip()
-
-            if not any((text, description, resource_id, class_name)):
-                continue
-
-            nodes.append({
-                "text": text,
-                "content_description": description,
-                "resource_id": resource_id,
-                "class": class_name,
-                "package": package,
-                "bounds": bounds,
-                "clickable": attrs.get("clickable") == "true",
-                "enabled": attrs.get("enabled") == "true",
-                "focusable": attrs.get("focusable") == "true",
-                "scrollable": attrs.get("scrollable") == "true",
-                "selected": attrs.get("selected") == "true",
-                "checked": attrs.get("checked") == "true",
-            })
+        nodes = _parse_hierarchy(xml_text, include_nodes)
 
         hierarchy_package = _infer_foreground_from_nodes(nodes)
         foreground_package = _stable_foreground_package(hierarchy_package)
