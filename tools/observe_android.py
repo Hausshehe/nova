@@ -14,7 +14,9 @@ from tools.android_root import run_root
 from tools.android_ui import format_ui_summary, summarize_ui
 
 DUMP_PATH = "/data/local/tmp/nova_ui.xml"
-OBSERVE_TIMEOUT_SECONDS = 12
+# A normal dump on the target device is typically a few seconds. Keep each
+# observation bounded so a stuck uiautomator cannot monopolize navigation.
+OBSERVE_TIMEOUT_SECONDS = 5
 OBSERVE_RETRIES = 2
 OBSERVE_RETRY_DELAY = 0.2
 FOREGROUND_RETRIES = 3
@@ -118,7 +120,7 @@ def observe_android(include_nodes=False):
     try:
         command = (
             f"rm -f {DUMP_PATH} && "
-            f"/system/bin/uiautomator dump --compressed {DUMP_PATH} "
+            f"/system/bin/uiautomator dump --compressed {DUMP_PATH "
             f">/dev/null 2>&1 && cat {DUMP_PATH}"
         )
 
