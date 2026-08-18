@@ -12,7 +12,8 @@ from .checkpoints import Checkpoint, CheckpointStore
 from .controller import NavigationController, NavigationResult, NavigationState
 from .goal_parser import parse_open_path
 from .observer import observe_screen
-from .state import ObservationQuality, ScreenSnapshot
+from .resolver import resolve_target
+from .state import ObservationQuality, ScreenSnapshot, Resolution
 from .verifier import verify_transition
 
 
@@ -88,12 +89,28 @@ class OpenPathNavigator:
         )
 
     def _retry_from_latest_checkpoint(self, index: int, target: str) -> Optional[NavigationResult]:
-        """Retry one failed target only when the live screen still matches the last checkpoint."""
+        """Retry safely from the last verified context or a valid same-app continuation."""
         if index <= 0 or self.checkpoints.latest is None:
             return None
 
         current = observe_screen(include_nodes=True, retries=1)
-        if not self.checkpoints.matches_current(current):
+        if current.observation_quality is not ObservationQuality.VALID:
+            return None
+
+        if self.checkpoints.matches_current(current):
+            return self.controller.navigate_target(target)
+
+        # A failed navigation may have legitimately moved deeper into the same
+        # foreground app before verification failed (for example, after opening
+        # an app list). If the target is safely resolvable on that fresh screen,
+        # retry from there rather than restarting the entire path or launching
+        # an installed package directly.
+        latest = self.checkpoints.latest
+        if latest is None or current.foreground_package != latest.foreground_package:
+            return None
+
+        match = resolve_target(current, target)
+        if match.resolution is not Resolution.FOUND or match.node is None:
             return None
 
         return self.controller.navigate_target(target)
