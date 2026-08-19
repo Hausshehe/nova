@@ -42,6 +42,27 @@ def test_duplicate_experiment_is_rejected(tmp_path):
         _record(memory)
 
 
+def test_hypothesis_replay_is_blocked(tmp_path):
+    memory = ExperienceMemory(tmp_path / "experience.jsonl")
+    _record(memory)
+    assert memory.hypothesis_seen(hypothesis_id="h-8bar", dataset_sha256="abc123")
+    with pytest.raises(ValueError, match="already has recorded experience"):
+        memory.assert_new_hypothesis(hypothesis_id="h-8bar", dataset_sha256="abc123")
+    memory.assert_new_hypothesis(hypothesis_id="h-8bar", dataset_sha256="different")
+
+
+def test_unknown_status_is_rejected():
+    with pytest.raises(ValueError, match="unsupported experience status"):
+        ExperienceRecord.create(
+            experiment_id="exp",
+            hypothesis_id="h",
+            domain="research",
+            event="completed",
+            status="whatever",
+            lesson="lesson",
+        )
+
+
 def test_tampering_is_detected(tmp_path):
     path = tmp_path / "experience.jsonl"
     memory = ExperienceMemory(path)
