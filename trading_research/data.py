@@ -118,7 +118,7 @@ def load_csv(path: str | Path) -> list[Bar]:
             try:
                 timestamp = _parse_timestamp(row["timestamp"])
                 if previous_timestamp is not None and timestamp <= previous_timestamp:
-                    raise ValueError("dataset timestamps must be strictly increasing")
+                    raise ValueError("dataset timestamps must be chronological and strictly increasing")
                 bar = Bar(
                     timestamp=timestamp,
                     open=float(row["open"]),
