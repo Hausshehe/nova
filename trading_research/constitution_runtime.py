@@ -14,6 +14,23 @@ class ConstitutionDecision:
     reason: str
 
 
+def validate_review_runtime(
+    constitution: TradingConstitution,
+    *,
+    request_ai: bool,
+    recommended_poll_seconds: int,
+) -> ConstitutionDecision:
+    """Validate market monitoring/reasoning without applying trade-session limits."""
+    constitution.validate()
+    if recommended_poll_seconds < constitution.min_poll_seconds:
+        return ConstitutionDecision(False, "trading_constitution_poll_below_minimum")
+    if recommended_poll_seconds > constitution.max_poll_seconds:
+        return ConstitutionDecision(False, "trading_constitution_poll_above_maximum")
+    if request_ai and not constitution.require_structured_ai_decision:
+        return ConstitutionDecision(False, "trading_constitution_requires_structured_ai_decision")
+    return ConstitutionDecision(True, "trading_constitution_review_passed")
+
+
 def validate_demo_runtime(
     constitution: TradingConstitution,
     *,
@@ -23,6 +40,7 @@ def validate_demo_runtime(
     spread_bps: float | None = None,
     session_time: time | None = None,
 ) -> ConstitutionDecision:
+    """Validate whether a demo trade may execute right now."""
     constitution.validate()
 
     if constitution.demo_only and not demo_mode:
@@ -43,4 +61,4 @@ def validate_demo_runtime(
         return ConstitutionDecision(False, "trading_constitution_spread_limit")
     if session_time is not None and not (constitution.session_start <= session_time < constitution.session_end):
         return ConstitutionDecision(False, "trading_constitution_outside_session")
-    return ConstitutionDecision(True, "trading_constitution_passed")
+    return ConstitutionDecision(True, "trading_constitution_execution_passed")
