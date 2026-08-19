@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 import sys
 
@@ -71,6 +72,18 @@ def main() -> None:
     accepted = adaptive_metrics["actionable_recall"] >= recall_floor
     selected = adaptive_indices if accepted else baseline
 
+    reasons = Counter(decision.reason for decision in adaptive if decision.index in baseline)
+    evidence = [
+        decision.confidence
+        for decision in adaptive
+        if decision.index in baseline and decision.reason != "insufficient evidence; preserve trusted candidate"
+    ]
+    suppressible = [
+        decision
+        for decision in adaptive
+        if decision.index in baseline and decision.reason == "historically low actionable rate; adaptive suppression"
+    ]
+
     payload = {
         "schema_version": 1,
         "dataset": args.dataset,
@@ -85,6 +98,15 @@ def main() -> None:
             "actionable_recall": adaptive_metrics["actionable_recall"] - baseline_metrics["actionable_recall"],
             "opportunity_precision": adaptive_metrics["opportunity_precision"] - baseline_metrics["opportunity_precision"],
             "unnecessary_ai_requests": adaptive_metrics["unnecessary_ai_requests"] - baseline_metrics["unnecessary_ai_requests"],
+        },
+        "adaptive_diagnostics": {
+            "baseline_candidate_count": len(baseline),
+            "suppressed_candidate_count": len(baseline - adaptive_indices),
+            "decision_reason_counts": dict(reasons),
+            "evidence_candidate_count": len(evidence),
+            "minimum_observed_confidence_with_evidence": min(evidence) if evidence else None,
+            "maximum_observed_confidence_with_evidence": max(evidence) if evidence else None,
+            "suppression_count": len(suppressible),
         },
     }
 
