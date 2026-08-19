@@ -78,13 +78,13 @@ def evaluate_strategy_escalation_efficiency(
     slow_period: int = 50,
     recall_floor: float = 0.98,
 ) -> StrategyEscalationEfficiencyReport:
-    """Optimize escalation only when the walk-forward policy preserves recall.
+    """Optimize escalation only when a causal candidate preserves recall.
 
-    The broad bridge policy is the safety baseline. The adaptive policy is an
-    optimization candidate, never the authority: if its walk-forward recall
-    falls below ``recall_floor``, the evaluator automatically uses the broad
-    baseline. This prevents an efficiency optimization from silently trading
-    away opportunity recall.
+    The baseline deliberately preserves the broad strategy signal: a bar is
+    eligible for AI review when either the causal strategy hint or the bounded
+    market escalation says the bar deserves review. The adaptive policy is an
+    optimization candidate only. If its walk-forward recall is below the hard
+    floor, the broad baseline is retained.
     """
     if not 0 < recall_floor <= 1:
         raise ValueError("recall_floor must be between 0 and 1")
@@ -101,9 +101,15 @@ def evaluate_strategy_escalation_efficiency(
         slow_period=slow_period,
     )
 
-    # One AI decision per bar. The broad bridge policy is the known-safe
-    # baseline that the optimizer is never allowed to undercut.
-    baseline_indices = {decision.index for decision in decisions if decision.request_ai}
+    # Recover the proven broad baseline: strategy hints must not disappear
+    # merely because the market-side cooldown did not independently escalate.
+    # Deduplicate all event paths at the bar level before counting requests.
+    baseline_indices = {
+        decision.index
+        for decision in decisions
+        if decision.request_ai or decision.strategy_hint.request_ai
+    }
+
     adaptive = build_walk_forward_policy(
         ordered,
         future_bars=future_bars,
@@ -123,6 +129,9 @@ def evaluate_strategy_escalation_efficiency(
         slow_period=slow_period,
     )
     adaptive_recall = len(actionable & adaptive_indices) / len(actionable) if actionable else 0.0
+
+    # Hard safety constraint: an adaptive policy that misses too many
+    # actionable opportunities is never allowed into the selected path.
     selected = adaptive_indices if adaptive_recall >= recall_floor else baseline_indices
 
     reviewed = actionable & selected
