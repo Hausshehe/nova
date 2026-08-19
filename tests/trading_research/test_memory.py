@@ -49,12 +49,29 @@ def test_memory_store_persists_experiment_and_strategy(tmp_path):
 
 def test_trade_journal_and_summary(tmp_path):
     store = ExperienceStore(tmp_path / "experience.sqlite3")
-    store.record_trade(_trade(pnl=10.0, outcome="WIN"))
+    store.record_trade(
+        TradeRecord(
+            **{**_trade(pnl=10.0, outcome="WIN").__dict__,
+               "approval_status": "APPROVED",
+               "order_status": "FILLED",
+               "broker_order_id": "demo-1",
+               "requested_entry_price": 1.10000,
+               "executed_entry_price": 1.10002,
+               "execution_latency_ms": 180.0,
+               "execution_slippage_bps": 0.18,
+               "exit_reason": "TARGET_HIT"}
+        )
+    )
     store.record_trade(_trade(trade_id="T2", pnl=-4.0, outcome="LOSS"))
 
     trades = store.list_strategy_trades("eurusd_breakout", "v1")
     assert [trade.trade_id for trade in trades] == ["T1", "T2"]
     assert trades[0].market_state["trend"] == "bullish"
+    assert trades[0].approval_status == "APPROVED"
+    assert trades[0].order_status == "FILLED"
+    assert trades[0].broker_order_id == "demo-1"
+    assert trades[0].execution_slippage_bps == 0.18
+    assert trades[0].exit_reason == "TARGET_HIT"
 
     summary = store.strategy_performance_summary("eurusd_breakout", "v1")
     assert summary["closed_trades"] == 2
@@ -62,6 +79,10 @@ def test_trade_journal_and_summary(tmp_path):
     assert summary["losses"] == 1
     assert summary["net_pnl"] == 6.0
     assert summary["profit_factor"] == 2.5
+    assert summary["approved_trades"] == 1
+    assert summary["filled_orders"] == 1
+    assert summary["execution_slippage_bps_avg"] == 0.18
+    assert summary["execution_latency_ms_avg"] == 180.0
 
 
 def test_trade_validation_rejects_unsafe_shape(tmp_path):
@@ -74,3 +95,22 @@ def test_trade_validation_rejects_unsafe_shape(tmp_path):
         assert "LONG or SHORT" in str(exc)
     else:
         raise AssertionError("invalid direction should be rejected")
+
+
+def test_trade_validation_rejects_bad_execution_metadata(tmp_path):
+    store = ExperienceStore(tmp_path / "experience.sqlite3")
+    bad_approval = TradeRecord(**{**_trade().__dict__, "approval_status": "MAYBE"})
+    try:
+        store.record_trade(bad_approval)
+    except ValueError as exc:
+        assert "approval status" in str(exc)
+    else:
+        raise AssertionError("invalid approval status should be rejected")
+
+    bad_latency = TradeRecord(**{**_trade().__dict__, "execution_latency_ms": -1.0})
+    try:
+        store.record_trade(bad_latency)
+    except ValueError as exc:
+        assert "latency" in str(exc)
+    else:
+        raise AssertionError("negative execution latency should be rejected")
