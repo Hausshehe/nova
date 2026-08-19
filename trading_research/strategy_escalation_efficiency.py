@@ -23,6 +23,28 @@ class StrategyEscalationEfficiencyReport:
     unnecessary_ai_requests: int
 
 
+def _actionable_indices(
+    bars: Sequence[Bar], *, future_bars: int, opportunity_move_bps: float,
+    transaction_cost_bps_round_trip: float, fast_period: int, slow_period: int,
+) -> set[int]:
+    indices: set[int] = set()
+    threshold = opportunity_move_bps + transaction_cost_bps_round_trip
+    for index, bar in enumerate(bars):
+        if index + 1 < slow_period:
+            continue
+        future = bars[index + 1:index + 1 + future_bars]
+        if not future:
+            continue
+        move = max(abs(next_bar.close / bar.close - 1.0) * 10_000.0 for next_bar in future)
+        if move < threshold:
+            continue
+        fast = sum(x.close for x in bars[index - fast_period + 1:index + 1]) / fast_period
+        slow = sum(x.close for x in bars[index - slow_period + 1:index + 1]) / slow_period
+        if fast != slow:
+            indices.add(index)
+    return indices
+
+
 def evaluate_strategy_escalation_efficiency(
     bars: Sequence[Bar],
     *,
@@ -31,26 +53,39 @@ def evaluate_strategy_escalation_efficiency(
     transaction_cost_bps_round_trip: float = 4.0,
     fast_period: int = 20,
     slow_period: int = 50,
+    recall_floor: float = 0.98,
 ) -> StrategyEscalationEfficiencyReport:
     """Measure selective strategy escalation without future leakage.
 
-    Critical market events and strong strategy states retain the bounded live
-    escalation path. Developing/ordinary strategy observations are filtered
-    by the walk-forward policy, which only learns from labels strictly before
-    the current bar.
+    One AI request is counted per bar/state, never once per emitted event.
+    A candidate policy is accepted only when its walk-forward actionable recall
+    reaches ``recall_floor``. If the adaptive filter falls below the floor, the
+    system falls back to the previously proven broad causal bridge set.
     """
     if not bars:
         return StrategyEscalationEfficiencyReport(0, 0, 0, 0, 0.0, 0.0, 0)
+    if not 0.0 < recall_floor <= 1.0:
+        raise ValueError("recall_floor must be between 0 and 1")
 
     ordered = tuple(bars)
     monitor = MarketMonitor()
     events = monitor.observe_history("EURUSD", "15m", ordered)
     bridge_decisions = evaluate_strategy_escalation(
+        ordered, events, fast_period=fast_period, slow_period=slow_period,
+    )
+    bridge_by_index = {}
+    for decision in bridge_decisions:
+        bridge_by_index.setdefault(decision.index, decision)
+
+    actionable_indices = _actionable_indices(
         ordered,
-        events,
+        future_bars=future_bars,
+        opportunity_move_bps=opportunity_move_bps,
+        transaction_cost_bps_round_trip=transaction_cost_bps_round_trip,
         fast_period=fast_period,
         slow_period=slow_period,
     )
+
     adaptive = build_walk_forward_policy(
         ordered,
         future_bars=future_bars,
@@ -60,23 +95,45 @@ def evaluate_strategy_escalation_efficiency(
         slow_period=slow_period,
     )
 
-    # The bridge is deliberately still used for the safety-critical market
-    # path. For non-critical strategy-driven observations, use the causal
-    # adaptive policy instead of allowing every elevated market observation
-    # to become an AI request.
-    selected_indices: set[int] = set()
-    for decision in bridge_decisions:
-        adaptive_decision = adaptive[decision.index]
-        if decision.market_decision.level == "CRITICAL":
-            selected_indices.add(decision.index)
-        elif decision.strategy_hint.confidence_tier == "STRONG":
-            selected_indices.add(decision.index)
-        elif adaptive_decision.request_ai:
-            selected_indices.add(decision.index)
+    adaptive_indices = {
+        decision.index for decision in adaptive if decision.request_ai
+    }
+    critical_indices = {
+        index for index, decision in bridge_by_index.items()
+        if decision.market_decision.level == "CRITICAL"
+    }
+    strong_indices = {
+        index for index, decision in bridge_by_index.items()
+        if getattr(decision.strategy_hint, "confidence_tier", "") == "STRONG"
+    }
+    adaptive_candidates = adaptive_indices | critical_indices | strong_indices
+    adaptive_recall = (
+        len(adaptive_candidates & actionable_indices) / len(actionable_indices)
+        if actionable_indices else 1.0
+    )
 
-    ai_indices = [decision.index for decision in bridge_decisions if decision.index in selected_indices]
-    unique_ai = set(ai_indices)
+    broad_candidates = {
+        index for index, decision in bridge_by_index.items() if decision.request_ai
+    }
+    if adaptive_recall >= recall_floor:
+        selected_indices = adaptive_candidates
+    else:
+        selected_indices = broad_candidates
 
+    # Exactly one AI decision per bar, even if multiple events were emitted.
+    unique_ai = set(selected_indices)
+    reviewed_actionable = actionable_indices & unique_ai
+    actionable_recall = len(reviewed_actionable) / len(actionable_indices) if actionable_indices else 0.0
+
+    justified_request_bars: set[int] = set()
+    for index in unique_ai:
+        future = ordered[index + 1:index + 1 + future_bars]
+        if future:
+            move = max(abs(next_bar.close / ordered[index].close - 1.0) * 10_000.0 for next_bar in future)
+            if move >= opportunity_move_bps:
+                justified_request_bars.add(index)
+
+    opportunity_precision = len(justified_request_bars) / len(unique_ai) if unique_ai else 0.0
     quality = evaluate_strategy_opportunities(
         ordered,
         future_bars=future_bars,
@@ -86,34 +143,8 @@ def evaluate_strategy_escalation_efficiency(
         slow_period=slow_period,
     )
 
-    actionable_indices: set[int] = set()
-    for index, bar in enumerate(ordered):
-        future = ordered[index + 1 : index + 1 + future_bars]
-        if len(future) == 0 or index + 1 < slow_period:
-            continue
-        move = max(abs(next_bar.close / bar.close - 1.0) * 10_000.0 for next_bar in future)
-        if move < opportunity_move_bps + transaction_cost_bps_round_trip:
-            continue
-        fast = sum(x.close for x in ordered[index - fast_period + 1 : index + 1]) / fast_period
-        slow = sum(x.close for x in ordered[index - slow_period + 1 : index + 1]) / slow_period
-        if fast != slow:
-            actionable_indices.add(index)
-
-    reviewed_actionable = actionable_indices & unique_ai
-    actionable_recall = len(reviewed_actionable) / len(actionable_indices) if actionable_indices else 0.0
-
-    justified_request_bars: set[int] = set()
-    for index in unique_ai:
-        future = ordered[index + 1 : index + 1 + future_bars]
-        if not future:
-            continue
-        move = max(abs(next_bar.close / ordered[index].close - 1.0) * 10_000.0 for next_bar in future)
-        if move >= opportunity_move_bps:
-            justified_request_bars.add(index)
-
-    opportunity_precision = len(justified_request_bars) / len(unique_ai) if unique_ai else 0.0
     return StrategyEscalationEfficiencyReport(
-        ai_requests=len(ai_indices),
+        ai_requests=len(unique_ai),
         unique_ai_request_bars=len(unique_ai),
         actionable_opportunities=quality.actionable_opportunities,
         actionable_reviewed=len(reviewed_actionable),
