@@ -2,10 +2,13 @@
 
 SQLite keeps Nova's experience local and queryable without adding a service.
 This layer records evidence; it does not promote strategies or authorize trades.
+Research experiments are immutable once recorded; trade rows remain updateable
+because an OPEN trade legitimately transitions to a closed outcome.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -32,8 +35,28 @@ class TradeRecord:
     notes: str = ""
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _fingerprint_hypothesis(hypothesis: dict[str, Any]) -> str:
+    canonical = _canonical_json(hypothesis)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: str | Path) -> str | None:
+    candidate = Path(path)
+    if not candidate.is_file():
+        return None
+    digest = hashlib.sha256()
+    with candidate.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class ExperienceStore:
-    """Small SQLite store for experiments, strategy versions, and trades."""
+    """SQLite store for experiments, strategy versions, and trades."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -44,6 +67,12 @@ class ExperienceStore:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    @staticmethod
+    def _ensure_column(db: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _initialize(self) -> None:
         with self._connect() as db:
@@ -88,6 +117,33 @@ class ExperienceStore:
                 );
                 """
             )
+            self._ensure_column(db, "experiments", "dataset_sha256", "TEXT")
+            self._ensure_column(db, "experiments", "hypothesis_fingerprint", "TEXT")
+            self._ensure_column(db, "experiments", "record_hash", "TEXT")
+
+            rows = db.execute(
+                "SELECT experiment_id, record_json, record_hash FROM experiments ORDER BY created_at_utc ASC, experiment_id ASC"
+            ).fetchall()
+            for row in rows:
+                if row["record_hash"]:
+                    continue
+                payload = json.loads(row["record_json"])
+                db.execute(
+                    "UPDATE experiments SET record_hash = ? WHERE experiment_id = ?",
+                    (self._experiment_hash(payload), row["experiment_id"]),
+                )
+
+    @staticmethod
+    def _experiment_hash(record: dict[str, Any]) -> str:
+        return hashlib.sha256(_canonical_json(record).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _validate_experiment_row(row: sqlite3.Row) -> dict[str, Any]:
+        payload = json.loads(row["record_json"])
+        expected = ExperienceStore._experiment_hash(payload)
+        if row["record_hash"] and row["record_hash"] != expected:
+            raise ValueError(f"experiment memory integrity failure: {row['experiment_id']}")
+        return payload
 
     def record_experiment(
         self,
@@ -100,14 +156,32 @@ class ExperienceStore:
         final_decision: str,
         record: dict[str, Any],
     ) -> None:
-        payload = json.dumps(record, ensure_ascii=False, sort_keys=True)
+        if not experiment_id.strip():
+            raise ValueError("experiment_id is required")
+        payload = _canonical_json(record)
+        record_hash = self._experiment_hash(record)
+        hypothesis = record.get("hypothesis")
+        hypothesis_fingerprint = (
+            _fingerprint_hypothesis(hypothesis) if isinstance(hypothesis, dict) else None
+        )
+        dataset_sha256 = _file_sha256(record.get("dataset", ""))
+
         with self._connect() as db:
+            existing = db.execute(
+                "SELECT record_json, record_hash FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["record_json"] == payload and existing["record_hash"] == record_hash:
+                    return
+                raise ValueError(f"experiment_id already exists with different evidence: {experiment_id}")
+
             db.execute(
                 """
-                INSERT OR REPLACE INTO experiments
+                INSERT INTO experiments
                 (experiment_id, created_at_utc, hypothesis_name, symbol, timeframe,
-                 final_decision, record_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 final_decision, record_json, dataset_sha256, hypothesis_fingerprint, record_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     experiment_id,
@@ -117,8 +191,21 @@ class ExperienceStore:
                     timeframe,
                     final_decision,
                     payload,
+                    dataset_sha256,
+                    hypothesis_fingerprint,
+                    record_hash,
                 ),
             )
+
+    def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._validate_experiment_row(row)
 
     def list_experiment_hypotheses(self) -> list[dict[str, Any]]:
         """Return previously recorded hypotheses in chronological order.
@@ -129,18 +216,31 @@ class ExperienceStore:
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT record_json FROM experiments
+                SELECT experiment_id, record_json, record_hash FROM experiments
                 ORDER BY created_at_utc ASC, experiment_id ASC
                 """
             ).fetchall()
 
         hypotheses: list[dict[str, Any]] = []
         for row in rows:
-            record = json.loads(row["record_json"])
+            record = self._validate_experiment_row(row)
             hypothesis = record.get("hypothesis")
             if isinstance(hypothesis, dict):
                 hypotheses.append(hypothesis)
         return hypotheses
+
+    def list_experiments_for_hypothesis(self, hypothesis_fingerprint: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT experiment_id, record_json, record_hash
+                FROM experiments
+                WHERE hypothesis_fingerprint = ?
+                ORDER BY created_at_utc ASC, experiment_id ASC
+                """,
+                (hypothesis_fingerprint,),
+            ).fetchall()
+        return [self._validate_experiment_row(row) for row in rows]
 
     def register_strategy(
         self,
@@ -165,6 +265,28 @@ class ExperienceStore:
                 """,
                 (strategy_name, strategy_version, status, payload, approved_at_utc, notes),
             )
+
+    def get_strategy(self, strategy_name: str, strategy_version: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT strategy_name, strategy_version, status, hypothesis_json,
+                       approved_at_utc, notes
+                FROM strategies
+                WHERE strategy_name = ? AND strategy_version = ?
+                """,
+                (strategy_name, strategy_version),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "strategy_name": row["strategy_name"],
+            "strategy_version": row["strategy_version"],
+            "status": row["status"],
+            "hypothesis": json.loads(row["hypothesis_json"]),
+            "approved_at_utc": row["approved_at_utc"],
+            "notes": row["notes"],
+        }
 
     def record_trade(self, trade: TradeRecord) -> None:
         if trade.direction not in {"LONG", "SHORT"}:
