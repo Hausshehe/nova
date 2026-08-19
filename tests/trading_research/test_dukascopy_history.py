@@ -1,83 +1,87 @@
-from trading_research.dukascopy_history import DukascopyClient, normalize_candles, write_csv
+from datetime import datetime, timezone
+
+import pytest
+
+from trading_research.dukascopy_history import (
+    Candle,
+    DukascopyClient,
+    _aggregate_4h,
+    _deduplicate_and_validate,
+    _native_url,
+    write_csv,
+)
 
 
-class FakeResponse:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self.payload
-
-
-class FakeSession:
-    def __init__(self):
-        self.calls = []
-
-    def get(self, url, *, params, timeout):
-        self.calls.append(params)
-        start = int(params["start"])
-        if len(self.calls) == 1:
-            rows = []
-            for index in range(5000):
-                rows.append({"timestamp": start + index, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1})
-            return FakeResponse(rows)
-        return FakeResponse([
-            {"timestamp": start, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
-        ])
-
-
-def test_normalize_sorts_and_normalizes_timestamps():
-    # Unambiguous 2020-era millisecond timestamps (> 1e12).
-    candles = normalize_candles([
-        {"timestamp": 1609459200000, "open": 2, "high": 3, "low": 1, "close": 2.5, "volume": 10},
-        {"timestamp": 1577836800000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 5},
-    ])
-    assert candles[0].timestamp_utc == "2020-01-01T00:00:00+00:00"
-    assert candles[1].timestamp_utc == "2021-01-01T00:00:00+00:00"
-
-
-def test_normalize_rejects_invalid_ohlc():
-    try:
-        normalize_candles([{"timestamp": 1000, "open": 5, "high": 3, "low": 1, "close": 2, "volume": 1}])
-    except ValueError as exc:
-        assert str(exc) == "candle_ohlc_invalid"
-    else:
-        raise AssertionError("invalid OHLC was accepted")
-
-
-def test_normalize_rejects_duplicate_timestamps():
-    try:
-        normalize_candles([
-            {"timestamp": 1000, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
-            {"timestamp": 1000, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
-        ])
-    except ValueError as exc:
-        assert str(exc) == "candle_timestamps_not_strictly_increasing"
-    else:
-        raise AssertionError("duplicate timestamps were accepted")
-
-
-def test_pagination_fetches_more_than_one_page():
-    session = FakeSession()
-    client = DukascopyClient(session=session)
-    rows = client.historical_prices(
-        instrument_id=1,
-        timeframe="4H",
-        start_utc="2020-01-01T00:00:00+00:00",
-        end_utc="2030-01-01T00:00:00+00:00",
+def candle(hour: int, *, open_: float = 1, high: float = 2, low: float = 0, close: float = 1) -> Candle:
+    return Candle(
+        timestamp_utc=datetime(2020, 1, 1, hour, tzinfo=timezone.utc).isoformat(),
+        open=open_,
+        high=high,
+        low=low,
+        close=close,
+        volume=1,
     )
-    assert len(session.calls) == 2
-    assert len(rows) == 5001
-    assert session.calls[1]["start"] > session.calls[0]["start"]
+
+
+def test_native_urls_use_frozen_feed_symbols():
+    assert _native_url("EURUSD", "1D", 2020).endswith("/EURUSD/2020/BID_candles_day_1.bi5")
+    assert _native_url("US500", "1D", 2020).endswith("/USA500IDXUSD/2020/BID_candles_day_1.bi5")
+    assert _native_url("XAUUSD", "1H", 2020, 1).endswith("/XAUUSD/2020/00/BID_candles_hour_1.bi5")
+
+
+def test_deduplicate_and_validate_sorts_and_rejects_invalid_ohlc():
+    rows = [candle(1), candle(0)]
+    ordered = _deduplicate_and_validate(rows)
+    assert [row.timestamp_utc for row in ordered] == [candle(0).timestamp_utc, candle(1).timestamp_utc]
+
+    with pytest.raises(ValueError, match="candle_ohlc_invalid"):
+        _deduplicate_and_validate([candle(0, open_=3)])
+
+
+def test_deduplicate_and_validate_keeps_one_row_per_timestamp():
+    first = candle(0, close=1)
+    replacement = candle(0, close=1.5)
+    result = _deduplicate_and_validate([first, replacement])
+    assert len(result) == 1
+    assert result[0].close == 1.5
+
+
+def test_aggregate_4h_requires_complete_four_hour_bucket():
+    rows = [candle(hour) for hour in range(4)]
+    result = _aggregate_4h(rows)
+    assert len(result) == 1
+    assert result[0].timestamp_utc == "2020-01-01T00:00:00+00:00"
+    assert result[0].open == 1
+    assert result[0].high == 2
+    assert result[0].low == 0
+    assert result[0].close == 1
+    assert result[0].volume == 4
+
+
+def test_aggregate_4h_drops_incomplete_bucket():
+    assert _aggregate_4h([candle(0), candle(1), candle(2)]) == []
+
+
+def test_client_rejects_unknown_instrument_and_bad_time_range():
+    client = DukascopyClient()
+    with pytest.raises(ValueError, match="unsupported_instrument"):
+        client.historical_prices(
+            instrument="NOTREAL",
+            timeframe="1D",
+            start_utc="2020-01-01T00:00:00+00:00",
+            end_utc="2020-01-02T00:00:00+00:00",
+        )
+    with pytest.raises(ValueError, match="end_must_be_after_start"):
+        client.historical_prices(
+            instrument="EURUSD",
+            timeframe="1D",
+            start_utc="2020-01-02T00:00:00+00:00",
+            end_utc="2020-01-01T00:00:00+00:00",
+        )
 
 
 def test_write_csv_produces_stable_hash(tmp_path):
-    candles = normalize_candles([
-        {"timestamp": 1000, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
-    ])
-    first = write_csv(candles, tmp_path / "a.csv")
-    second = write_csv(candles, tmp_path / "b.csv")
+    rows = [candle(0)]
+    first = write_csv(rows, tmp_path / "a.csv")
+    second = write_csv(rows, tmp_path / "b.csv")
     assert first == second
