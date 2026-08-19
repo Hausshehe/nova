@@ -104,6 +104,36 @@ def _fixed_expert_predictions(
     return tuple(predictions)
 
 
+def _all_bar_baseline_predictions(
+    bars: Sequence[Bar],
+    *,
+    direction: str,
+    horizon: int,
+) -> tuple[HorizonPrediction, ...]:
+    """Evaluate a horizon-matched naive baseline on every available bar."""
+    if direction not in {"LONG", "SHORT"}:
+        raise ValueError("direction must be LONG or SHORT")
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+
+    closes = [bar.close for bar in bars]
+    predictions: list[HorizonPrediction] = []
+    for index in range(len(bars) - horizon):
+        raw = (closes[index + horizon] / closes[index] - 1.0) * 10_000.0
+        signed = raw if direction == "LONG" else -raw
+        predictions.append(
+            HorizonPrediction(
+                index=index,
+                expert=f"baseline_{direction.lower()}",
+                horizon=horizon,
+                direction=direction,
+                score=0.0,
+                gross_return_bps=signed,
+            )
+        )
+    return tuple(predictions)
+
+
 def _non_overlapping(predictions: Sequence[HorizonPrediction]) -> tuple[HorizonPrediction, ...]:
     accepted: list[HorizonPrediction] = []
     next_available = -1
@@ -198,6 +228,20 @@ def audit_fixed_8_vs_alternatives(
     )
 
     configurations: dict[str, dict[str, object]] = {
+        "naive_long_8": _configuration(
+            bars,
+            _all_bar_baseline_predictions(bars, direction="LONG", horizon=8),
+            training_cost_bps=training_cost_bps,
+            folds=folds,
+            cost_grid_bps=cost_grid,
+        ),
+        "naive_short_8": _configuration(
+            bars,
+            _all_bar_baseline_predictions(bars, direction="SHORT", horizon=8),
+            training_cost_bps=training_cost_bps,
+            folds=folds,
+            cost_grid_bps=cost_grid,
+        ),
         "online_expert_fixed_8": _configuration(
             bars, fixed_8, training_cost_bps=training_cost_bps, folds=folds, cost_grid_bps=cost_grid
         ),
@@ -219,6 +263,7 @@ def audit_fixed_8_vs_alternatives(
         "cost_grid_bps": cost_grid,
         "folds": folds,
         "candidate_count": len(high_recall_candidate_indices(bars, fast_period=20, slow_period=50)),
+        "baseline_count": len(bars) - 8,
         "configurations": configurations,
         "interpretation_guardrail": "Decision-level signed returns are not executable portfolio PnL; overlapping predictions are reported separately from a non-overlapping holding diagnostic.",
         "anti_overfitting_rule": "Decision streams are selected once using the fixed training cost and then re-evaluated across the cost grid without changing decisions.",
