@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
+from .campaign_closure import CampaignState, current_eurusd_campaign_state, evaluate_campaign_closure
 from .contracts import Hypothesis, ResearchGates
 from .experiment import ExperimentRecord, Signal, run_experiment
 from .groq_hypothesis import GroqHypothesisGenerator, ResearchQuestion
@@ -49,6 +51,14 @@ def _record_experience(memory: ExperienceStore, record: ExperimentRecord) -> Non
     )
 
 
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class AutonomousResearchSession:
     """A bounded session that can admit and test novel AI proposals.
 
@@ -69,6 +79,7 @@ class AutonomousResearchSession:
         fee_bps: float = 1.0,
         slippage_bps: float = 1.0,
         strategy_version: str = "1.0",
+        campaign_state: CampaignState | None = None,
     ) -> None:
         self.generator = generator
         self.memory = memory
@@ -77,11 +88,34 @@ class AutonomousResearchSession:
         self.fee_bps = fee_bps
         self.slippage_bps = slippage_bps
         self.strategy_version = strategy_version
+        self.campaign_state = campaign_state or current_eurusd_campaign_state()
         self.researcher = Researcher.from_memory(memory, budget=budget)
 
-    def propose_and_test(self, question: ResearchQuestion, *, csv_path: str) -> ResearchCycleResult:
+    def propose_and_test(
+        self,
+        question: ResearchQuestion,
+        *,
+        csv_path: str,
+        market_question_changed: bool = False,
+    ) -> ResearchCycleResult:
         """Admit at most one proposal and immediately run its deterministic test."""
         try:
+            closure = evaluate_campaign_closure(
+                self.campaign_state,
+                dataset_sha256=_sha256_file(csv_path),
+                market_question_changed=market_question_changed,
+            )
+            allowed_actions = {
+                "ALLOW_CONTINUE",
+                "ALLOW_RESTART_NEW_EVIDENCE",
+                "ALLOW_RESTART_NEW_MARKET_QUESTION",
+            }
+            if closure.action not in allowed_actions:
+                return ResearchCycleResult(
+                    status=closure.action,
+                    message=closure.reason,
+                )
+
             proposal = self.generator.propose(question)
             fingerprint = self.researcher.accept_proposal_for_dataset(
                 proposal,
