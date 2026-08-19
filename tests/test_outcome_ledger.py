@@ -27,6 +27,7 @@ def test_ledger_keeps_future_outcomes_as_labels_only():
 
     assert len(records) == len(bars)
     assert records[59].history_available is True
+    assert records[59].terminal_close_return_bps == pytest.approx(0.0)
     assert records[59].max_abs_close_move_bps == pytest.approx(400.0)
     assert records[59].opportunity_label is True
     assert records[59].actionable_label is True
