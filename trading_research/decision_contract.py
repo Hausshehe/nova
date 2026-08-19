@@ -29,8 +29,11 @@ class AIRecommendation:
             raise ValueError("rationale is required")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
-        if self.action in {"ENTER", "EXIT"} and not self.strategy_name:
-            raise ValueError("strategy_name is required for ENTER/EXIT")
+        if self.action in {"ENTER", "EXIT"}:
+            if not self.strategy_name:
+                raise ValueError("strategy_name is required for ENTER/EXIT")
+            if not self.strategy_version:
+                raise ValueError("strategy_version is required for ENTER/EXIT")
 
 
 SCHEMA: dict[str, Any] = {
