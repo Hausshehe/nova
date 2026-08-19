@@ -6,6 +6,7 @@ on:
     branches:
       - trading-research-lab
       - trading-research-robustness-audit
+      - trading-research-statistical-audit
   pull_request:
     branches:
       - trading-research-lab
