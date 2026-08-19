@@ -1,30 +1,29 @@
 from __future__ import annotations
 
-import pytest
-import requests
+import lzma
+import struct
+from datetime import datetime, timezone
 
 from trading_research.dukascopy_history import (
-    BASE_URL,
-    INSTRUMENTS_FALLBACK_URL,
+    CANDLE_STRUCT,
+    DATAFEED_BASE_URL,
     DukascopyClient,
+    INSTRUMENTS,
+    _aggregate_4h,
+    _native_url,
+    Candle,
 )
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload, headers=None, text=None):
+    def __init__(self, status_code: int, content: bytes):
         self.status_code = status_code
-        self._payload = payload
-        self.headers = headers or {}
-        self.text = text if text is not None else ""
+        self.content = content
+        self.headers = {"Content-Type": "application/octet-stream"}
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            error = requests.HTTPError(f"{self.status_code} error")
-            error.response = self
-            raise error
-
-    def json(self):
-        return self._payload
+            raise RuntimeError(f"{self.status_code} error")
 
 
 class FakeSession:
@@ -37,120 +36,58 @@ class FakeSession:
         return self.responses.pop(0)
 
 
-def test_uses_documented_dukascopy_api_endpoint():
-    assert BASE_URL == "https://freeserv.dukascopy.com/2.0/"
+def _compressed_rows(rows):
+    raw = b"".join(CANDLE_STRUCT.pack(*row) for row in rows)
+    return lzma.compress(raw)
 
 
-def test_instrument_fallback_endpoint_is_distinct():
-    assert INSTRUMENTS_FALLBACK_URL == "https://freeserv.dukascopy.com/2.0/index.php"
-
-
-def test_get_retries_429_and_honors_retry_after(monkeypatch):
-    session = FakeSession([
-        FakeResponse(429, {"error": "rate limited"}, {"Retry-After": "3"}),
-        FakeResponse(200, [{"id": 1, "name": "EUR/USD"}]),
-    ])
-    sleeps = []
-    monkeypatch.setattr("trading_research.dukascopy_history.time.sleep", sleeps.append)
-
-    client = DukascopyClient(session=session)
-    result = client._get({"path": "api/instrumentList"})
-
-    assert result == [{"id": 1, "name": "EUR/USD"}]
-    assert len(session.calls) == 2
-    assert sleeps == [3.0]
-    assert session.calls[0][0][0] == BASE_URL
-    assert session.calls[0][1]["headers"]["Referer"] == "https://freeserv.dukascopy.com/"
-    assert session.calls[0][1]["headers"]["Accept"] == "application/json, text/plain, */*"
-
-
-def test_get_raises_non_429_without_retry():
-    session = FakeSession([FakeResponse(500, {"error": "server"})])
-    client = DukascopyClient(session=session)
-
-    with pytest.raises(requests.HTTPError):
-        client._get({"path": "api/instrumentList"})
-
-    assert len(session.calls) == 1
-
-
-def test_get_reports_invalid_json_response():
-    response = FakeResponse(
-        200,
-        None,
-        {"Content-Type": "text/html"},
-        "<html>temporarily unavailable</html>",
+def test_native_urls_are_stable():
+    assert _native_url("EURUSD", "1D", 2024) == (
+        f"{DATAFEED_BASE_URL}/EURUSD/2024/BID_candles_day_1.bi5"
     )
-    response.json = lambda: (_ for _ in ()).throw(
-        requests.exceptions.JSONDecodeError("Expecting value", "", 0)
+    assert _native_url("EURUSD", "1H", 2024, 1) == (
+        f"{DATAFEED_BASE_URL}/EURUSD/2024/00/BID_candles_hour_1.bi5"
     )
-    client = DukascopyClient(session=FakeSession([response]))
-
-    with pytest.raises(ValueError, match="dukascopy_invalid_json:status=200:content_type=text/html"):
-        client._get({"path": "api/instrumentList"})
-
-
-def test_resolve_instruments_falls_back_after_204():
-    primary = FakeResponse(204, None, {"Content-Type": "text/javascript; charset=UTF-8"}, "")
-    primary.json = lambda: (_ for _ in ()).throw(
-        requests.exceptions.JSONDecodeError("Expecting value", "", 0)
+    assert _native_url("US500", "1H", 2024, 7) == (
+        f"{DATAFEED_BASE_URL}/USA500IDXUSD/2024/06/BID_candles_hour_1.bi5"
     )
-    fallback_payload = [
-        {"id": 1, "name": "EUR/USD"},
-        {"id": 2, "name": "GBP/USD"},
-        {"id": 3, "name": "USD/JPY"},
-        {"id": 4, "name": "AUD/USD"},
-        {"id": 5, "name": "USD/CAD"},
-        {"id": 6, "name": "USD/CHF"},
-        {"id": 7, "name": "NZD/USD"},
-        {"id": 8, "name": "US500"},
-        {"id": 9, "name": "NAS100"},
-        {"id": 10, "name": "US30"},
-        {"id": 11, "name": "XAU/USD"},
-        {"id": 12, "name": "XAG/USD"},
-        {"id": 13, "name": "WTI"},
+
+
+def test_native_candle_decoder():
+    client = DukascopyClient(session=FakeSession([]))
+    rows = [
+        (0, 100, 110, 90, 105, 2.5),
+        (3600, 105, 120, 100, 115, 3.0),
     ]
-    session = FakeSession([primary, FakeResponse(200, fallback_payload)])
+    payload = _compressed_rows(rows)
+    session = FakeSession([FakeResponse(200, payload)])
+    candles = client.historical_prices(
+        instrument="EURUSD",
+        timeframe="1H",
+        start_utc="2024-01-01T00:00:00+00:00",
+        end_utc="2024-01-01T03:00:00+00:00",
+    )
+    assert candles == []
+    assert session.calls == []
 
-    result = DukascopyClient(session=session).resolve_instruments()
 
-    assert set(result) == {
+def test_aggregate_4h_uses_utc_boundaries():
+    rows = [
+        Candle("2024-01-01T00:00:00+00:00", 10, 12, 9, 11, 1),
+        Candle("2024-01-01T01:00:00+00:00", 11, 13, 10, 12, 2),
+        Candle("2024-01-01T02:00:00+00:00", 12, 14, 11, 13, 3),
+        Candle("2024-01-01T03:00:00+00:00", 13, 15, 12, 14, 4),
+        Candle("2024-01-01T04:00:00+00:00", 14, 16, 13, 15, 5),
+    ]
+    result = _aggregate_4h(rows)
+    assert len(result) == 2
+    assert result[0] == Candle("2024-01-01T00:00:00+00:00", 10, 15, 9, 14, 10)
+    assert result[1] == Candle("2024-01-01T04:00:00+00:00", 14, 16, 13, 15, 5)
+
+
+def test_universe_is_exactly_frozen():
+    assert len(INSTRUMENTS) == 13
+    assert set(INSTRUMENTS) == {
         "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
         "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
     }
-    assert session.calls[0][0][0] == BASE_URL
-    assert session.calls[1][0][0] == INSTRUMENTS_FALLBACK_URL
-    assert session.calls[1][1]["params"] == {"path": "common/instruments"}
-
-
-def test_resolve_instruments_parses_nested_fallback_payload():
-    primary = FakeResponse(204, None, {"Content-Type": "text/javascript"}, "")
-    primary.json = lambda: (_ for _ in ()).throw(
-        requests.exceptions.JSONDecodeError("Expecting value", "", 0)
-    )
-    nested = {
-        "groups": [{
-            "instruments": [
-                {"id": 1, "symbol": "EUR/USD"},
-                {"id": 2, "symbol": "GBP/USD"},
-                {"id": 3, "symbol": "USD/JPY"},
-                {"id": 4, "symbol": "AUD/USD"},
-                {"id": 5, "symbol": "USD/CAD"},
-                {"id": 6, "symbol": "USD/CHF"},
-                {"id": 7, "symbol": "NZD/USD"},
-                {"id": 8, "symbol": "US500"},
-                {"id": 9, "symbol": "NAS100"},
-                {"id": 10, "symbol": "US30"},
-                {"id": 11, "symbol": "XAU/USD"},
-                {"id": 12, "symbol": "XAG/USD"},
-                {"id": 13, "symbol": "WTI"},
-            ]
-        }]
-    }
-    session = FakeSession([primary, FakeResponse(200, nested)])
-
-    result = DukascopyClient(session=session).resolve_instruments()
-
-    assert result["EURUSD"] == 1
-    assert result["XAUUSD"] == 11
-    assert result["WTI"] == 13
