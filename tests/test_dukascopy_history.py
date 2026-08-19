@@ -33,6 +33,10 @@ class FakeSession:
         return self.responses.pop(0)
 
 
+def test_uses_documented_dukascopy_api_endpoint():
+    assert BASE_URL == "https://freeserv.dukascopy.com/2.0/"
+
+
 def test_get_retries_429_and_honors_retry_after(monkeypatch):
     session = FakeSession([
         FakeResponse(429, {"error": "rate limited"}, {"Retry-After": "3"}),
