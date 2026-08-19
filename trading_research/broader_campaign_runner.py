@@ -83,120 +83,84 @@ def _true_range(bars: Sequence[Bar], index: int) -> float:
     )
 
 
-def momentum_signal(bars: Sequence[Bar], index: int) -> bool:
-    if index < 49:
-        return False
-    return _sma(bars, index, 20) >= _sma(bars, index, 50)
+def momentum_signal_series(bars: Sequence[Bar]) -> list[bool]:
+    states = [False] * len(bars)
+    for index in range(49, len(bars)):
+        states[index] = _sma(bars, index, 20) >= _sma(bars, index, 50)
+    return states
 
 
-def mean_reversion_signal(bars: Sequence[Bar], index: int) -> bool:
-    if index < 19:
-        return False
-    mean = _sma(bars, index, 20)
-    std = _std_population(bars, index, 20)
-    if index == 19:
-        return bars[index].close <= mean - 2.0 * std
-    previous_desired = mean_reversion_signal(bars, index - 1)
-    return bars[index].close <= mean - 2.0 * std or (previous_desired and bars[index].close < mean)
+def mean_reversion_signal_series(bars: Sequence[Bar]) -> list[bool]:
+    states = [False] * len(bars)
+    in_position = False
+    for index in range(len(bars)):
+        if index < 19:
+            continue
+        mean = _sma(bars, index, 20)
+        std = _std_population(bars, index, 20)
+        if not in_position and bars[index].close <= mean - 2.0 * std:
+            in_position = True
+        elif in_position and bars[index].close >= mean:
+            in_position = False
+        states[index] = in_position
+    return states
 
 
-def breakout_volatility_signal(bars: Sequence[Bar], index: int) -> bool:
-    if index < 59:
-        return False
-    prior_high = max(bar.high for bar in bars[index - 55 : index])
-    prior_low = min(bar.low for bar in bars[index - 20 : index])
-    current_atr = sum(_true_range(bars, j) for j in range(index - 19, index + 1)) / 20.0
-    previous_atr = sum(_true_range(bars, j) for j in range(index - 39, index - 19)) / 20.0
-    if bars[index].close > prior_high and current_atr >= previous_atr:
-        return True
-    return bars[index].close >= prior_low and index > 59 and bars[index - 1].close > max(bar.high for bar in bars[index - 56 : index - 1])
+def breakout_volatility_signal_series(bars: Sequence[Bar]) -> list[bool]:
+    states = [False] * len(bars)
+    in_position = False
+    for index in range(len(bars)):
+        if index < 59:
+            continue
+        prior_high = max(bar.high for bar in bars[index - 55 : index])
+        prior_low = min(bar.low for bar in bars[index - 20 : index])
+        current_atr = sum(_true_range(bars, j) for j in range(index - 19, index + 1)) / 20.0
+        previous_atr = sum(_true_range(bars, j) for j in range(index - 39, index - 19)) / 20.0
+        if not in_position and bars[index].close > prior_high and current_atr >= previous_atr:
+            in_position = True
+        elif in_position and bars[index].close < prior_low:
+            in_position = False
+        states[index] = in_position
+    return states
 
 
-def _aligned_cross_section(
-    bars_by_instrument: dict[str, Sequence[Bar]],
-) -> tuple[dict[str, list[Bar]], tuple]:
+def _aligned_cross_section(bars_by_instrument: dict[str, Sequence[Bar]]) -> dict[str, list[Bar]]:
     timestamp_sets = [set(bar.timestamp for bar in bars) for bars in bars_by_instrument.values()]
-    common_timestamps = tuple(sorted(set.intersection(*timestamp_sets))) if timestamp_sets else tuple()
-    aligned = {
+    if not timestamp_sets:
+        return {}
+    common_timestamps = sorted(set.intersection(*timestamp_sets))
+    return {
         instrument: [bar for bar in bars if bar.timestamp in common_timestamps]
         for instrument, bars in bars_by_instrument.items()
     }
-    return aligned, common_timestamps
 
 
-def cross_market_signal_series(
-    bars_by_instrument: dict[str, Sequence[Bar]],
-    focal_instrument: str,
-) -> tuple[Bar, ...]:
-    aligned, common_timestamps = _aligned_cross_section(bars_by_instrument)
-    focal = aligned.get(focal_instrument, [])
-    if len(focal) < 22:
-        return tuple()
-    history: dict[str, dict] = {
-        instrument: {bar.timestamp: bar for bar in series}
-        for instrument, series in aligned.items()
-    }
-    desired_by_timestamp: dict = {}
-    for index in range(20, len(focal)):
-        timestamp = focal[index].timestamp
-        returns: dict[str, float] = {}
-        for instrument in aligned:
-            series = aligned[instrument]
-            if index >= len(series):
-                continue
-            current = history[instrument].get(timestamp)
-            previous = series[index - 20]
-            if current is None or previous.close <= 0:
-                continue
-            returns[instrument] = current.close / previous.close - 1.0
-        if len(returns) < 3:
-            continue
-        values = list(returns.values())
-        cross_median = median(values)
-        mad = median([abs(value - cross_median) for value in values])
-        focal_return = returns.get(focal_instrument)
-        if focal_return is None:
-            continue
-        previous_desired = desired_by_timestamp.get(focal[index - 1].timestamp, False)
-        desired_by_timestamp[timestamp] = focal_return > cross_median + mad or (
-            previous_desired and focal_return > cross_median
-        )
-    return tuple(
-        Bar(
-            timestamp=bar.timestamp,
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-            volume=bar.volume,
-        )
-        for bar in focal
-    )
-
-
-def cross_signal_factory(
+def cross_market_signal_factory(
     bars_by_instrument: dict[str, Sequence[Bar]],
     focal_instrument: str,
 ) -> Callable[[Sequence[Bar], int], bool]:
-    aligned, _ = _aligned_cross_section(bars_by_instrument)
+    aligned = _aligned_cross_section(bars_by_instrument)
+    focal = aligned.get(focal_instrument, [])
     desired: dict = {}
-    focal = aligned[focal_instrument]
+    in_position = False
     for index in range(20, len(focal)):
         returns: dict[str, float] = {}
         timestamp = focal[index].timestamp
         for instrument, series in aligned.items():
-            current = series[index]
-            previous = series[index - 20]
-            if previous.close <= 0:
+            if index >= len(series) or series[index - 20].close <= 0:
                 continue
-            returns[instrument] = current.close / previous.close - 1.0
+            returns[instrument] = series[index].close / series[index - 20].close - 1.0
         if len(returns) < 3:
+            desired[timestamp] = in_position
             continue
         med = median(returns.values())
-        mad = median([abs(value - med) for value in returns.values()])
+        mad = median(abs(value - med) for value in returns.values())
         focal_return = returns[focal_instrument]
-        prior = desired.get(focal[index - 1].timestamp, False)
-        desired[timestamp] = focal_return > med + mad or (prior and focal_return > med)
+        if not in_position and focal_return > med + mad:
+            in_position = True
+        elif in_position and focal_return <= med:
+            in_position = False
+        desired[timestamp] = in_position
     return lambda bars, index: bool(desired.get(bars[index].timestamp, False))
 
 
@@ -211,10 +175,9 @@ def moving_block_bootstrap_ci(
         return 0.0, 0.0
     rng = random.Random(seed)
     n = len(returns)
-    if n < block_length:
-        block_length = n
-    means: list[float] = []
+    block_length = min(block_length, n)
     starts = list(range(max(1, n - block_length + 1)))
+    means: list[float] = []
     for _ in range(samples):
         sample: list[float] = []
         while len(sample) < n:
@@ -227,18 +190,12 @@ def moving_block_bootstrap_ci(
 
 
 def _metrics(result: BacktestResult) -> tuple[float, float, float, float, int]:
-    return (
-        result.final_return,
-        result.expectancy,
-        result.profit_factor,
-        result.max_drawdown,
-        len(result.trades),
-    )
+    return result.final_return, result.expectancy, result.profit_factor, result.max_drawdown, len(result.trades)
 
 
 def _load_records() -> dict[tuple[str, str], DatasetRecord]:
     records: dict[tuple[str, str], DatasetRecord] = {}
-    for family, instruments in ASSET_FAMILIES.items():
+    for instruments in ASSET_FAMILIES.values():
         for instrument in instruments:
             for timeframe in ("1D", "4H"):
                 path = DATA_DIR / f"{instrument}_{timeframe}.csv"
@@ -246,55 +203,42 @@ def _load_records() -> dict[tuple[str, str], DatasetRecord]:
                 if len(bars) < 100:
                     raise ValueError(f"insufficient_bars:{instrument}:{timeframe}:{len(bars)}")
                 records[(instrument, timeframe)] = DatasetRecord(
-                    instrument=instrument,
-                    timeframe=timeframe,
-                    bars=bars,
-                    split=chronological_split(bars),
+                    instrument, timeframe, bars, chronological_split(bars)
                 )
     if len(records) != 26:
         raise ValueError(f"dataset_count_mismatch:{len(records)}")
     return records
 
 
-def _family_signal(
-    family: str,
-    *,
-    focal_instrument: str,
-    timeframe: str,
-    split_bars_by_instrument: dict[str, Sequence[Bar]],
-) -> Callable[[Sequence[Bar], int], bool]:
+def _single_family_signal(family: str, bars: Sequence[Bar]) -> Callable[[Sequence[Bar], int], bool]:
     if family == "momentum_continuation":
-        return momentum_signal
-    if family == "mean_reversion":
-        return mean_reversion_signal
-    if family == "breakout_volatility_expansion":
-        return breakout_volatility_signal
-    if family == "cross_market_relative_behavior":
-        return cross_signal_factory(split_bars_by_instrument, focal_instrument)
-    raise ValueError(f"unknown_hypothesis_family:{family}")
+        states = momentum_signal_series(bars)
+    elif family == "mean_reversion":
+        states = mean_reversion_signal_series(bars)
+    elif family == "breakout_volatility_expansion":
+        states = breakout_volatility_signal_series(bars)
+    else:
+        raise ValueError(f"unsupported_single_market_family:{family}")
+    return lambda _, index: states[index]
 
 
 def evaluate_context(context: ResearchContext, records: dict[tuple[str, str], DatasetRecord]) -> ContextResult:
     focal = records[(context.instrument, context.timeframe)]
-    split = focal.split
     family_records = {
         instrument: records[(instrument, context.timeframe)]
         for instrument in ASSET_FAMILIES[context.asset_family]
     }
-    split_maps = {
-        segment: {instrument: getattr(record.split, segment) for instrument, record in family_records.items()}
-        for segment in ("train", "validation", "test")
-    }
-
     results: dict[str, BacktestResult] = {}
     for segment_name in ("train", "validation", "test"):
-        segment_bars = getattr(split, segment_name)
-        signal = _family_signal(
-            context.hypothesis_family,
-            focal_instrument=context.instrument,
-            timeframe=context.timeframe,
-            split_bars_by_instrument=split_maps[segment_name],
-        )
+        segment_bars = getattr(focal.split, segment_name)
+        if context.hypothesis_family == "cross_market_relative_behavior":
+            split_bars_by_instrument = {
+                instrument: getattr(record.split, segment_name)
+                for instrument, record in family_records.items()
+            }
+            signal = cross_market_signal_factory(split_bars_by_instrument, context.instrument)
+        else:
+            signal = _single_family_signal(context.hypothesis_family, segment_bars)
         results[segment_name] = run_long_flat(
             segment_bars,
             signal,
@@ -323,8 +267,7 @@ def evaluate_context(context: ResearchContext, records: dict[tuple[str, str], Da
         train[0], train[1], train[2], train[3], train[4],
         validation[0], validation[1], validation[2], validation[3], validation[4],
         test[0], test[1], test[2], test[3], test[4],
-        bootstrap_low, bootstrap_high,
-        screen_positive,
+        bootstrap_low, bootstrap_high, screen_positive,
     )
 
 
@@ -333,8 +276,7 @@ def _write_results(results: Sequence[ContextResult]) -> None:
     with RESULTS_CSV.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(asdict(results[0]).keys()))
         writer.writeheader()
-        for result in results:
-            writer.writerow(asdict(result))
+        writer.writerows(asdict(result) for result in results)
 
 
 def _family_summary(results: Sequence[ContextResult]) -> dict[str, dict[str, int | float]]:
@@ -376,7 +318,6 @@ def run_campaign() -> dict:
     }
     SUMMARY_JSON.parent.mkdir(parents=True, exist_ok=True)
     SUMMARY_JSON.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
     lines = [
         "# Nova Broader Campaign Matrix",
         "",
@@ -398,7 +339,7 @@ def run_campaign() -> dict:
         "",
         "## Decision checkpoint",
         "",
-        "The fixed matrix is complete. STOP. The assistant must review the result, uncertainty, breadth, and evidence quality and classify the campaign as YES, NO, or INCONCLUSIVE.",
+        "The fixed matrix is complete. STOP. Review the result, uncertainty, breadth, and evidence quality and classify the campaign as YES, NO, or INCONCLUSIVE.",
         "",
         "A screen-positive context is exploratory only and is not promotion evidence.",
     ]
