@@ -5,11 +5,6 @@ Final gate for prompt compaction. It never changes production behavior and
 never suppresses AI reviews. It samples one AI-review decision per bar and
 compares current vs compact prompts using identical model settings.
 
-This runner is deliberately bounded and observable: it builds O(1) event
-lookups, prints progress before every model call, and defaults to a small
-sample so a slow/unavailable provider cannot look like a local computation
-hang. It is still only an experiment; production behavior is untouched.
-
 Environment:
     GROQ_API_KEY must be set.
 
@@ -191,8 +186,6 @@ def main() -> None:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("GROQ_API_KEY is required for the equivalence experiment")
-    if args.sample < 1:
-        raise SystemExit("--sample must be >= 1")
 
     bars = tuple(load_csv(args.dataset))
     events = MarketMonitor().observe_history("EURUSD", "15m", bars)
@@ -200,8 +193,6 @@ def main() -> None:
     ai_indices = {d.index for d in decisions if d.request_ai or d.strategy_hint.request_ai}
     sample = _unique_bar_sample(decisions, min(args.sample, len(ai_indices)))
 
-    # O(1) event lookup. The previous implementation repeatedly scanned every
-    # bar for every event, which made startup unnecessarily expensive.
     bar_index_by_timestamp = {bar.timestamp: index for index, bar in enumerate(bars)}
     event_by_index = {
         bar_index_by_timestamp[event.timestamp]: event
@@ -210,7 +201,7 @@ def main() -> None:
     }
 
     print(f"bounded equivalence: {len(sample)} unique bars / {len(sample) * 2} AI calls", flush=True)
-    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL, temperature=0.1)
+    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL)
 
     comparisons = []
     errors = []
@@ -240,7 +231,7 @@ def main() -> None:
                 "confidence_full": full.recommendation.confidence if full.recommendation else None,
                 "confidence_compact": compact.recommendation.confidence if compact.recommendation else None,
             })
-            print(f"[{position}/{len(sample)}] index={d.index}: {'MATCH' if match else 'DISAGREEMENT'}", flush=True)
+            print(f"[{position}/{len(sample)}] index={d.index}: {'MATCH' if match else 'MISMATCH'}", flush=True)
         except Exception as exc:
             errors.append({"index": d.index, "error": f"{type(exc).__name__}: {exc}"})
             print(f"[{position}/{len(sample)}] index={d.index}: ERROR {type(exc).__name__}: {exc}", flush=True)
@@ -258,7 +249,7 @@ def main() -> None:
         status = "not_equivalent"
 
     payload = {
-        "schema_version": 3,
+        "schema_version": 2,
         "policy": "bounded_compact_prompt_equivalence",
         "dataset": args.dataset,
         "sample_requested": args.sample,
