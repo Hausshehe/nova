@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - trading-research-broader-campaign-run
-  pull_request:
-    branches:
-      - trading-research-lab
   workflow_dispatch:
 
 jobs:
