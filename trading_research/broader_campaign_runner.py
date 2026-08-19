@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import random
@@ -16,6 +17,7 @@ from .data import Bar, DatasetSplit, chronological_split, load_csv
 from .research_universe import ASSET_FAMILIES, ResearchContext, build_research_universe
 
 DATA_DIR = Path("data/research/universe_v2")
+MANIFEST_PATH = DATA_DIR / "manifest.json"
 RESULTS_CSV = Path("data/research/broader_matrix_results.csv")
 SUMMARY_JSON = Path("data/research/broader_matrix_summary.json")
 REPORT_MD = Path("data/research/broader_matrix_report.md")
@@ -193,7 +195,44 @@ def _metrics(result: BacktestResult) -> tuple[float, float, float, float, int]:
     return result.final_return, result.expectancy, result.profit_factor, result.max_drawdown, len(result.trades)
 
 
+def _expected_pairs() -> set[tuple[str, str]]:
+    return {
+        (instrument, timeframe)
+        for instruments in ASSET_FAMILIES.values()
+        for instrument in instruments
+        for timeframe in ("1D", "4H")
+    }
+
+
+def verify_manifest() -> dict[tuple[str, str], dict]:
+    if not MANIFEST_PATH.exists():
+        raise ValueError("manifest_missing")
+    payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("manifest_not_array")
+    expected = _expected_pairs()
+    actual = {(item.get("instrument"), item.get("timeframe")) for item in payload if isinstance(item, dict)}
+    if len(payload) != 26 or actual != expected:
+        raise ValueError(f"manifest_context_mismatch:entries={len(payload)}")
+    verified: dict[tuple[str, str], dict] = {}
+    for item in payload:
+        instrument = item["instrument"]
+        timeframe = item["timeframe"]
+        path = DATA_DIR / f"{instrument}_{timeframe}.csv"
+        if not path.exists():
+            raise ValueError(f"dataset_missing:{instrument}:{timeframe}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != item["sha256"]:
+            raise ValueError(f"dataset_hash_mismatch:{instrument}:{timeframe}")
+        bars = int(item["bars"])
+        if bars < 100:
+            raise ValueError(f"dataset_too_small:{instrument}:{timeframe}:{bars}")
+        verified[(instrument, timeframe)] = item
+    return verified
+
+
 def _load_records() -> dict[tuple[str, str], DatasetRecord]:
+    verify_manifest()
     records: dict[tuple[str, str], DatasetRecord] = {}
     for instruments in ASSET_FAMILIES.values():
         for instrument in instruments:
