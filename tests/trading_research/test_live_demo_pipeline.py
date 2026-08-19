@@ -33,9 +33,9 @@ class FakeReasoner:
         )
 
 
-def snapshot(close, *, previous=None):
+def snapshot(close, *, timestamp=NOW):
     bar = Bar(
-        timestamp=NOW,
+        timestamp=timestamp,
         open=close,
         high=close + 0.0005,
         low=close - 0.0005,
@@ -46,7 +46,6 @@ def snapshot(close, *, previous=None):
         symbol="EURUSD",
         timeframe="15M",
         bar=bar,
-        previous_bar=previous,
         spread_bps=2.0,
     )
 
@@ -62,6 +61,7 @@ def build_pipeline(tmp_path, reasoner, approved=True):
         gateway=gateway,
         strategy_lookup=(lambda name, version: approved and (name, version) == ("approved_v1", "1.0")),
         strategy_version_resolver=lambda *_: "1.0",
+        position_direction_resolver=lambda _: "LONG",
     )
     history = MarketHistoryStore(tmp_path / "market.sqlite3")
     pipeline = LiveDemoPipeline(
@@ -88,19 +88,8 @@ def test_pipeline_escalates_meaningful_move_to_reasoner_but_watch_does_not_execu
     reasoner = FakeReasoner()
     pipeline, gateway, history = build_pipeline(tmp_path, reasoner)
 
-    first = snapshot(1.1000)
-    pipeline.process_snapshot(first)
-    second_bar = Bar(
-        timestamp=NOW.replace(minute=15),
-        open=1.1000,
-        high=1.1030,
-        low=1.1000,
-        close=1.1030,
-        volume=1000,
-    )
-    result = pipeline.process_snapshot(
-        MarketSnapshot("EURUSD", "15M", second_bar, previous_bar=first.bar, spread_bps=2.0)
-    )
+    pipeline.process_snapshot(snapshot(1.1000))
+    result = pipeline.process_snapshot(snapshot(1.1030, timestamp=NOW.replace(minute=15)))
 
     assert result.events
     assert reasoner.calls >= 1
@@ -121,17 +110,7 @@ def test_pipeline_allows_only_approved_structured_exit_in_demo(tmp_path):
     pipeline, gateway, _ = build_pipeline(tmp_path, reasoner, approved=True)
 
     pipeline.process_snapshot(snapshot(1.1000))
-    second_bar = Bar(
-        timestamp=NOW.replace(minute=15),
-        open=1.1000,
-        high=1.1030,
-        low=1.1000,
-        close=1.1030,
-        volume=1000,
-    )
-    result = pipeline.process_snapshot(
-        MarketSnapshot("EURUSD", "15M", second_bar, previous_bar=None, spread_bps=2.0)
-    )
+    result = pipeline.process_snapshot(snapshot(1.1030, timestamp=NOW.replace(minute=15)))
 
     assert reasoner.calls >= 1
     assert result.cycles
@@ -152,17 +131,7 @@ def test_pipeline_rejects_unapproved_structured_exit(tmp_path):
     pipeline, gateway, _ = build_pipeline(tmp_path, reasoner, approved=False)
 
     pipeline.process_snapshot(snapshot(1.1000))
-    second_bar = Bar(
-        timestamp=NOW.replace(minute=15),
-        open=1.1000,
-        high=1.1030,
-        low=1.1000,
-        close=1.1030,
-        volume=1000,
-    )
-    result = pipeline.process_snapshot(
-        MarketSnapshot("EURUSD", "15M", second_bar, spread_bps=2.0)
-    )
+    result = pipeline.process_snapshot(snapshot(1.1030, timestamp=NOW.replace(minute=15)))
 
     assert result.cycles
     assert any(c.policy_reason == "strategy_not_approved" for c in result.cycles)
