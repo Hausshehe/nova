@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .campaign_closure import CampaignState, evaluate_campaign_closure
+from .campaign_closure import CampaignState, current_eurusd_campaign_state, evaluate_campaign_closure
 from .contracts import Hypothesis, ResearchGates
 from .experiment import ExperimentRecord, Signal, run_experiment
 from .groq_hypothesis import GroqHypothesisGenerator, ResearchQuestion
@@ -88,7 +88,7 @@ class AutonomousResearchSession:
         self.fee_bps = fee_bps
         self.slippage_bps = slippage_bps
         self.strategy_version = strategy_version
-        self.campaign_state = campaign_state
+        self.campaign_state = campaign_state or current_eurusd_campaign_state()
         self.researcher = Researcher.from_memory(memory, budget=budget)
 
     def propose_and_test(
@@ -100,17 +100,16 @@ class AutonomousResearchSession:
     ) -> ResearchCycleResult:
         """Admit at most one proposal and immediately run its deterministic test."""
         try:
-            if self.campaign_state is not None:
-                closure = evaluate_campaign_closure(
-                    self.campaign_state,
-                    dataset_sha256=_sha256_file(csv_path),
-                    market_question_changed=market_question_changed,
+            closure = evaluate_campaign_closure(
+                self.campaign_state,
+                dataset_sha256=_sha256_file(csv_path),
+                market_question_changed=market_question_changed,
+            )
+            if closure.action == "CAMPAIGN_CLOSED":
+                return ResearchCycleResult(
+                    status="CAMPAIGN_CLOSED",
+                    message=closure.reason,
                 )
-                if closure.action == "CAMPAIGN_CLOSED":
-                    return ResearchCycleResult(
-                        status="CAMPAIGN_CLOSED",
-                        message=closure.reason,
-                    )
 
             proposal = self.generator.propose(question)
             fingerprint = self.researcher.accept_proposal_for_dataset(
