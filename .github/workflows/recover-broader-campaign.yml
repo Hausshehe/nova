@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       recovery_commit:
-        description: "Reviewed code commit to run recovery; this must contain the decoder fix and recovery migration"
+        description: "Reviewed code commit to run recovery"
         required: true
         type: string
 
@@ -114,40 +114,29 @@ jobs:
           path: data/research/universe_v2
           merge-multiple: true
 
-      - name: Migrate legacy decoder artifacts when required
+      - name: Invalidate legacy WTI 4H artifact when required
         env:
           MIGRATION_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           python - <<'PY'
           import os
           from trading_research.migrate_legacy_broader_artifacts import (
-              LEGACY_DAILY_DATASETS,
-              LEGACY_FOUR_HOUR_DATASETS,
               LEGACY_SOURCE_RUN_ID,
-              migrate_legacy_artifacts,
+              LEGACY_WTI_4H_DATASET,
+              invalidate_legacy_wti_4h,
           )
 
           source_run_id = os.environ["MIGRATION_SOURCE_RUN_ID"].strip()
           if source_run_id != LEGACY_SOURCE_RUN_ID:
-              print(f"LEGACY MIGRATION SKIPPED source_run={source_run_id}", flush=True)
+              print(f"LEGACY WTI 4H INVALIDATION SKIPPED source_run={source_run_id}", flush=True)
           else:
-              repaired_daily, removed_four_hour = migrate_legacy_artifacts(
+              removed = invalidate_legacy_wti_4h(
                   "data/research/universe_v2",
                   source_run_id=source_run_id,
               )
-              if repaired_daily != list(LEGACY_DAILY_DATASETS):
-                  raise SystemExit(
-                      f"legacy_daily_migration_snapshot_mismatch:{repaired_daily}"
-                  )
-              if removed_four_hour != list(LEGACY_FOUR_HOUR_DATASETS):
-                  raise SystemExit(
-                      f"legacy_four_hour_migration_snapshot_mismatch:{removed_four_hour}"
-                  )
-              print(
-                  f"LEGACY MIGRATION COMPLETE repaired_daily={len(repaired_daily)} "
-                  f"removed_four_hour={len(removed_four_hour)}",
-                  flush=True,
-              )
+              if removed != LEGACY_WTI_4H_DATASET:
+                  raise SystemExit(f"legacy_wti_4h_invalidation_mismatch:{removed}")
+              print(f"LEGACY WTI 4H INVALIDATED dataset={removed}", flush=True)
           PY
 
       - name: Recover only missing frozen datasets
@@ -179,6 +168,7 @@ jobs:
               ("NZDUSD", "4H"),
               ("US500", "4H"),
               ("WTI", "1D"),
+              ("WTI", "4H"),
           }
           if source_run_id == "32293018258" and set(missing) != expected_legacy_missing:
               raise SystemExit(
@@ -205,7 +195,6 @@ jobs:
                           timeframe=timeframe,
                           start_utc="2010-01-01T00:00:00+00:00",
                           end_utc="2025-12-31T23:59:59+00:00",
-                          progress=lambda message: print(message, flush=True),
                       )
                       if len(candles) < 100:
                           raise RuntimeError(f"insufficient_bars:{len(candles)}")
