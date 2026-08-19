@@ -36,7 +36,7 @@ def test_deep_negative_deviation_enters_and_persists_until_mean():
     bars = _bars(closes)
     assert signal(bars, LOOKBACK) is True
     assert signal(bars, LOOKBACK + 1) is True
-    assert signal(bars, LOOKBACK + 3) is False
+    assert signal(bars, LOOKBACK + 2) is False
 
 
 def test_signal_is_causal_against_future_appends():
