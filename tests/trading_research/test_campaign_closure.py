@@ -82,6 +82,15 @@ def test_new_market_question_requires_explicit_restart() -> None:
     assert decision.action == "ALLOW_RESTART_NEW_MARKET_QUESTION"
 
 
+def test_new_market_question_still_requires_provenance() -> None:
+    decision = evaluate_campaign_closure(
+        current_eurusd_campaign_state(),
+        dataset_sha256=None,
+        market_question_changed=True,
+    )
+    assert decision.action == "EVIDENCE_FINGERPRINT_REQUIRED"
+
+
 class _FailIfCalledGenerator:
     def __init__(self) -> None:
         self.calls = 0
