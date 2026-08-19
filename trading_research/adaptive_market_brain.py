@@ -45,11 +45,13 @@ class AdaptiveMarketBrain:
             if self.strategy_context_provider is not None
             else ""
         )
-        retrieved_market_context = (
-            self.market_context_provider(event)
-            if self.market_context_provider is not None
-            else market_context
-        )
+        if market_context:
+            retrieved_market_context = market_context
+        elif self.market_context_provider is not None:
+            retrieved_market_context = self.market_context_provider(event)
+        else:
+            retrieved_market_context = ""
+
         analysis = self.reasoner.analyze(
             event,
             market_context=retrieved_market_context,

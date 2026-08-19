@@ -3,7 +3,7 @@
 The runner owns the mechanical research pipeline:
 
     CSV -> validation -> chronological split -> hypothesis validation
-        -> deterministic backtests -> gates -> standardized record
+        -> deterministic backtests -> gates -> standardized record -> memory
 
 AI does not execute code or define success criteria here. A hypothesis must
 arrive as a validated deterministic rule function plus an explicit contract.
@@ -11,6 +11,7 @@ arrive as a validated deterministic rule function plus an explicit contract.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Callable, Sequence
@@ -40,6 +41,7 @@ class ExperimentRecord:
     created_at_utc: str
     hypothesis: Hypothesis
     dataset: str
+    dataset_sha256: str
     total_bars: int
     split_sizes: dict[str, int]
     costs: dict[str, float]
@@ -54,6 +56,22 @@ class ExperimentRecord:
             segment["decision"]["decision"] = segment["decision"]["decision"].value
         payload["final_decision"] = self.final_decision.value
         return payload
+
+
+def _dataset_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _experiment_id(record: ExperimentRecord) -> str:
+    """Stable evidence ID that ignores only runtime creation time."""
+    payload = record.to_dict()
+    payload.pop("created_at_utc", None)
+    canonical = repr(payload).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()[:24]
 
 
 def _metrics(result: BacktestResult) -> BacktestMetrics:
@@ -127,9 +145,6 @@ def _sync_strategy_registry(
         )
         return
 
-    # Research runs may update evidence for CANDIDATE strategies only. Existing
-    # APPROVED/RETIRED/BLOCKED lifecycle states require a separate lifecycle
-    # decision and must never be silently changed by a backtest.
     if existing["status"] == "CANDIDATE":
         registry.set_research_state(
             hypothesis.name,
@@ -152,9 +167,9 @@ def run_experiment(
 ) -> ExperimentRecord:
     """Run one bounded, reproducible hypothesis experiment.
 
-    When a memory store is supplied, the resulting research state is synced to
-    the strategy registry. Registry updates never grant or revoke execution
-    authority for already-approved strategies.
+    When a memory store is supplied, both the result and current research state
+    are persisted. Repeating identical evidence is idempotent; changed
+    evidence gets a distinct experiment identity.
     """
     if fee_bps < 0 or slippage_bps < 0:
         raise ValueError("fee_bps and slippage_bps cannot be negative")
@@ -183,9 +198,6 @@ def run_experiment(
         )
     )
 
-    # Promotion is deliberately strict: every segment must pass. Any actual
-    # performance failure rejects; otherwise an insufficient sample remains
-    # inconclusive and cannot be promoted.
     if any(segment.decision.decision is Decision.REJECT for segment in segments):
         final_decision = Decision.REJECT
     elif any(segment.decision.decision is Decision.INCONCLUSIVE for segment in segments):
@@ -198,6 +210,7 @@ def run_experiment(
         created_at_utc=datetime.now(timezone.utc).isoformat(),
         hypothesis=hypothesis,
         dataset=str(csv_path),
+        dataset_sha256=_dataset_sha256(csv_path),
         total_bars=len(bars),
         split_sizes={
             "train": len(split.train),
@@ -210,6 +223,15 @@ def run_experiment(
     )
 
     if memory_store is not None:
+        memory_store.record_experiment(
+            experiment_id=_experiment_id(record),
+            created_at_utc=record.created_at_utc,
+            hypothesis_name=hypothesis.name,
+            symbol=hypothesis.symbol,
+            timeframe=hypothesis.timeframe,
+            final_decision=final_decision.value,
+            record=record.to_dict(),
+        )
         _sync_strategy_registry(
             hypothesis=hypothesis,
             final_decision=final_decision,

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -11,7 +11,7 @@ def event(event_type: str, *, move: float | None = None, spread: float | None = 
         event_type=event_type,
         symbol="EURUSD",
         timeframe="1M",
-        timestamp=datetime(2026, 1, 1, 12, 0, second, tzinfo=timezone.utc),
+        timestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc) + timedelta(seconds=second),
         reason="test",
         price=1.10,
         change_bps=move,
