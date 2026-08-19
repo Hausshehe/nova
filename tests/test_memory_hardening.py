@@ -127,3 +127,21 @@ def test_strategy_registry_can_read_and_update_strategy(tmp_path):
 
     registry.set_research_state("test-strategy", "1.0", "REJECTED", "test result")
     assert store.get_strategy("test-strategy", "1.0")["hypothesis"]["research_state"] == "REJECTED"
+
+
+def test_approved_strategy_rejects_research_state_mutation(tmp_path):
+    store = ExperienceStore(tmp_path / "memory.sqlite")
+    registry = StrategyRegistry(store)
+    registry.register(
+        Strategy(
+            name="approved-strategy",
+            version="1.0",
+            status="CANDIDATE",
+            research_state="OOS_VALIDATED",
+            hypothesis={"symbol": "EURUSD", "timeframe": "D1"},
+        )
+    )
+    registry.approve("approved-strategy", "1.0", "explicit gate passed")
+
+    with pytest.raises(ValueError, match="non-candidate"):
+        registry.set_research_state("approved-strategy", "1.0", "REJECTED", "later backtest")
