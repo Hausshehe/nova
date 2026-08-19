@@ -193,9 +193,6 @@ def run_experiment(
         )
     )
 
-    # Promotion is deliberately strict: every segment must pass. Any actual
-    # performance failure rejects; otherwise an insufficient sample remains
-    # inconclusive and cannot be promoted.
     if any(segment.decision.decision is Decision.REJECT for segment in segments):
         final_decision = Decision.REJECT
     elif any(segment.decision.decision is Decision.INCONCLUSIVE for segment in segments):
@@ -204,7 +201,7 @@ def run_experiment(
         final_decision = Decision.PROMISING
 
     record = ExperimentRecord(
-        schema_version=2,
+        schema_version=1,
         created_at_utc=datetime.now(timezone.utc).isoformat(),
         hypothesis=hypothesis,
         dataset=str(csv_path),
