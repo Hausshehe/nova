@@ -30,13 +30,13 @@ class FakeSession:
 
 
 def test_normalize_sorts_and_normalizes_timestamps():
-    # Values above 1e12 are deliberately millisecond timestamps.
+    # Unambiguous 2020-era millisecond timestamps (> 1e12).
     candles = normalize_candles([
-        {"timestamp": 2000000000000, "open": 2, "high": 3, "low": 1, "close": 2.5, "volume": 10},
-        {"timestamp": 1000000000000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 5},
+        {"timestamp": 1609459200000, "open": 2, "high": 3, "low": 1, "close": 2.5, "volume": 10},
+        {"timestamp": 1577836800000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 5},
     ])
-    assert candles[0].timestamp_utc == "2001-09-09T01:46:40+00:00"
-    assert candles[1].timestamp_utc == "2033-05-18T03:33:20+00:00"
+    assert candles[0].timestamp_utc == "2020-01-01T00:00:00+00:00"
+    assert candles[1].timestamp_utc == "2021-01-01T00:00:00+00:00"
 
 
 def test_normalize_rejects_invalid_ohlc():
