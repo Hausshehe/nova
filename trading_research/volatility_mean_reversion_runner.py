@@ -6,6 +6,7 @@ import argparse
 import json
 
 from .experiment import run_experiment
+from .memory import ExperienceStore
 from .volatility_mean_reversion import HYPOTHESIS, signal
 
 
@@ -13,10 +14,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("csv_path")
     parser.add_argument("--output", default="volatility_mean_reversion_experiment.json")
+    parser.add_argument("--memory-db", default="data/research/nova_experience.sqlite3")
+    # 1 bps fee + 1 bps slippage per side = 4 bps round-trip.
     parser.add_argument("--fee-bps", type=float, default=1.0)
     parser.add_argument("--slippage-bps", type=float, default=1.0)
     args = parser.parse_args()
 
+    memory = ExperienceStore(args.memory_db)
     record = run_experiment(
         csv_path=args.csv_path,
         hypothesis=HYPOTHESIS,
@@ -24,6 +28,7 @@ def main() -> int:
         fee_bps=args.fee_bps,
         slippage_bps=args.slippage_bps,
         strategy_version="volatility-mr-20-2z-v1",
+        memory_store=memory,
     )
     payload = record.to_dict()
     with open(args.output, "w", encoding="utf-8") as handle:
@@ -34,6 +39,8 @@ def main() -> int:
         "decision": record.final_decision.value,
         "dataset": record.dataset,
         "dataset_sha256": record.dataset_sha256,
+        "memory_db": args.memory_db,
+        "costs": record.costs,
         "segments": {
             segment["name"]: {
                 "bars": segment["bars"],
