@@ -2,8 +2,7 @@
 
 Python market observation decides when an event deserves attention. This
 module packages that event into a small structured request for an LLM.
-The response is advisory only: it cannot authorize execution or modify
-research gates.
+The response is advisory only: deterministic policy must validate any action.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib import error, request
 
+from .decision_contract import AIRecommendation
 from .market_monitor import MarketEvent
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
@@ -25,6 +25,7 @@ class MarketAnalysis:
     rationale: str
     relevant_strategies: tuple[str, ...] = ()
     urgency: str = "NORMAL"
+    recommendation: AIRecommendation | None = None
 
     def validate(self) -> None:
         if self.assessment not in {"NO_ACTION", "WATCH", "SETUP", "RISK"}:
@@ -35,6 +36,8 @@ class MarketAnalysis:
             raise ValueError("analysis rationale is required")
         if any(not item.strip() for item in self.relevant_strategies):
             raise ValueError("strategy names must be non-empty")
+        if self.recommendation is not None:
+            self.recommendation.validate()
 
 
 Transport = Callable[[dict[str, Any]], dict[str, Any]]
@@ -64,7 +67,7 @@ def _default_transport(api_key: str, model: str, endpoint: str, timeout: float) 
 
 
 class GroqMarketReasoner:
-    """Ask Groq to classify an escalated event without granting execution authority."""
+    """Ask Groq to analyze an event and return a structured advisory recommendation."""
 
     def __init__(
         self,
@@ -94,9 +97,11 @@ class GroqMarketReasoner:
                 {
                     "role": "system",
                     "content": (
-                        "You are Nova's market event analyst. Classify the event only. "
-                        "Do not place trades, choose position size, alter risk gates, "
-                        "or claim profitability. Return exactly the requested JSON object."
+                        "You are Nova's market event analyst. Analyze the event and "
+                        "return a structured advisory recommendation. Do not place "
+                        "trades, choose position size, alter risk gates, or claim "
+                        "profitability. ENTER/EXIT must name an approved strategy "
+                        "and exact strategy version when one is relevant."
                     ),
                 },
                 {
@@ -137,12 +142,39 @@ class GroqMarketReasoner:
                                 "type": "string",
                                 "enum": ["NORMAL", "ELEVATED", "CRITICAL"],
                             },
+                            "recommendation": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        "enum": ["NO_ACTION", "WATCH", "ENTER", "EXIT"],
+                                    },
+                                    "strategy_name": {"type": ["string", "null"]},
+                                    "strategy_version": {"type": ["string", "null"]},
+                                    "rationale": {"type": "string"},
+                                    "urgency": {
+                                        "type": "string",
+                                        "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                                    },
+                                    "confidence": {"type": "number"},
+                                },
+                                "required": [
+                                    "action",
+                                    "strategy_name",
+                                    "strategy_version",
+                                    "rationale",
+                                    "urgency",
+                                    "confidence",
+                                ],
+                                "additionalProperties": False,
+                            },
                         },
                         "required": [
                             "assessment",
                             "rationale",
                             "relevant_strategies",
                             "urgency",
+                            "recommendation",
                         ],
                         "additionalProperties": False,
                     },
@@ -156,11 +188,25 @@ class GroqMarketReasoner:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ValueError("Groq response missing structured market analysis") from exc
 
+        recommendation_payload = data.get("recommendation")
+        recommendation = (
+            AIRecommendation(
+                action=str(recommendation_payload["action"]),
+                strategy_name=recommendation_payload["strategy_name"],
+                strategy_version=recommendation_payload["strategy_version"],
+                rationale=str(recommendation_payload["rationale"]),
+                urgency=str(recommendation_payload["urgency"]),
+                confidence=float(recommendation_payload["confidence"]),
+            )
+            if recommendation_payload is not None
+            else None
+        )
         analysis = MarketAnalysis(
             assessment=str(data["assessment"]),
             rationale=str(data["rationale"]),
             relevant_strategies=tuple(str(item) for item in data["relevant_strategies"]),
             urgency=str(data["urgency"]),
+            recommendation=recommendation,
         )
         analysis.validate()
         return analysis
