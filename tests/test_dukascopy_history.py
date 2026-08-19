@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 import requests
 
-from trading_research.dukascopy_history import DukascopyClient
+from trading_research.dukascopy_history import BASE_URL, DukascopyClient
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload, headers=None):
+    def __init__(self, status_code: int, payload, headers=None, text=None):
         self.status_code = status_code
         self._payload = payload
         self.headers = headers or {}
+        self.text = text if text is not None else ""
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -27,10 +26,10 @@ class FakeResponse:
 class FakeSession:
     def __init__(self, responses):
         self.responses = list(responses)
-        self.calls = 0
+        self.calls = []
 
     def get(self, *args, **kwargs):
-        self.calls += 1
+        self.calls.append((args, kwargs))
         return self.responses.pop(0)
 
 
@@ -46,8 +45,11 @@ def test_get_retries_429_and_honors_retry_after(monkeypatch):
     result = client._get({"path": "api/instrumentList"})
 
     assert result == [{"id": 1, "name": "EUR/USD"}]
-    assert session.calls == 2
+    assert len(session.calls) == 2
     assert sleeps == [3.0]
+    assert session.calls[0][0][0] == BASE_URL
+    assert session.calls[0][1]["headers"]["Referer"] == "https://freeserv.dukascopy.com/"
+    assert session.calls[0][1]["headers"]["Accept"] == "application/json, text/plain, */*"
 
 
 def test_get_raises_non_429_without_retry():
@@ -57,4 +59,20 @@ def test_get_raises_non_429_without_retry():
     with pytest.raises(requests.HTTPError):
         client._get({"path": "api/instrumentList"})
 
-    assert session.calls == 1
+    assert len(session.calls) == 1
+
+
+def test_get_reports_invalid_json_response():
+    response = FakeResponse(
+        200,
+        None,
+        {"Content-Type": "text/html"},
+        "<html>temporarily unavailable</html>",
+    )
+    response.json = lambda: (_ for _ in ()).throw(
+        requests.exceptions.JSONDecodeError("Expecting value", "", 0)
+    )
+    client = DukascopyClient(session=FakeSession([response]))
+
+    with pytest.raises(ValueError, match="dukascopy_invalid_json:status=200:content_type=text/html"):
+        client._get({"path": "api/instrumentList"})
