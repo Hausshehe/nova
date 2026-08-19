@@ -28,6 +28,7 @@ class OutcomeRecord:
     sma_fast: float | None
     sma_slow: float | None
     sma_gap_bps: float | None
+    terminal_close_return_bps: float | None
     max_up_close_move_bps: float | None
     max_down_close_move_bps: float | None
     max_abs_close_move_bps: float | None
@@ -73,10 +74,12 @@ def build_outcome_ledger(
             sma_slow = sum(x.close for x in bars[index - slow_period + 1 : index + 1]) / slow_period
             sma_gap_bps = (sma_fast / sma_slow - 1.0) * 10_000
 
+        terminal_return = None
         max_up = max_down = max_abs = None
         opportunity_label = False
         actionable_label = False
         if future:
+            terminal_return = (future[-1].close / bar.close - 1.0) * 10_000
             up_moves = [(next_bar.close / bar.close - 1.0) * 10_000 for next_bar in future]
             down_moves = [(bar.close / next_bar.close - 1.0) * 10_000 for next_bar in future]
             max_up = max(up_moves)
@@ -107,6 +110,7 @@ def build_outcome_ledger(
                 sma_fast=sma_fast,
                 sma_slow=sma_slow,
                 sma_gap_bps=sma_gap_bps,
+                terminal_close_return_bps=terminal_return,
                 max_up_close_move_bps=max_up,
                 max_down_close_move_bps=max_down,
                 max_abs_close_move_bps=max_abs,
