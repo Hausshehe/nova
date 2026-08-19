@@ -21,10 +21,7 @@ jobs:
           python-version: "3.11"
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check pytest requests
-      - name: Compile changed research modules
-        run: >-
-          python -m py_compile
-          trading_research/adaptive_opportunity_policy.py
-          trading_research/strategy_escalation_efficiency.py
+      - name: Compile research package
+        run: python -m compileall -q trading_research
       - name: Run test suite
         run: python -m pytest -q
