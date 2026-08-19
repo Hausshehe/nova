@@ -32,8 +32,9 @@ def evaluate_strategy_escalation(
     slope_lookback: int = 3,
     slope_bps: float = 3.0,
     min_setup_score: float = 1.0,
+    strong_setup_score: float = 1.5,
 ) -> tuple[StrategyEscalationDecision, ...]:
-    """Combine causal strategy hints with state-aware market escalation."""
+    """Combine confidence-tiered strategy hints with bounded market escalation."""
     hints = build_strategy_escalation_hints(
         bars,
         fast_period=fast_period,
@@ -43,42 +44,50 @@ def evaluate_strategy_escalation(
         slope_lookback=slope_lookback,
         slope_bps=slope_bps,
         min_setup_score=min_setup_score,
+        strong_setup_score=strong_setup_score,
     )
     by_timestamp = {bar.timestamp: i for i, bar in enumerate(bars)}
-
     escalator = AdaptiveEscalator(thresholds)
     results: list[StrategyEscalationDecision] = []
+
     for event in events:
         index = by_timestamp.get(event.timestamp)
         if index is None:
             continue
         hint = hints[index]
-        market_state = hint.sma_gap_bps + hint.momentum_bps
-        market_decision = escalator.evaluate(event, state_value_bps=market_state)
-        request = market_decision.request_ai
-        reason = market_decision.reason
+        state_value = hint.sma_gap_bps + hint.momentum_bps
+        market_decision = escalator.evaluate(event, state_value_bps=state_value)
 
-        if hint.request_ai and not request:
-            configured = thresholds or EscalationThresholds()
-            synthetic = MarketEvent(
-                event_type="PRICE_MOVE",
-                timestamp=event.timestamp,
-                symbol=event.symbol,
-                timeframe=event.timeframe,
-                reason=f"strategy hint: {hint.reason}",
-                price=event.price,
-                change_bps=configured.elevated_move_bps,
-                spread_bps=event.spread_bps,
-            )
-            promoted = escalator.evaluate(synthetic, state_value_bps=market_state)
-            request = promoted.request_ai
+        if hint.confidence_tier == "STRONG":
+            if market_decision.request_ai:
+                request = True
+                reason = f"strong strategy hint: {hint.reason}"
+            else:
+                configured = thresholds or EscalationThresholds()
+                synthetic = MarketEvent(
+                    event_type="PRICE_MOVE",
+                    timestamp=event.timestamp,
+                    symbol=event.symbol,
+                    timeframe=event.timeframe,
+                    reason=f"strong strategy hint: {hint.reason}",
+                    price=event.price,
+                    change_bps=configured.elevated_move_bps,
+                    spread_bps=event.spread_bps,
+                )
+                promoted = escalator.evaluate(synthetic, state_value_bps=state_value)
+                request = promoted.request_ai
+                reason = "strong strategy hint confirmed" if request else "strong strategy hint suppressed by AI cooldown"
+        elif hint.confidence_tier == "DEVELOPING":
+            request = market_decision.request_ai
             reason = (
-                f"strategy hint: {hint.reason}"
+                f"developing strategy confirmed by market escalation: {hint.reason}"
                 if request
-                else "strategy hint suppressed by state-aware AI cooldown"
+                else market_decision.reason
             )
-        elif hint.request_ai and request:
-            reason = f"strategy hint: {hint.reason}"
+        else:
+            request = market_decision.request_ai
+            reason = market_decision.reason
 
         results.append(StrategyEscalationDecision(index, request, reason, hint, market_decision))
+
     return tuple(results)
