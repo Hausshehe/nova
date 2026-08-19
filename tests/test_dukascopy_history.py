@@ -11,6 +11,8 @@ from trading_research.dukascopy_history import (
     DATAFEED_BASE_URL,
     DukascopyClient,
     INSTRUMENTS,
+    WTI_LEGACY_DATAFEED,
+    WTI_SYMBOL_SWITCH_YEAR,
     _aggregate_4h,
     _decode_candle_file,
     _deduplicate_and_validate,
@@ -61,6 +63,17 @@ def test_native_urls_are_stable():
     )
     assert _native_url("WTI", "1H", 2024, 1).endswith(
         "/LIGHTCMDUSD/2024/00/BID_candles_hour_1.bi5"
+    )
+
+
+def test_wti_daily_uses_legacy_directory_before_symbol_switch():
+    assert WTI_LEGACY_DATAFEED == "WTICMDUSD"
+    assert WTI_SYMBOL_SWITCH_YEAR == 2015
+    assert _native_url("WTI", "1D", 2014) == (
+        f"{DATAFEED_BASE_URL}/WTICMDUSD/2014/BID_candles_day_1.bi5"
+    )
+    assert _native_url("WTI", "1D", 2015) == (
+        f"{DATAFEED_BASE_URL}/LIGHTCMDUSD/2015/BID_candles_day_1.bi5"
     )
 
 
