@@ -143,10 +143,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nova-broader-campaign-recovered-evidence
-          if-no-files-found: error
           path: |
             data/research/universe_v2/manifest.json
             data/research/broader_matrix_results.csv
             data/research/broader_matrix_summary.json
             data/research/broader_matrix_report.md
+          if-no-files-found: error
           retention-days: 14
