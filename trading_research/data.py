@@ -8,6 +8,7 @@ trading terminal environment.
 from __future__ import annotations
 
 import csv
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,12 +25,12 @@ class Bar:
     high: float
     low: float
     close: float
-    volume: float
+    volume: float = 0.0
 
     def validate(self) -> None:
         values = (self.open, self.high, self.low, self.close, self.volume)
-        if any(value != value for value in values):
-            raise ValueError("bar contains NaN")
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("bar contains a non-finite numeric value")
         if self.high < max(self.open, self.close):
             raise ValueError("high must be >= open and close")
         if self.low > min(self.open, self.close):
@@ -112,10 +113,14 @@ def load_csv(path: str | Path) -> list[Bar]:
         if missing:
             raise ValueError("CSV missing required columns: " + ", ".join(missing))
 
+        previous_timestamp: datetime | None = None
         for line_number, row in enumerate(reader, start=2):
             try:
+                timestamp = _parse_timestamp(row["timestamp"])
+                if previous_timestamp is not None and timestamp <= previous_timestamp:
+                    raise ValueError("dataset timestamps must be chronological and strictly increasing")
                 bar = Bar(
-                    timestamp=_parse_timestamp(row["timestamp"]),
+                    timestamp=timestamp,
                     open=float(row["open"]),
                     high=float(row["high"]),
                     low=float(row["low"]),
@@ -126,12 +131,10 @@ def load_csv(path: str | Path) -> list[Bar]:
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"invalid OHLCV row {line_number}: {exc}") from exc
             rows.append(bar)
+            previous_timestamp = timestamp
 
     if not rows:
         raise ValueError("dataset is empty")
-    timestamps = [bar.timestamp for bar in rows]
-    if timestamps != sorted(timestamps):
-        raise ValueError("dataset timestamps must be chronological")
     return rows
 
 

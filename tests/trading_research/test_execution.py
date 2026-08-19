@@ -28,6 +28,7 @@ def test_demo_gateway_records_without_external_order():
         ExecutionRequest(
             recommendation=_recommendation(),
             symbol="EURUSD",
+            timeframe="1D",
             price=1.10,
             quantity=1.0,
             timestamp_utc=datetime.now(timezone.utc),
@@ -45,6 +46,7 @@ def test_executor_rejects_unapproved_strategy_without_execution():
     decision, execution = executor.execute_if_allowed(
         _recommendation(),
         symbol="EURUSD",
+        timeframe="1D",
         price=1.10,
         quantity=1.0,
         timestamp_utc=None,
@@ -63,6 +65,7 @@ def test_executor_rejects_when_daily_loss_limit_is_reached():
     decision, execution = executor.execute_if_allowed(
         _recommendation(),
         symbol="EURUSD",
+        timeframe="1D",
         price=1.10,
         quantity=1.0,
         timestamp_utc=None,
@@ -80,6 +83,7 @@ def test_demo_gateway_rejects_non_order_action():
         ExecutionRequest(
             recommendation=_recommendation(action="WATCH"),
             symbol="EURUSD",
+            timeframe="1D",
             price=1.10,
             quantity=1.0,
             timestamp_utc=datetime.now(timezone.utc),
@@ -94,6 +98,7 @@ def test_request_rejects_naive_timestamp():
         ExecutionRequest(
             recommendation=_recommendation(),
             symbol="EURUSD",
+            timeframe="1D",
             price=1.10,
             quantity=1.0,
             timestamp_utc=datetime.now(),

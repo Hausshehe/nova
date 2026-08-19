@@ -2,8 +2,8 @@
 
 The engine is intentionally narrow. A signal is evaluated at bar *i* and,
 when it changes, the position is executed at bar *i+1* open. This prevents a
-strategy from using the current bar's close/high/low to magically trade at
-that same bar's price.
+strategy from using the current bar's close/high/low to magically trade at that
+same bar's price.
 
 No live trading, broker access, or order placement belongs in this module.
 """
@@ -72,6 +72,9 @@ def run_long_flat(
     A position change is executed at the next bar's open, so the final bar
     cannot create a new position. Any open position is closed at the final
     close. Returns are fractional and start from equity=1.0.
+
+    The equity curve is marked to market on every bar while a position is open;
+    this ensures maximum drawdown includes unrealized intra-trade losses.
     """
     if len(bars) < 2:
         raise ValueError("at least two bars are required")
@@ -82,9 +85,9 @@ def run_long_flat(
     in_position = False
     entry_price = 0.0
     entry_timestamp = None
+    realized_equity = 1.0
+    equity_curve = [realized_equity]
     trades: list[Trade] = []
-    equity = 1.0
-    equity_curve = [equity]
 
     for index in range(len(bars) - 1):
         desired = bool(signal(bars, index))
@@ -97,7 +100,7 @@ def run_long_flat(
         elif in_position and not desired:
             exit_price = next_bar.open * (1.0 - cost)
             trade_return = exit_price / entry_price - 1.0
-            equity *= 1.0 + trade_return
+            realized_equity *= 1.0 + trade_return
             trades.append(
                 Trade(
                     entry_timestamp=entry_timestamp,
@@ -107,14 +110,20 @@ def run_long_flat(
                     return_fraction=trade_return,
                 )
             )
-            equity_curve.append(equity)
             in_position = False
+            entry_price = 0.0
+            entry_timestamp = None
+
+        marked_equity = realized_equity
+        if in_position:
+            marked_equity = realized_equity * (next_bar.close / entry_price)
+        equity_curve.append(marked_equity)
 
     if in_position:
         exit_bar = bars[-1]
         exit_price = exit_bar.close * (1.0 - cost)
         trade_return = exit_price / entry_price - 1.0
-        equity *= 1.0 + trade_return
+        realized_equity *= 1.0 + trade_return
         trades.append(
             Trade(
                 entry_timestamp=entry_timestamp,
@@ -124,7 +133,7 @@ def run_long_flat(
                 return_fraction=trade_return,
             )
         )
-        equity_curve.append(equity)
+        equity_curve.append(realized_equity)
 
     returns = [trade.return_fraction for trade in trades]
     winning = [value for value in returns if value > 0]
@@ -134,7 +143,7 @@ def run_long_flat(
     return BacktestResult(
         trades=tuple(trades),
         equity_curve=tuple(equity_curve),
-        final_return=equity - 1.0,
+        final_return=realized_equity - 1.0,
         max_drawdown=_max_drawdown(equity_curve),
         profit_factor=_profit_factor(returns),
         expectancy=expectancy,

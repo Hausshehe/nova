@@ -108,19 +108,21 @@ def build_walk_forward_policy(
     candidate_indices: Iterable[int] | None = None,
     observable_context: Mapping[int, tuple[int, int]] | None = None,
 ) -> tuple[AdaptivePolicyDecision, ...]:
-    """Build a causal adaptive filter over a trusted candidate set.
-
-    Evidence is hierarchical. The policy first uses the exact observable
-    feature/context state, then backs off to context-only and finally
-    tier-only evidence when the finer state has too few historical samples.
-    Every label is still delayed until its complete future horizon is known.
-    """
+    """Build a causal adaptive filter over a trusted candidate set."""
     if future_bars <= 0 or opportunity_move_bps <= 0 or transaction_cost_bps_round_trip < 0:
         raise ValueError("invalid opportunity parameters")
-    if fast_period <= 0 or slow_period <= fast_period or momentum_lookback <= 0:
-        raise ValueError("invalid feature periods")
-    if min_samples <= 0 or not 0 < min_confidence <= 1 or bucket_width_bps <= 0:
-        raise ValueError("invalid adaptive policy parameters")
+    if fast_period <= 0:
+        raise ValueError("fast_period must be positive")
+    if slow_period <= fast_period:
+        raise ValueError("slow_period must exceed fast_period")
+    if momentum_lookback <= 0:
+        raise ValueError("momentum_lookback must be positive")
+    if min_samples <= 0:
+        raise ValueError("min_samples must be positive")
+    if not 0 < min_confidence <= 1:
+        raise ValueError("min_confidence must be between 0 and 1")
+    if bucket_width_bps <= 0:
+        raise ValueError("bucket_width_bps must be positive")
 
     if candidate_indices is None:
         candidates: set[int] | None = None
@@ -203,7 +205,7 @@ def build_walk_forward_policy(
             reason = "insufficient evidence; preserve trusted candidate"
         elif confidence <= non_actionable_floor:
             request = False
-            reason = f"historically low actionable rate; adaptive suppression ({evidence_source})"
+            reason = "historically low actionable rate; adaptive suppression"
         else:
             request = True
             reason = f"historically actionable feature state ({evidence_source})"

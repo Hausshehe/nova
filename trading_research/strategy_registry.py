@@ -65,6 +65,8 @@ class StrategyRegistry:
 
     def set_research_state(self, name: str, version: str, research_state: str, reason: str = "") -> None:
         existing = self._require(name, version)
+        if existing["status"] != "CANDIDATE":
+            raise ValueError("research state cannot be changed for non-candidate strategy")
         hypothesis = dict(existing["hypothesis"])
         hypothesis["research_state"] = research_state
         self.store.register_strategy(

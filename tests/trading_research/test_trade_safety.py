@@ -19,6 +19,7 @@ def _request(action="ENTER"):
             confidence=0.8,
         ),
         symbol="EURUSD",
+        timeframe="1D",
         price=1.1,
         quantity=1000,
         timestamp_utc=datetime(2026, 8, 19, tzinfo=timezone.utc),

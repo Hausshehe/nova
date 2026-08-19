@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from trading_research.adaptive_market_brain import AdaptiveMarketBrain
 from trading_research.data import Bar
@@ -19,40 +19,32 @@ class FakeReasoner:
 
     def analyze(self, event, *, strategy_context="", market_context=""):
         self.calls += 1
-        return MarketAnalysis(
-            assessment="WATCH",
-            rationale="architecture-only review",
-            relevant_strategies=(),
-            urgency="ELEVATED",
-        )
+        return MarketAnalysis(assessment="WATCH", rationale="architecture-only review", relevant_strategies=(), urgency="ELEVATED")
 
 
 def test_historical_bars_run_through_real_pipeline_without_execution():
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
     bars = [
         Bar(base, 1.1000, 1.1005, 1.0995, 1.1000, 1000),
-        Bar(base.replace(day=2), 1.1000, 1.1035, 1.1000, 1.1030, 1000),
-        Bar(base.replace(day=3), 1.1030, 1.1035, 1.1025, 1.1031, 1000),
+        Bar(base + timedelta(days=1), 1.1000, 1.1035, 1.1000, 1.1030, 1000),
+        Bar(base + timedelta(days=2), 1.1030, 1.1035, 1.1025, 1.1031, 1000),
     ]
     reasoner = FakeReasoner()
     gateway = DemoExecutionGateway()
     history = MarketHistoryStore(":memory:")
+    clock = {"now": bars[0].timestamp}
     orchestrator = DemoTradingOrchestrator(
         brain=AdaptiveMarketBrain(AdaptiveEscalator(), reasoner),
-        supervisor=DemoTradingSupervisor(now=lambda: bars[-1].timestamp),
+        supervisor=DemoTradingSupervisor(now=lambda: clock["now"]),
         experience=ExperienceStore(":memory:"),
         gateway=gateway,
         strategy_lookup=lambda *_: False,
         strategy_version_resolver=lambda *_: None,
     )
-    pipeline = LiveDemoPipeline(
-        monitor=MarketMonitor(),
-        history=history,
-        orchestrator=orchestrator,
-    )
-
+    pipeline = LiveDemoPipeline(monitor=MarketMonitor(), history=history, orchestrator=orchestrator)
     results = []
     for bar in bars:
+        clock["now"] = bar.timestamp
         results.append(pipeline.process_snapshot(MarketSnapshot("EURUSD", "1D", bar)))
 
     assert len(history.recent("EURUSD", "1D", 10)) == 3
