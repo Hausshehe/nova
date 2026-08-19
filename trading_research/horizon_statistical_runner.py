@@ -12,11 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .data import load_csv
-from .horizon_robustness_audit import (
-    _all_bar_baseline_predictions,
-    _fixed_expert_predictions,
-    _non_overlapping,
-)
+from .horizon_robustness_audit import _all_bar_baseline_predictions, _non_overlapping
 from .online_horizon_expert_ensemble import HORIZONS, collect_online_horizon_predictions
 from .statistical_diagnostics import moving_block_bootstrap_mean_ci
 
@@ -26,16 +22,12 @@ def _net_values(predictions, cost_bps: float) -> list[float]:
 
 
 def _diagnostic(values: Sequence[float], *, block_length: int, samples: int, seed: int) -> dict[str, object]:
-    result = moving_block_bootstrap_mean_ci(
+    return moving_block_bootstrap_mean_ci(
         values,
         block_length=min(block_length, len(values)),
         samples=samples,
         seed=seed,
     )
-    result["bootstrap_mean_positive_rate"] = None
-    # The bootstrap helper intentionally returns only the CI; the result is
-    # still useful as a frozen-stream uncertainty diagnostic.
-    return result
 
 
 def run(
