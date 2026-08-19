@@ -65,21 +65,19 @@ jobs:
           head_sha = run.get("head_sha")
           if not head_sha:
               raise SystemExit("source_run_missing_head_sha")
-
-          # Source run 32293018258 is the frozen broader-campaign acquisition snapshot.
           if run_id == "32293018258" and head_sha != "d79afc0e463be97a419e20bde348650cdb55c945":
               raise SystemExit(f"frozen_source_head_mismatch:{head_sha}")
 
           recovery = github_get(f"https://api.github.com/repos/{repo}/commits/{recovery_commit}")
-          resolved_sha = recovery.get("sha")
-          if resolved_sha != recovery_commit:
+          if recovery.get("sha") != recovery_commit:
               raise SystemExit("recovery_commit_not_found_or_mismatched")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"recovery_sha={recovery_commit}\n")
           print(
-              f"SOURCE RUN VERIFIED id={run_id} status={run.get('status')} conclusion={run.get('conclusion')} "
-              f"run_head_sha={head_sha} recovery_commit={recovery_commit}",
+              f"SOURCE RUN VERIFIED id={run_id} status={run.get('status')} "
+              f"conclusion={run.get('conclusion')} run_head_sha={head_sha} "
+              f"recovery_commit={recovery_commit}",
               flush=True,
           )
           PY
@@ -101,8 +99,7 @@ jobs:
           )
           print(
               f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID} "
-              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} "
-              f"migration={invalidate_legacy_wti_4h.__name__}",
+              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} migration={invalidate_legacy_wti_4h.__name__}",
               flush=True,
           )
           PY
@@ -157,12 +154,7 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-          from trading_research.dukascopy_history import (
-              DukascopyClient,
-              INSTRUMENTS,
-              TIMEFRAMES,
-              write_csv,
-          )
+          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES, write_csv
 
           source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
           root = Path("data/research/universe_v2")
@@ -184,22 +176,15 @@ jobs:
           if source_run_id == "32293018258" and set(missing) != expected_legacy_missing:
               raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
 
-          print(
-              f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}",
-              flush=True,
-          )
+          print(f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}", flush=True)
           print(f"RECOVER missing datasets={len(missing)}", flush=True)
 
           for instrument, timeframe in missing:
               recovered = False
               for attempt in range(1, 4):
-                  print(
-                      f"RECOVERY attempt={attempt}/3 dataset={instrument} {timeframe}",
-                      flush=True,
-                  )
+                  print(f"RECOVERY attempt={attempt}/3 dataset={instrument} {timeframe}", flush=True)
                   try:
-                      client = DukascopyClient()
-                      candles = client.historical_prices(
+                      candles = DukascopyClient().historical_prices(
                           instrument=instrument,
                           timeframe=timeframe,
                           start_utc="2010-01-01T00:00:00+00:00",
@@ -209,19 +194,11 @@ jobs:
                           raise RuntimeError(f"insufficient_bars:{len(candles)}")
                       target = root / f"{instrument}_{timeframe}.csv"
                       digest = write_csv(candles, target)
-                      print(
-                          f"RECOVERY COMPLETE dataset={instrument} {timeframe} "
-                          f"bars={len(candles)} sha256={digest}",
-                          flush=True,
-                      )
+                      print(f"RECOVERY COMPLETE dataset={instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
                       recovered = True
                       break
                   except Exception as exc:
-                      print(
-                          f"RECOVERY FAILED attempt={attempt}/3 dataset={instrument} {timeframe} "
-                          f"error={type(exc).__name__}: {exc}",
-                          flush=True,
-                      )
+                      print(f"RECOVERY FAILED attempt={attempt}/3 dataset={instrument} {timeframe} error={type(exc).__name__}: {exc}", flush=True)
               if not recovered:
                   raise SystemExit(f"recovery_exhausted:{instrument}:{timeframe}")
           PY
