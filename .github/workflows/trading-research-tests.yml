@@ -10,6 +10,7 @@ on:
       - trading-research-hypothesis-disposition
       - trading-research-memory-hardening
       - trading-research-memory-gate
+      - fix-dukascopy-candle-decoder
   pull_request:
     branches:
       - trading-research-lab
