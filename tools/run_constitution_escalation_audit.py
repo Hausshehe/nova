@@ -7,12 +7,13 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from datetime import datetime, timezone
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from trading_research.constitution_runtime import ConstitutionRuntime
+from trading_research.constitution_runtime import validate_demo_runtime
 from trading_research.data import load_csv
 from trading_research.escalation import AdaptiveEscalator
 from trading_research.market_monitor import MarketMonitor, MarketSnapshot
@@ -26,7 +27,6 @@ def main() -> None:
     args = parser.parse_args()
 
     constitution = TradingConstitution()
-    runtime = ConstitutionRuntime(constitution)
     monitor = MarketMonitor()
     escalator = AdaptiveEscalator()
     counts: Counter[str] = Counter()
@@ -39,15 +39,22 @@ def main() -> None:
             MarketSnapshot(symbol="EURUSD", timeframe="1D", bar=bar)
         ):
             decision = escalator.evaluate(event)
-            allowed = runtime.allow_review(
-                event=event,
-                request_ai=decision.request_ai,
-                recommended_poll_seconds=decision.recommended_poll_seconds,
+            runtime = validate_demo_runtime(
+                constitution,
+                demo_mode=True,
+                spread_bps=event.spread_bps,
+                session_time=event.timestamp.astimezone(timezone.utc).time(),
             )
-            if not allowed.allowed:
+            if not runtime.allowed:
                 blocked += 1
-                counts[f"BLOCKED:{allowed.reason}"] += 1
+                counts[f"BLOCKED:{runtime.reason}"] += 1
                 continue
+
+            if decision.recommended_poll_seconds > constitution.max_poll_interval_seconds:
+                blocked += 1
+                counts["BLOCKED:poll_interval_above_constitution"] += 1
+                continue
+
             counts["AI" if decision.request_ai else "ROUTINE"] += 1
             polls[decision.recommended_poll_seconds] += 1
 
