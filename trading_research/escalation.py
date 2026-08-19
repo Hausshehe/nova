@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Hashable
 
 from .market_monitor import MarketEvent
 
@@ -22,6 +23,7 @@ class EscalationThresholds:
     elevated_spread_bps: float = 10.0
     critical_spread_bps: float = 25.0
     ai_cooldown_seconds: int = 60
+    min_state_change_bps: float = 12.0
 
     def validate(self) -> None:
         if self.elevated_move_bps <= 0:
@@ -34,6 +36,8 @@ class EscalationThresholds:
             raise ValueError("critical_spread_bps must be >= elevated_spread_bps")
         if self.ai_cooldown_seconds < 0:
             raise ValueError("ai_cooldown_seconds cannot be negative")
+        if self.min_state_change_bps <= 0:
+            raise ValueError("min_state_change_bps must be positive")
 
 
 @dataclass(frozen=True)
@@ -51,8 +55,9 @@ class AdaptiveEscalator:
         self.thresholds = thresholds or EscalationThresholds()
         self.thresholds.validate()
         self._last_ai_request: dict[tuple[str, str], datetime] = {}
+        self._last_ai_state: dict[tuple[str, str], float] = {}
 
-    def evaluate(self, event: MarketEvent) -> EscalationDecision:
+    def evaluate(self, event: MarketEvent, *, state_value_bps: float | None = None) -> EscalationDecision:
         move = event.change_bps or 0.0
         spread = event.spread_bps or 0.0
 
@@ -81,9 +86,11 @@ class AdaptiveEscalator:
             reason = "ordinary market observation"
             poll = 15
 
-        request_ai = level in {"ELEVATED", "CRITICAL"} and self._cooldown_allows(event)
-        if level in {"ELEVATED", "CRITICAL"} and not request_ai:
-            reason += "; AI cooldown active"
+        request_ai = False
+        if level in {"ELEVATED", "CRITICAL"}:
+            request_ai = self._cooldown_allows(event, state_value_bps)
+            if not request_ai:
+                reason += "; AI cooldown active"
 
         return EscalationDecision(
             level=level,
@@ -92,12 +99,20 @@ class AdaptiveEscalator:
             recommended_poll_seconds=poll,
         )
 
-    def _cooldown_allows(self, event: MarketEvent) -> bool:
+    def _cooldown_allows(self, event: MarketEvent, state_value_bps: float | None) -> bool:
         key = (event.symbol.upper(), event.timeframe.upper())
-        previous = self._last_ai_request.get(key)
-        if previous is not None:
-            elapsed = (event.timestamp - previous).total_seconds()
-            if elapsed < self.thresholds.ai_cooldown_seconds:
+        previous_time = self._last_ai_request.get(key)
+        previous_state = self._last_ai_state.get(key)
+        state_changed = (
+            state_value_bps is not None
+            and previous_state is not None
+            and abs(state_value_bps - previous_state) >= self.thresholds.min_state_change_bps
+        )
+        if previous_time is not None:
+            elapsed = (event.timestamp - previous_time).total_seconds()
+            if elapsed < self.thresholds.ai_cooldown_seconds and not state_changed:
                 return False
         self._last_ai_request[key] = event.timestamp
+        if state_value_bps is not None:
+            self._last_ai_state[key] = state_value_bps
         return True
