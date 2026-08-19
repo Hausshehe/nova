@@ -15,8 +15,9 @@ def main() -> int:
     parser.add_argument("csv_path")
     parser.add_argument("--output", default="volatility_mean_reversion_experiment.json")
     parser.add_argument("--memory-db", default="data/research/nova_experience.sqlite3")
-    parser.add_argument("--fee-bps", type=float, default=2.0)
-    parser.add_argument("--slippage-bps", type=float, default=2.0)
+    # 1 bps fee + 1 bps slippage per side = 4 bps round-trip.
+    parser.add_argument("--fee-bps", type=float, default=1.0)
+    parser.add_argument("--slippage-bps", type=float, default=1.0)
     args = parser.parse_args()
 
     memory = ExperienceStore(args.memory_db)
