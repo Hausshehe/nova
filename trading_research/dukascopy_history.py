@@ -28,9 +28,12 @@ INSTRUMENT_DATAFEED = {
 }
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
-MAX_NETWORK_RETRIES = 3
+MAX_TRANSIENT_HTTP_RETRIES = 5
+MAX_NETWORK_RETRIES = 5
 DEFAULT_429_BACKOFF_SECONDS = 2.0
 MAX_429_BACKOFF_SECONDS = 120.0
+DEFAULT_TRANSIENT_BACKOFF_SECONDS = 2.0
+MAX_TRANSIENT_BACKOFF_SECONDS = 60.0
 CANDLE_RECORD_SIZE = 24
 CANDLE_STRUCT = struct.Struct(">IIIIIf")
 
@@ -93,13 +96,15 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
     }
     network_attempts = 0
     rate_attempts = 0
+    transient_http_attempts = 0
     while True:
         try:
             response = session.get(url, timeout=45, headers=headers)
         except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
             if network_attempts >= MAX_NETWORK_RETRIES:
                 raise
-            time.sleep(min(DEFAULT_429_BACKOFF_SECONDS * (2**network_attempts), MAX_429_BACKOFF_SECONDS))
+            delay = min(DEFAULT_TRANSIENT_BACKOFF_SECONDS * (2**network_attempts), MAX_TRANSIENT_BACKOFF_SECONDS)
+            time.sleep(delay)
             network_attempts += 1
             continue
         network_attempts = 0
@@ -115,6 +120,13 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
                 delay = DEFAULT_429_BACKOFF_SECONDS * (2**rate_attempts)
             time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
             rate_attempts += 1
+            continue
+        if response.status_code in {500, 502, 503, 504}:
+            if transient_http_attempts >= MAX_TRANSIENT_HTTP_RETRIES:
+                response.raise_for_status()
+            delay = min(DEFAULT_TRANSIENT_BACKOFF_SECONDS * (2**transient_http_attempts), MAX_TRANSIENT_BACKOFF_SECONDS)
+            time.sleep(delay)
+            transient_http_attempts += 1
             continue
         response.raise_for_status()
         if not response.content:
@@ -156,7 +168,13 @@ def _deduplicate_and_validate(candles: list[Candle]) -> list[Candle]:
         if current.timestamp_utc <= previous.timestamp_utc:
             raise ValueError("candle_timestamps_not_strictly_increasing")
         if not (current.low <= current.open <= current.high and current.low <= current.close <= current.high):
-            raise ValueError("candle_ohlc_invalid")
+            raise ValueError(
+                "candle_ohlc_invalid:"
+                f"timestamp={current.timestamp_utc}:"
+                f"open={current.open}:high={current.high}:"
+                f"low={current.low}:close={current.close}:"
+                f"previous_timestamp={previous.timestamp_utc}"
+            )
     return ordered
 
 
