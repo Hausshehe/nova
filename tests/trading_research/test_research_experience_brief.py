@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from trading_research.contracts import Hypothesis
+from trading_research.experience_lifecycle import ExperienceMetadata
+from trading_research.experience_lifecycle_store import ExperienceLifecycleStore
 from trading_research.experience_query import ExperienceQuery
 from trading_research.memory import ExperienceStore
 from trading_research.research_experience_brief import build_research_experience_brief
@@ -64,6 +66,36 @@ def test_brief_summarizes_prior_dispositions_and_evidence(tmp_path: Path) -> Non
     assert brief.has_prior_evidence is True
     assert brief.has_independent_validation is False
     assert brief.evidence_hashes == ("a" * 64,)
+
+
+def test_brief_preserves_independent_validation_class(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("evidence", encoding="utf-8")
+    store = ExperienceStore(":memory:")
+    store.record_experiment(
+        experiment_id="exp-1",
+        created_at_utc="2026-01-01T00:00:00+00:00",
+        hypothesis_name="brief-test",
+        symbol="EURUSD",
+        timeframe="1D",
+        final_decision="REJECT",
+        record=_record(dataset, "REJECT"),
+    )
+    hypothesis_fingerprint = ExperienceQuery(store).history_for_hypothesis(_hypothesis())[0].hypothesis_fingerprint
+    lifecycle = ExperienceLifecycleStore(":memory:")
+    lifecycle.record(
+        ExperienceMetadata(
+            experiment_id="exp-1",
+            observed_at_utc="2026-01-01T00:00:00+00:00",
+            hypothesis_fingerprint=hypothesis_fingerprint,
+            dataset_sha256="a" * 64,
+            final_decision="REJECT",
+            knowledge_class="INDEPENDENT_VALIDATION",
+        )
+    )
+    brief = build_research_experience_brief(ExperienceQuery(store, lifecycle), _hypothesis())
+    assert brief.independent_validation_count == 1
+    assert brief.has_independent_validation is True
 
 
 def test_empty_brief_is_non_authoritative() -> None:
