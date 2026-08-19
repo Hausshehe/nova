@@ -3,6 +3,9 @@
 Python market observation decides when an event deserves attention. This
 module packages that event into a small structured request for an LLM.
 The response is advisory only: deterministic policy must validate any action.
+
+The AI request format is intentionally fixed. Compact/adaptive prompt
+experiments remain research-only and are never selected by production code.
 """
 
 from __future__ import annotations
@@ -17,6 +20,14 @@ from .market_monitor import MarketEvent
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
+AI_REQUEST_FORMAT_VERSION = "full_hardcoded_v1"
+SYSTEM_PROMPT = (
+    "You are Nova's market event analyst. Analyze the event and "
+    "return a structured advisory recommendation. Do not place "
+    "trades, choose position size, alter risk gates, or claim "
+    "profitability. ENTER/EXIT must name an approved strategy "
+    "and exact strategy version when one is relevant."
+)
 
 
 @dataclass(frozen=True)
@@ -98,13 +109,7 @@ class GroqMarketReasoner:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are Nova's market event analyst. Analyze the event and "
-                        "return a structured advisory recommendation. Do not place "
-                        "trades, choose position size, alter risk gates, or claim "
-                        "profitability. ENTER/EXIT must name an approved strategy "
-                        "and exact strategy version when one is relevant."
-                    ),
+                    "content": SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
