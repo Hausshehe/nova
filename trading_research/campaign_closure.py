@@ -43,18 +43,18 @@ def evaluate_campaign_closure(
     market_question_changed: bool = False,
 ) -> CampaignClosureDecision:
     """Return the deterministic campaign-level planning decision."""
-    if market_question_changed:
-        return CampaignClosureDecision(
-            action="ALLOW_RESTART_NEW_MARKET_QUESTION",
-            reason="The market question is materially new; start a deliberately scoped research campaign.",
-            family_count=state.family_count,
-            max_families=state.max_families,
-        )
-
     if dataset_sha256 is None:
         return CampaignClosureDecision(
             action="EVIDENCE_FINGERPRINT_REQUIRED",
             reason="A dataset fingerprint is required before deciding whether a research campaign may continue.",
+            family_count=state.family_count,
+            max_families=state.max_families,
+        )
+
+    if market_question_changed:
+        return CampaignClosureDecision(
+            action="ALLOW_RESTART_NEW_MARKET_QUESTION",
+            reason="The market question is materially new; start a deliberately scoped research campaign.",
             family_count=state.family_count,
             max_families=state.max_families,
         )
