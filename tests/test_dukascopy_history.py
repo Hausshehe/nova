@@ -3,6 +3,8 @@ from __future__ import annotations
 import lzma
 from datetime import datetime, timezone
 
+import requests
+
 from trading_research.dukascopy_history import (
     CANDLE_STRUCT,
     DATAFEED_BASE_URL,
@@ -11,6 +13,7 @@ from trading_research.dukascopy_history import (
     _aggregate_4h,
     _decode_candle_file,
     _native_url,
+    _request_bytes,
     Candle,
 )
 
@@ -33,7 +36,10 @@ class FakeSession:
 
     def get(self, *args, **kwargs):
         self.calls.append((args, kwargs))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def _compressed_rows(rows):
@@ -70,8 +76,6 @@ def test_native_candle_decoder():
 
 
 def test_request_bytes_retries_429_and_honors_retry_after(monkeypatch):
-    from trading_research.dukascopy_history import _request_bytes
-
     sleeps = []
     monkeypatch.setattr("trading_research.dukascopy_history.time.sleep", sleeps.append)
     session = FakeSession([
@@ -83,6 +87,19 @@ def test_request_bytes_retries_429_and_honors_retry_after(monkeypatch):
     assert payload == b"payload"
     assert len(session.calls) == 2
     assert sleeps == [3.0]
+
+
+def test_request_bytes_retries_transient_connect_timeout(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("trading_research.dukascopy_history.time.sleep", sleeps.append)
+    session = FakeSession([
+        requests.exceptions.ConnectTimeout("timed out"),
+        FakeResponse(200, b"payload"),
+    ])
+    payload = _request_bytes(session, "https://example.test/file.bi5")
+    assert payload == b"payload"
+    assert len(session.calls) == 2
+    assert sleeps == [2.0]
 
 
 def test_aggregate_4h_uses_only_complete_utc_buckets():

@@ -28,6 +28,7 @@ INSTRUMENT_DATAFEED = {
 }
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
+MAX_NETWORK_RETRIES = 3
 DEFAULT_429_BACKOFF_SECONDS = 2.0
 MAX_429_BACKOFF_SECONDS = 120.0
 CANDLE_RECORD_SIZE = 24
@@ -90,25 +91,35 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
         "Referer": "https://freeserv.dukascopy.com/",
         "Accept": "*/*",
     }
-    for attempt in range(MAX_429_RETRIES + 1):
-        response = session.get(url, timeout=45, headers=headers)
+    network_attempts = 0
+    rate_attempts = 0
+    while True:
+        try:
+            response = session.get(url, timeout=45, headers=headers)
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+            if network_attempts >= MAX_NETWORK_RETRIES:
+                raise
+            time.sleep(min(DEFAULT_429_BACKOFF_SECONDS * (2**network_attempts), MAX_429_BACKOFF_SECONDS))
+            network_attempts += 1
+            continue
+        network_attempts = 0
         if response.status_code == 404:
             return None
         if response.status_code == 429:
-            if attempt >= MAX_429_RETRIES:
+            if rate_attempts >= MAX_429_RETRIES:
                 response.raise_for_status()
             retry_after = response.headers.get("Retry-After")
             try:
-                delay = float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2 ** attempt)
+                delay = float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**rate_attempts)
             except ValueError:
-                delay = DEFAULT_429_BACKOFF_SECONDS * (2 ** attempt)
+                delay = DEFAULT_429_BACKOFF_SECONDS * (2**rate_attempts)
             time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
+            rate_attempts += 1
             continue
         response.raise_for_status()
         if not response.content:
             return None
         return response.content
-    raise RuntimeError("unreachable")
 
 
 def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:

@@ -1,54 +1,42 @@
-name: Trading Research Tests
+name: Broader Trading Research Campaign
 
 on:
-  workflow_dispatch:
   push:
     branches:
-      - trading-research-lab
-      - trading-research-robustness-audit
-      - trading-research-statistical-audit
-      - trading-research-hypothesis-disposition
-      - trading-research-memory-hardening
-      - trading-research-memory-gate
+      - trading-research-broader-campaign-run
   pull_request:
     branches:
       - trading-research-lab
+  workflow_dispatch:
 
 jobs:
-  research-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install test dependencies
-        run: python -m pip install --disable-pip-version-check pytest requests
-      - name: Compile research package
-        run: python -m compileall -q trading_research
-      - name: Run test suite
-        run: python -m pytest -q
-
   broader-campaign:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'trading-research-broader-campaign-run'
-    needs: research-tests
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install research dependencies
         run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt pytest
+
+      - name: Compile research package
+        run: python -m compileall -q trading_research
+
+      - name: Run full test suite
+        run: python -m pytest -q
+
       - name: Acquire frozen broader universe
         run: python -m trading_research.download_research_universe
+
       - name: Run frozen 104-context matrix
         run: python -m trading_research.broader_campaign_runner
+
       - name: Upload campaign evidence
         if: always()
         uses: actions/upload-artifact@v4
