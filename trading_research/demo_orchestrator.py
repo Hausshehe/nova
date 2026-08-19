@@ -39,8 +39,9 @@ class DemoTradingOrchestrator:
         brain: AdaptiveMarketBrain,
         supervisor: DemoTradingSupervisor,
         experience: ExperienceStore,
-        gateway: DemoExecutionGateway | None = None,
         strategy_lookup: Callable[[str, str], bool],
+        strategy_version_resolver: Callable[[str, MarketEvent], str | None],
+        gateway: DemoExecutionGateway | None = None,
         policy: DecisionPolicy | None = None,
         recommendation_parser: Callable[[str | dict], AIRecommendation] = parse_recommendation,
     ) -> None:
@@ -49,6 +50,7 @@ class DemoTradingOrchestrator:
         self.experience = experience
         self.gateway = gateway or DemoExecutionGateway()
         self.strategy_lookup = strategy_lookup
+        self.strategy_version_resolver = strategy_version_resolver
         self.policy = policy or DecisionPolicy()
         self.recommendation_parser = recommendation_parser
         self.journal = TradeJournal(experience)
@@ -79,15 +81,25 @@ class DemoTradingOrchestrator:
             return DemoCycleResult(event, None, False, "no_ai_escalation", None)
 
         analysis = brain_result.analysis
+        action = {
+            "NO_ACTION": "NO_ACTION",
+            "WATCH": "WATCH",
+            "SETUP": "WATCH",
+            "RISK": "EXIT",
+        }[analysis.assessment]
+        strategy_name = analysis.relevant_strategies[0] if analysis.relevant_strategies else None
+        strategy_version = (
+            self.strategy_version_resolver(strategy_name, event)
+            if strategy_name is not None and action in {"ENTER", "EXIT"}
+            else None
+        )
+        if action in {"ENTER", "EXIT"} and (not strategy_name or not strategy_version):
+            return DemoCycleResult(event, None, False, "strategy_identity_unresolved", None)
+
         recommendation_value = {
-            "action": {
-                "NO_ACTION": "NO_ACTION",
-                "WATCH": "WATCH",
-                "SETUP": "WATCH",
-                "RISK": "EXIT",
-            }[analysis.assessment],
-            "strategy_name": analysis.relevant_strategies[0] if analysis.relevant_strategies else None,
-            "strategy_version": "1.0" if analysis.relevant_strategies else None,
+            "action": action,
+            "strategy_name": strategy_name,
+            "strategy_version": strategy_version,
             "rationale": analysis.rationale,
             "urgency": {"NORMAL": "LOW", "ELEVATED": "HIGH", "CRITICAL": "CRITICAL"}[analysis.urgency],
             "confidence": 0.5,
