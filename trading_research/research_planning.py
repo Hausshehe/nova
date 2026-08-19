@@ -8,7 +8,7 @@ planning recommendation that must still pass the deterministic research gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Sequence
 
 from .research_experience_brief import ResearchExperienceBrief
 
@@ -18,6 +18,8 @@ PlanAction = Literal[
     "NO_NEW_SAME_DATASET_EVALUATION",
     "REVIEW_EXISTING_EVIDENCE",
     "RESEARCH_BUDGET_EXHAUSTED",
+    "CAMPAIGN_CLOSED",
+    "CONTINUE_WITH_BOUNDED_NOVELTY_CHECK",
 ]
 
 
@@ -74,4 +76,39 @@ def plan_from_experience(
         reason="Prior evidence exists but no independent validation is recorded; a materially new evidence source is required before reuse can be treated as independent.",
         existing_experiment_count=brief.experiment_count,
         remaining_budget=remaining_budget,
+    )
+
+
+def plan_campaign(
+    briefs: Sequence[ResearchExperienceBrief],
+    *,
+    dataset_sha256: str | None,
+    max_frozen_hypotheses: int = 5,
+) -> ResearchPlan:
+    """Apply the finite campaign ceiling before any new same-campaign proposal."""
+    if max_frozen_hypotheses < 1:
+        raise ValueError("max_frozen_hypotheses must be positive")
+
+    used = len(briefs)
+    if used >= max_frozen_hypotheses:
+        return ResearchPlan(
+            action="CAMPAIGN_CLOSED",
+            reason="The finite hypothesis-family limit has been reached; require materially new evidence or a materially new market question before restarting research.",
+            existing_experiment_count=sum(item.experiment_count for item in briefs),
+            remaining_budget=0,
+        )
+
+    if dataset_sha256 is not None and any(dataset_sha256 in item.evidence_hashes for item in briefs):
+        return ResearchPlan(
+            action="NO_NEW_SAME_DATASET_EVALUATION",
+            reason="This evidence source is already part of the current bounded campaign; do not repeat it outside the remaining frozen-family allowance.",
+            existing_experiment_count=sum(item.experiment_count for item in briefs),
+            remaining_budget=max_frozen_hypotheses - used,
+        )
+
+    return ResearchPlan(
+        action="CONTINUE_WITH_BOUNDED_NOVELTY_CHECK",
+        reason="The campaign remains below its frozen-family ceiling; any proposal must still pass novelty, provenance, and deterministic research gates.",
+        existing_experiment_count=sum(item.experiment_count for item in briefs),
+        remaining_budget=max_frozen_hypotheses - used,
     )
