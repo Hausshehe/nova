@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Bounded A/B equivalence test for current vs compact market prompts.
 
-This is the final gate for prompt compaction. It never changes production
-behavior and never suppresses AI reviews. A stratified deterministic sample
-is evaluated through the existing Groq reasoner using identical model,
-temperature, and response schema settings.
+Final gate for prompt compaction. It never changes production behavior and
+never suppresses AI reviews. It samples one AI-review decision per bar and
+compares current vs compact prompts using identical model settings.
 
 Environment:
     GROQ_API_KEY must be set.
@@ -13,12 +12,7 @@ Arguments:
     dataset output
 
 Optional:
-    --sample N   number of baseline review bars to compare (default: 32)
-
-Deployment rule:
-    Only an exact 100% match on material decision fields with 100% valid
-    responses may produce "equivalent_candidate". Any material disagreement
-    produces "not_equivalent". API/runtime failures produce "inconclusive".
+    --sample N   number of unique baseline review bars to compare (default: 32)
 """
 
 from __future__ import annotations
@@ -26,10 +20,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import asdict
+from collections import defaultdict
 from pathlib import Path
 import sys
-from collections import defaultdict
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -39,7 +32,6 @@ from trading_research.data import load_csv
 from trading_research.market_monitor import MarketMonitor, MarketEvent
 from trading_research.market_reasoner import GroqMarketReasoner, MarketAnalysis, DEFAULT_MODEL
 from trading_research.strategy_escalation_bridge import evaluate_strategy_escalation
-from trading_research.strategy_escalation_efficiency import _actionable_indices
 
 SYSTEM_PROMPT = (
     "You are Nova's market event analyst. Analyze the event and return a structured advisory recommendation. "
@@ -51,22 +43,12 @@ SYSTEM_PROMPT = (
 def _decision_key(analysis: MarketAnalysis) -> tuple:
     rec = analysis.recommendation
     if rec is None:
-        return (
-            analysis.assessment,
-            analysis.urgency,
-            tuple(analysis.relevant_strategies),
-            None,
-        )
+        return (analysis.assessment, analysis.urgency, tuple(analysis.relevant_strategies), None)
     return (
         analysis.assessment,
         analysis.urgency,
         tuple(analysis.relevant_strategies),
-        (
-            rec.action,
-            rec.strategy_name,
-            rec.strategy_version,
-            rec.urgency,
-        ),
+        (rec.action, rec.strategy_name, rec.strategy_version, rec.urgency),
     )
 
 
@@ -113,10 +95,6 @@ def _compact_contexts(decision, event: MarketEvent) -> tuple[str, str]:
         f"Compact decision-time context:\n{_compact_context(decision)}"
     )
     return SYSTEM_PROMPT, user
-
-
-def _make_transport(reasoner: GroqMarketReasoner):
-    return reasoner._transport
 
 
 def _call(reasoner: GroqMarketReasoner, system_prompt: str, user_prompt: str) -> MarketAnalysis:
@@ -185,23 +163,18 @@ def _call(reasoner: GroqMarketReasoner, system_prompt: str, user_prompt: str) ->
     return analysis
 
 
-def _stratified_sample(decisions, sample_size: int):
-    groups = defaultdict(list)
+def _unique_bar_sample(decisions, sample_size: int):
+    by_index = defaultdict(list)
     for d in decisions:
-        groups[d.strategy_hint.confidence_tier].append(d)
-    tiers = sorted(groups)
+        if d.request_ai or d.strategy_hint.request_ai:
+            by_index[d.index].append(d)
     selected = []
-    if sample_size <= 0:
-        return selected
-    while len(selected) < sample_size and any(groups.values()):
-        progressed = False
-        for tier in tiers:
-            if groups[tier]:
-                selected.append(groups[tier].pop(0))
-                progressed = True
-                if len(selected) >= sample_size:
-                    break
-        if not progressed:
+    # Deterministic, one decision per bar. Prefer the first AI-requesting
+    # decision in source event order; this preserves one-AI-decision-per-bar
+    # accounting for this equivalence gate.
+    for index in sorted(by_index):
+        selected.append(by_index[index][0])
+        if len(selected) >= sample_size:
             break
     return selected
 
@@ -220,17 +193,23 @@ def main() -> None:
     bars = tuple(load_csv(args.dataset))
     events = MarketMonitor().observe_history("EURUSD", "15m", bars)
     decisions = evaluate_strategy_escalation(bars, events)
-    baseline = [d for d in decisions if d.request_ai or d.strategy_hint.request_ai]
-    sample = _stratified_sample(baseline, min(args.sample, len(baseline)))
-    by_timestamp = {bar.timestamp: bar for bar in bars}
-    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL, temperature=0.1)
+    sample = _unique_bar_sample(decisions, min(args.sample, len({d.index for d in decisions if d.request_ai or d.strategy_hint.request_ai})))
+
+    event_by_index = {}
+    for event in events:
+        for d in decisions:
+            if d.index == next((i for i, b in enumerate(bars) if b.timestamp == event.timestamp), -1):
+                event_by_index.setdefault(d.index, event)
+                break
+
+    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL)
 
     comparisons = []
     errors = []
     current_chars = 0
     compact_chars = 0
     for d in sample:
-        event = next((e for e in events if e.timestamp == by_timestamp[d.index].timestamp), None)
+        event = event_by_index.get(d.index)
         if event is None:
             errors.append({"index": d.index, "error": "event_not_found"})
             continue
@@ -253,7 +232,6 @@ def main() -> None:
             errors.append({"index": d.index, "error": f"{type(exc).__name__}: {exc}"})
 
     matches = sum(1 for c in comparisons if c["match"])
-    material_disagreements = [c for c in comparisons if not c["match"]]
     valid = len(comparisons) == len(sample) and not errors
     agreement = matches / len(comparisons) if comparisons else 0.0
     savings = ((current_chars - compact_chars) / current_chars * 100.0) if current_chars else 0.0
@@ -266,11 +244,12 @@ def main() -> None:
         status = "not_equivalent"
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy": "bounded_compact_prompt_equivalence",
         "dataset": args.dataset,
         "sample_requested": args.sample,
         "sample_tested": len(sample),
+        "sample_unique_bars": len({d.index for d in sample}),
         "current_model": DEFAULT_MODEL,
         "temperature": 0.1,
         "coverage_unchanged": True,
@@ -279,7 +258,7 @@ def main() -> None:
         "agreement": {
             "exact_material_decision_agreement": agreement,
             "matches": matches,
-            "disagreements": len(material_disagreements),
+            "disagreements": len(comparisons) - matches,
             "valid_responses": len(comparisons),
         },
         "wire_size": {
@@ -289,6 +268,7 @@ def main() -> None:
         },
         "deployment_status": status,
         "decision_rule": "Only 100% material decision agreement with zero errors can be promoted; any disagreement rejects compaction; runtime/API errors are inconclusive.",
+        "fallback_rule": "If not_equivalent, keep the current hard-coded/full request format and do not begin another prompt-optimization loop.",
     }
 
     output = Path(args.output)
