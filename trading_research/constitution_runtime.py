@@ -22,9 +22,11 @@ def validate_review_runtime(
 ) -> ConstitutionDecision:
     """Validate market monitoring/reasoning without applying trade-session limits."""
     constitution.validate()
-    if recommended_poll_seconds < constitution.min_poll_seconds:
+    minimum = constitution.minimum_review_seconds
+    maximum = constitution.maximum_review_seconds
+    if recommended_poll_seconds < minimum:
         return ConstitutionDecision(False, "trading_constitution_poll_below_minimum")
-    if recommended_poll_seconds > constitution.max_poll_seconds:
+    if recommended_poll_seconds > maximum:
         return ConstitutionDecision(False, "trading_constitution_poll_above_maximum")
     if request_ai and not constitution.require_structured_ai_decision:
         return ConstitutionDecision(False, "trading_constitution_requires_structured_ai_decision")
@@ -45,13 +47,13 @@ def validate_demo_runtime(
 
     if constitution.demo_only and not demo_mode:
         return ConstitutionDecision(False, "trading_constitution_requires_demo_mode")
-    if constitution.require_kill_switch is False:
+    if not constitution.require_kill_switch:
         return ConstitutionDecision(False, "trading_constitution_requires_kill_switch")
-    if constitution.require_deterministic_policy is False:
+    if not constitution.require_deterministic_policy:
         return ConstitutionDecision(False, "trading_constitution_requires_deterministic_policy")
-    if constitution.require_structured_ai_decision is False:
+    if not constitution.require_structured_ai_decision:
         return ConstitutionDecision(False, "trading_constitution_requires_structured_ai_decision")
-    if constitution.require_approved_strategy is False:
+    if not constitution.require_approved_strategy:
         return ConstitutionDecision(False, "trading_constitution_requires_approved_strategy_gate")
     if daily_loss_fraction >= constitution.max_daily_loss_fraction:
         return ConstitutionDecision(False, "trading_constitution_daily_loss_limit")
