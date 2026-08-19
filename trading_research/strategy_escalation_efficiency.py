@@ -110,6 +110,10 @@ def evaluate_strategy_escalation_efficiency(
         if decision.request_ai or decision.strategy_hint.request_ai
     }
 
+    # Adaptive optimization is a filter over the trusted baseline, not a new
+    # opportunity detector. This prevents the optimizer from throwing away
+    # strategy/market evidence before the recall constraint gets a chance to
+    # evaluate it.
     adaptive = build_walk_forward_policy(
         ordered,
         future_bars=future_bars,
@@ -117,6 +121,7 @@ def evaluate_strategy_escalation_efficiency(
         transaction_cost_bps_round_trip=transaction_cost_bps_round_trip,
         fast_period=fast_period,
         slow_period=slow_period,
+        candidate_indices=baseline_indices,
     )
     adaptive_indices = {decision.index for decision in adaptive if decision.request_ai}
 
