@@ -216,6 +216,7 @@ class DukascopyClient:
         timeframe: str,
         start_utc: str,
         end_utc: str,
+        progress: Callable[[str], None] | None = None,
     ) -> list[Candle]:
         start = _parse_time(start_utc)
         end = _parse_time(end_utc)
@@ -227,26 +228,48 @@ class DukascopyClient:
             candles: list[Candle] = []
             for year in range(start.year, end.year + 1):
                 url = _native_url(instrument, "1D", year)
+                if progress:
+                    progress(f"request {instrument} 1D {year}")
                 payload = _request_bytes(self.session, url)
                 if not payload:
+                    if progress:
+                        progress(f"empty {instrument} 1D {year}")
                     continue
-                candles.extend(_decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc)))
-            return [c for c in _deduplicate_and_validate(candles) if start <= _parse_time(c.timestamp_utc) < end]
+                decoded = _decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc))
+                candles.extend(decoded)
+                if progress:
+                    progress(f"received {instrument} 1D {year}: bars={len(decoded)}")
+            result = [c for c in _deduplicate_and_validate(candles) if start <= _parse_time(c.timestamp_utc) < end]
+            if progress:
+                progress(f"validated {instrument} 1D: bars={len(result)}")
+            return result
         if timeframe == "4H":
             hourly: list[Candle] = []
             month = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
             last_month = datetime(end.year, end.month, 1, tzinfo=timezone.utc)
             while month <= last_month:
                 url = _native_url(instrument, "1H", month.year, month.month)
+                if progress:
+                    progress(f"request {instrument} 1H {month.year}-{month.month:02d}")
                 payload = _request_bytes(self.session, url)
                 if payload:
-                    hourly.extend(_decode_candle_file(payload, month))
+                    decoded = _decode_candle_file(payload, month)
+                    hourly.extend(decoded)
+                    if progress:
+                        progress(
+                            f"received {instrument} 1H {month.year}-{month.month:02d}: bars={len(decoded)}"
+                        )
+                elif progress:
+                    progress(f"empty {instrument} 1H {month.year}-{month.month:02d}")
                 if month.month == 12:
                     month = datetime(month.year + 1, 1, 1, tzinfo=timezone.utc)
                 else:
                     month = datetime(month.year, month.month + 1, 1, tzinfo=timezone.utc)
             four_hour = _aggregate_4h(_deduplicate_and_validate(hourly))
-            return [c for c in four_hour if start <= _parse_time(c.timestamp_utc) < end]
+            result = [c for c in four_hour if start <= _parse_time(c.timestamp_utc) < end]
+            if progress:
+                progress(f"validated {instrument} 4H: bars={len(result)}")
+            return result
         raise ValueError(f"unsupported_timeframe:{timeframe}")
 
 
@@ -289,15 +312,18 @@ def download_universe(
         raise ValueError("end_must_be_after_start")
     manifests: list[DatasetManifest] = []
     out = Path(output_dir)
+    total = len(INSTRUMENTS) * len(TIMEFRAMES)
+    completed = 0
     for instrument in INSTRUMENTS:
         for timeframe in TIMEFRAMES:
             if progress:
-                progress(f"downloading {instrument} {timeframe}")
+                progress(f"START dataset {completed + 1}/{total}: {instrument} {timeframe}")
             candles = client.historical_prices(
                 instrument=instrument,
                 timeframe=timeframe,
                 start_utc=start_utc,
                 end_utc=end_utc,
+                progress=progress,
             )
             if len(candles) < 100:
                 raise ValueError(f"insufficient_bars:{instrument}:{timeframe}:{len(candles)}")
@@ -312,5 +338,12 @@ def download_universe(
                 bars=len(candles),
                 source=DATAFEED_BASE_URL,
             ))
+            completed += 1
+            if progress:
+                progress(
+                    f"DONE dataset {completed}/{total}: {instrument} {timeframe} bars={len(candles)} sha256={digest}"
+                )
     save_manifest(manifests, out / "manifest.json")
+    if progress:
+        progress(f"UNIVERSE COMPLETE: datasets={len(manifests)} manifest={out / 'manifest.json'}")
     return manifests
