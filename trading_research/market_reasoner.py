@@ -51,6 +51,8 @@ def _default_transport(api_key: str, model: str, endpoint: str, timeout: float) 
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Nova-Groq-Client/1.0",
             },
             method="POST",
         )
