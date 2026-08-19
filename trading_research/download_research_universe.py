@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 
 from .dukascopy_history import DukascopyClient, download_universe
 
@@ -18,7 +17,7 @@ def main() -> None:
     parser.add_argument("--start", default=DEFAULT_START)
     parser.add_argument("--end", default=DEFAULT_END)
     args = parser.parse_args()
-    client = DukascopyClient(key=os.getenv("DUKASCOPY_API_KEY"))
+    client = DukascopyClient()
     manifests = download_universe(
         output_dir=args.output,
         start_utc=args.start,
