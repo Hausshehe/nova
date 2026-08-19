@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - trading-research-lab
+      - trading-research-robustness-audit
   pull_request:
     branches:
       - trading-research-lab
