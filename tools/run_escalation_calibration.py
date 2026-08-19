@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from trading_research.data import load_csv
 from trading_research.escalation_calibration import calibrate
-from trading_research.market_history import load_bars
 
 
 def main() -> None:
@@ -17,7 +22,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    bars = load_bars(args.dataset)
+    bars = load_csv(Path(args.dataset))
     points = calibrate(bars)
     payload = {
         "schema_version": 1,
