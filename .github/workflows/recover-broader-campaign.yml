@@ -42,33 +42,35 @@ jobs:
           if not recovery_commit:
               raise SystemExit("recovery_commit_required")
 
-          request = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              run = json.load(response)
+          def github_get(url: str) -> dict:
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          run = github_get(f"https://api.github.com/repos/{repo}/actions/runs/{run_id}")
 
           if run.get("repository", {}).get("full_name") != repo:
               raise SystemExit("source_run_repository_mismatch")
+          if run.get("status") != "completed":
+              raise SystemExit(f"source_run_not_completed:{run.get('status')}")
+          if run.get("conclusion") not in {"failure", "cancelled"}:
+              raise SystemExit(f"source_run_unexpected_conclusion:{run.get('conclusion')}")
           head_sha = run.get("head_sha")
           if not head_sha:
               raise SystemExit("source_run_missing_head_sha")
 
-          commit_request = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/commits/{recovery_commit}",
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              },
-          )
-          with urllib.request.urlopen(commit_request, timeout=30) as response:
-              recovery = json.load(response)
+          # Source run 32293018258 is the frozen broader-campaign acquisition snapshot.
+          if run_id == "32293018258" and head_sha != "d79afc0e463be97a419e20bde348650cdb55c945":
+              raise SystemExit(f"frozen_source_head_mismatch:{head_sha}")
+
+          recovery = github_get(f"https://api.github.com/repos/{repo}/commits/{recovery_commit}")
           resolved_sha = recovery.get("sha")
           if resolved_sha != recovery_commit:
               raise SystemExit("recovery_commit_not_found_or_mismatched")
@@ -76,7 +78,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"recovery_sha={recovery_commit}\n")
           print(
-              f"SOURCE RUN id={run_id} status={run.get('status')} conclusion={run.get('conclusion')} "
+              f"SOURCE RUN VERIFIED id={run_id} status={run.get('status')} conclusion={run.get('conclusion')} "
               f"run_head_sha={head_sha} recovery_commit={recovery_commit}",
               flush=True,
           )
@@ -92,8 +94,17 @@ jobs:
           test -f trading_research/dukascopy_history.py
           test -f trading_research/migrate_legacy_broader_artifacts.py
           python - <<'PY'
-          from trading_research.migrate_legacy_broader_artifacts import LEGACY_SOURCE_RUN_ID
-          print(f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID}")
+          from trading_research.migrate_legacy_broader_artifacts import (
+              LEGACY_SOURCE_RUN_ID,
+              LEGACY_WTI_4H_DATASET,
+              invalidate_legacy_wti_4h,
+          )
+          print(
+              f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID} "
+              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} "
+              f"migration={invalidate_legacy_wti_4h.__name__}",
+              flush=True,
+          )
           PY
 
       - name: Set up Python
@@ -171,9 +182,7 @@ jobs:
               ("WTI", "4H"),
           }
           if source_run_id == "32293018258" and set(missing) != expected_legacy_missing:
-              raise SystemExit(
-                  f"legacy_missing_snapshot_mismatch:{sorted(missing)}"
-              )
+              raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
 
           print(
               f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}",
