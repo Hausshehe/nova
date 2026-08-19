@@ -132,7 +132,10 @@ def test_invalid_ohlc_reports_exact_candle():
         Candle("2024-01-01T00:00:00+00:00", 100, 110, 90, 105, 1),
         Candle("2024-01-02T00:00:00+00:00", 120, 110, 100, 105, 1),
     ]
-    with pytest.raises(ValueError, match=r"candle_ohlc_invalid:.*2024-01-02T00:00:00\+00:00.*open=120\.0.*high=110\.0"):
+    with pytest.raises(
+        ValueError,
+        match=r"candle_ohlc_invalid:.*2024-01-02T00:00:00\+00:00.*open=120(?:\.0)?:high=110(?:\.0)?",
+    ):
         _deduplicate_and_validate(candles)
 
 
