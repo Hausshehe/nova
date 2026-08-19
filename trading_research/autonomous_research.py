@@ -105,9 +105,14 @@ class AutonomousResearchSession:
                 dataset_sha256=_sha256_file(csv_path),
                 market_question_changed=market_question_changed,
             )
-            if closure.action == "CAMPAIGN_CLOSED":
+            allowed_actions = {
+                "ALLOW_CONTINUE",
+                "ALLOW_RESTART_NEW_EVIDENCE",
+                "ALLOW_RESTART_NEW_MARKET_QUESTION",
+            }
+            if closure.action not in allowed_actions:
                 return ResearchCycleResult(
-                    status="CAMPAIGN_CLOSED",
+                    status=closure.action,
                     message=closure.reason,
                 )
 
