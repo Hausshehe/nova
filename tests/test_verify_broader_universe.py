@@ -6,13 +6,18 @@ from trading_research.verify_broader_universe import verify_broader_universe
 
 
 def _write_dataset(root: Path, name: str, *, valid: bool = True) -> None:
-    root.joinpath(name).write_text(
-        "timestamp,open,high,low,close,volume\n"
-        "2024-01-01T00:00:00+00:00,100,110,90,105,1\n"
-        + ("2024-01-01T01:00:00+00:00,105,115,100,110,2\n" if valid else "2024-01-01T01:00:00+00:00,120,110,90,100,2\n")
-        * 50,
-        encoding="utf-8",
-    )
+    lines = ["timestamp,open,high,low,close,volume"]
+    for index in range(100):
+        hour = index
+        if valid:
+            lines.append(
+                f"2024-01-01T{hour:02d}:00:00+00:00,100,110,90,105,1"
+            )
+        else:
+            lines.append(
+                f"2024-01-01T{hour:02d}:00:00+00:00,120,110,90,100,1"
+            )
+    root.joinpath(name).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_verify_broader_universe_requires_every_frozen_dataset(tmp_path: Path) -> None:
