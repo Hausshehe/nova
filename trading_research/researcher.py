@@ -104,6 +104,7 @@ class Researcher:
         self.budget = budget or ResearchBudget()
         self.budget.validate()
         self._seen = set(prior_fingerprints)
+        self._accepted_this_run: set[str] = set()
         self._accepted = 0
         self._revisions = 0
 
@@ -124,19 +125,48 @@ class Researcher:
     def remaining_hypothesis_budget(self) -> int:
         return self.budget.max_hypotheses - self._accepted
 
-    def accept_proposal(self, proposal: HypothesisProposal) -> str:
-        """Validate and reserve one hypothesis slot without testing it."""
-        proposal.validate()
+    def _reserve(self, fingerprint: str) -> str:
         if self._accepted >= self.budget.max_hypotheses:
             raise ResearchBudgetExhausted("RESEARCH_BUDGET_EXHAUSTED")
-
-        fingerprint = hypothesis_fingerprint(proposal.hypothesis)
-        if fingerprint in self._seen:
+        if fingerprint in self._accepted_this_run:
             raise DuplicateHypothesis("DUPLICATE_HYPOTHESIS")
-
+        self._accepted_this_run.add(fingerprint)
         self._seen.add(fingerprint)
         self._accepted += 1
         return fingerprint
+
+    def accept_proposal(self, proposal: HypothesisProposal) -> str:
+        """Validate and reserve one genuinely new hypothesis slot."""
+        proposal.validate()
+        fingerprint = hypothesis_fingerprint(proposal.hypothesis)
+        if fingerprint in self._seen:
+            raise DuplicateHypothesis("DUPLICATE_HYPOTHESIS")
+        return self._reserve(fingerprint)
+
+    def accept_proposal_for_dataset(
+        self,
+        proposal: HypothesisProposal,
+        *,
+        memory: ExperienceStore,
+        dataset: str,
+    ) -> str:
+        """Reserve a proposal after the evidence-aware memory gate.
+
+        A prior hypothesis may proceed only on independent evidence. Same-run
+        duplicates remain blocked even when the dataset changes.
+        """
+        proposal.validate()
+        fingerprint = hypothesis_fingerprint(proposal.hypothesis)
+
+        from .research_memory_gate import evaluate_research_memory
+
+        decision = evaluate_research_memory(memory, proposal.hypothesis, dataset=dataset)
+        if not decision.allowed:
+            if decision.disposition == "EVIDENCE_UNAVAILABLE":
+                raise DuplicateHypothesis("EVIDENCE_UNAVAILABLE")
+            raise DuplicateHypothesis("DUPLICATE_EVIDENCE")
+
+        return self._reserve(fingerprint)
 
     def record_revision(self) -> None:
         """Reserve one controlled revision slot for a failed experiment."""
@@ -147,5 +177,6 @@ class Researcher:
     def reset_run(self, prior_fingerprints: Iterable[str] = ()) -> None:
         """Start a fresh bounded run explicitly."""
         self._seen = set(prior_fingerprints)
+        self._accepted_this_run = set()
         self._accepted = 0
         self._revisions = 0
