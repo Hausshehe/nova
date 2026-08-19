@@ -1,24 +1,25 @@
-"""Bridge between deterministic market escalation and optional AI reasoning."""
+"""Bridge deterministic market escalation, AI reasoning, and policy validation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
+from .decision_policy import PolicyDecision
 from .escalation import AdaptiveEscalator, EscalationDecision
 from .market_monitor import MarketEvent
 from .market_reasoner import GroqMarketReasoner, MarketAnalysis
-from .multitimeframe_context import MultiTimeframeContext
 
 
 @dataclass(frozen=True)
 class AdaptiveMarketResult:
     escalation: EscalationDecision
     analysis: MarketAnalysis | None
+    policy_decision: PolicyDecision | None = None
 
 
 class AdaptiveMarketBrain:
-    """Use Python for continuous observation and Groq only for escalated events."""
+    """Use Python for observation, Groq for reasoning, and policy for authorization."""
 
     def __init__(
         self,
@@ -26,41 +27,38 @@ class AdaptiveMarketBrain:
         reasoner: GroqMarketReasoner | None = None,
         strategy_context_provider: Callable[[MarketEvent], str] | None = None,
         market_context_provider: Callable[[MarketEvent], str] | None = None,
+        recommendation_policy: Callable[[object], PolicyDecision] | None = None,
     ) -> None:
         self.escalator = escalator
         self.reasoner = reasoner
         self.strategy_context_provider = strategy_context_provider
         self.market_context_provider = market_context_provider
+        self.recommendation_policy = recommendation_policy
 
     def process(self, event: MarketEvent, *, market_context: str = "") -> AdaptiveMarketResult:
         decision = self.escalator.evaluate(event)
         if not decision.request_ai or self.reasoner is None:
-            return AdaptiveMarketResult(decision, None)
-
-        if not market_context and self.market_context_provider is not None:
-            market_context = self.market_context_provider(event)
+            return AdaptiveMarketResult(decision, None, None)
 
         strategy_context = (
             self.strategy_context_provider(event)
             if self.strategy_context_provider is not None
             else ""
         )
+        retrieved_market_context = (
+            self.market_context_provider(event)
+            if self.market_context_provider is not None
+            else market_context
+        )
         analysis = self.reasoner.analyze(
             event,
-            market_context=market_context,
+            market_context=retrieved_market_context,
             strategy_context=strategy_context,
         )
-        return AdaptiveMarketResult(decision, analysis)
-
-
-def market_context_from_history(
-    context: MultiTimeframeContext,
-    *,
-    symbol: str,
-    focus_timeframe: str,
-) -> str:
-    """Build bounded multi-timeframe context for one escalated market event."""
-    return context.build(symbol, focus_timeframe=focus_timeframe)
+        policy_decision = None
+        if analysis.recommendation is not None and self.recommendation_policy is not None:
+            policy_decision = self.recommendation_policy(analysis.recommendation)
+        return AdaptiveMarketResult(decision, analysis, policy_decision)
 
 
 def strategy_context_from_records(
