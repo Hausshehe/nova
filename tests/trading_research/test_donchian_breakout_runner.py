@@ -38,7 +38,7 @@ def test_runner_persists_frozen_experiment(tmp_path, monkeypatch):
 
     assert main() == 0
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert payload["hypothesis"] == "donchian_breakout_55_20_long_only"
+    assert payload["hypothesis"]["name"] == "donchian_breakout_55_20_long_only"
     assert payload["costs"] == {
         "fee_bps_per_side": 1.0,
         "slippage_bps_per_side": 1.0,
