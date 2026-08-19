@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from trading_research.data import load_csv
-from trading_research.strategy_escalation_efficiency import evaluate_strategy_efficiency
+from trading_research.strategy_escalation_efficiency import evaluate_strategy_escalation_efficiency
 
 
 def main() -> None:
@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("dataset")
     parser.add_argument("output")
     args = parser.parse_args()
-    report = evaluate_strategy_efficiency(load_csv(args.dataset))
+    report = evaluate_strategy_escalation_efficiency(load_csv(args.dataset))
     payload = {"schema_version": 1, "dataset": args.dataset, **asdict(report)}
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
