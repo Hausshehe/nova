@@ -40,23 +40,23 @@ def _metrics(records, indices: set[int], transaction_cost_bps: float) -> Directi
         and not r.insufficient_future_window
         and r.sma_gap_bps is not None
         and r.sma_gap_bps != 0
-        and r.max_up_close_move_bps is not None
-        and r.max_down_close_move_bps is not None
+        and r.directional_return_bps is not None
     ]
     signed: list[float] = []
     longs = shorts = 0
     correct = 0
     for record in selected:
+        # The SMA sign is the decision-time direction. The terminal close
+        # return over the fixed horizon is the only directional performance
+        # label. Intrahorizon excursions are intentionally not used here.
         if record.sma_gap_bps > 0:
             longs += 1
-            move = record.max_up_close_move_bps
-            opposite = record.max_down_close_move_bps
+            move = record.directional_return_bps
         else:
             shorts += 1
-            move = record.max_down_close_move_bps
-            opposite = record.max_up_close_move_bps
+            move = record.directional_return_bps
         signed.append(move)
-        if move >= opposite:
+        if move > 0:
             correct += 1
 
     net = [move - transaction_cost_bps for move in signed]
@@ -84,7 +84,7 @@ def evaluate_directional_baseline(
     slow_period: int = 50,
     folds: int = 4,
 ) -> tuple[DirectionalBaselineMetrics, tuple[tuple[int, DirectionalBaselineMetrics], ...]]:
-    """Evaluate the SMA-gap direction on the trusted candidate set chronologically."""
+    """Evaluate SMA-gap direction using terminal causal-horizon returns."""
     if folds <= 0:
         raise ValueError("folds must be positive")
     records = build_outcome_ledger(
