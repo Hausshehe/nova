@@ -18,15 +18,19 @@ def main() -> None:
     parser.add_argument("--end", default=DEFAULT_END)
     args = parser.parse_args()
     client = DukascopyClient()
+
+    def progress(message: str) -> None:
+        print(message, flush=True)
+
     manifests = download_universe(
         output_dir=args.output,
         start_utc=args.start,
         end_utc=args.end,
         client=client,
-        progress=print,
+        progress=progress,
     )
-    print(f"verified_datasets={len(manifests)}")
-    print(f"manifest={args.output}/manifest.json")
+    print(f"verified_datasets={len(manifests)}", flush=True)
+    print(f"manifest={args.output}/manifest.json", flush=True)
 
 
 if __name__ == "__main__":
