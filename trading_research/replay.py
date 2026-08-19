@@ -50,6 +50,10 @@ class HistoricalReplay:
         if spread_bps is not None and len(spread_bps) != len(bars):
             raise ValueError("spread_bps must match bars length")
 
+        for index in range(1, len(bars)):
+            if bars[index].timestamp <= bars[index - 1].timestamp:
+                raise ValueError("bars must be strictly increasing by timestamp")
+
         results: list[DemoCycleResult] = []
         events_count = 0
         ai_reviews = 0
