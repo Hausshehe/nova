@@ -166,7 +166,6 @@ jobs:
           ]
 
           expected_legacy_missing = {
-              ("EURUSD", "4H"),
               ("NAS100", "4H"),
               ("NZDUSD", "4H"),
               ("US500", "4H"),
