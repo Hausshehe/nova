@@ -1,17 +1,14 @@
 """Frozen volatility-normalized mean-reversion research hypothesis.
 
 This module contains one deliberately fixed hypothesis. It is not an adaptive
-optimizer and it does not tune its parameters against historical results.
+optimizer and it does not tune parameters against historical results.
 
 Rule:
 - use the last 20 completed closes at decision time;
 - compute the rolling mean and population standard deviation;
-- enter long when the current close is at or below mean - 2 * std;
-- remain long while below the mean;
-- exit when the current close reaches or exceeds the rolling mean.
-
-The backtester executes any state change at the next bar open, preserving
-causality.
+- when flat, enter long when the current close is at or below mean - 2 * std;
+- while long, remain long until the current close reaches or exceeds the mean;
+- execute state changes at the next bar open.
 """
 
 from __future__ import annotations
@@ -42,28 +39,50 @@ HYPOTHESIS = Hypothesis(
 )
 
 
-def signal(bars: Sequence[Bar], index: int) -> bool:
-    """Return desired long/flat state using information available by ``index`` only."""
+def _stats(bars: Sequence[Bar], index: int) -> tuple[float, float] | None:
     if index < LOOKBACK - 1:
-        return False
-
+        return None
     closes = [bars[pos].close for pos in range(index - LOOKBACK + 1, index + 1)]
     mean = sum(closes) / LOOKBACK
     variance = sum((value - mean) ** 2 for value in closes) / LOOKBACK
-    std = variance ** 0.5
+    return mean, variance ** 0.5
 
-    if std == 0.0:
+
+def desired_long_state(bars: Sequence[Bar], index: int) -> bool:
+    """Compute desired position at ``index`` using bars through ``index`` only.
+
+    State is recomputed from the start so the signal remains pure and
+    deterministic for the stateless backtest interface.
+    """
+    if index < LOOKBACK - 1:
         return False
 
-    threshold = mean - Z_ENTRY * std
-    return bars[index].close <= threshold
+    in_position = False
+    for current in range(LOOKBACK - 1, index + 1):
+        stats = _stats(bars, current)
+        if stats is None:
+            continue
+        mean, std = stats
+        close = bars[current].close
+        if not in_position:
+            if std > 0.0 and close <= mean - Z_ENTRY * std:
+                in_position = True
+        elif close >= mean:
+            in_position = False
+    return in_position
+
+
+def signal(bars: Sequence[Bar], index: int) -> bool:
+    """Return desired long/flat state using information available by ``index`` only."""
+    return desired_long_state(bars, index)
 
 
 def exit_condition(bars: Sequence[Bar], index: int) -> bool:
     """Return whether the predefined mean-reversion exit is reached."""
-    if index < LOOKBACK - 1:
+    if index < LOOKBACK - 1 or not desired_long_state(bars, index):
         return False
-
-    closes = [bars[pos].close for pos in range(index - LOOKBACK + 1, index + 1)]
-    mean = sum(closes) / LOOKBACK
+    stats = _stats(bars, index)
+    if stats is None:
+        return False
+    mean, _ = stats
     return bars[index].close >= mean
