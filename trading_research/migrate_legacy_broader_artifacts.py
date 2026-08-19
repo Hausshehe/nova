@@ -34,6 +34,7 @@ LEGACY_DAILY_DATASETS = (
 
 LEGACY_FOUR_HOUR_DATASETS = (
     "AUDUSD_4H.csv",
+    "EURUSD_4H.csv",
     "GBPUSD_4H.csv",
     "US30_4H.csv",
     "USDCAD_4H.csv",
