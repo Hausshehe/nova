@@ -19,6 +19,13 @@ INSTRUMENTS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
     "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
 )
+INSTRUMENT_ALIASES = {
+    "USA500IDXUSD": "US500",
+    "USATECHIDXUSD": "NAS100",
+    "USA30IDXUSD": "US30",
+    "LIGHTCMDUSD": "WTI",
+    "WTICMDUSD": "WTI",
+}
 TIMEFRAMES = ("1D", "4H")
 TIMEFRAME_API = {"1D": "1day", "4H": "4hour"}
 MAX_COUNT = 5000
@@ -73,7 +80,8 @@ def _instrument_name(item: dict[str, Any]) -> str:
     for key in ("name", "symbol", "nameLong"):
         value = item.get(key)
         if isinstance(value, str):
-            return value.replace("/", "").replace("_", "").replace(".", "").replace(" ", "").upper()
+            normalized = value.replace("/", "").replace("_", "").replace(".", "").replace(" ", "").upper()
+            return INSTRUMENT_ALIASES.get(normalized, normalized)
     return ""
 
 
