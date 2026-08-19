@@ -1,0 +1,17 @@
+{
+  "protocol": "trading_research_universe_v2",
+  "asset_families": {
+    "FX_MAJOR": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"],
+    "INDEX": ["US500", "NAS100", "US30"],
+    "COMMODITY": ["XAUUSD", "XAGUSD", "WTI"]
+  },
+  "timeframes": ["1D", "4H"],
+  "hypothesis_families": [
+    "momentum_continuation",
+    "mean_reversion",
+    "breakout_volatility_expansion",
+    "cross_market_relative_behavior"
+  ],
+  "maximum_contexts": 104,
+  "decision_checkpoint": "stop and decide whether credible repeatable edge exists after the fixed screening matrix"
+}
