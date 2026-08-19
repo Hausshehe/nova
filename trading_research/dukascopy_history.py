@@ -171,7 +171,7 @@ def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:
         raise ValueError(f"candle_file_bad_record_length:{len(raw)}")
     candles: list[Candle] = []
     for offset in range(0, len(raw), CANDLE_RECORD_SIZE):
-        seconds_from_base, open_raw, close_raw, low_raw, high_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
+        seconds_from_base, open_raw, high_raw, low_raw, close_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
         timestamp = base_time + timedelta(seconds=int(seconds_from_base))
         candles.append(
             Candle(
