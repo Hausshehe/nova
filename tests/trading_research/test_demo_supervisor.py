@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -26,7 +26,7 @@ def test_healthy_demo_session_passes():
 def test_stale_market_data_trips_kill_switch():
     s = supervisor()
     result = s.check(
-        market_timestamp=NOW.replace(minute=59),
+        market_timestamp=NOW - timedelta(seconds=31),
         broker_connected=True,
         demo_mode=True,
         reconciled=True,
@@ -78,7 +78,7 @@ def test_custom_staleness_threshold():
         now=lambda: NOW,
     )
     result = s.check(
-        market_timestamp=NOW.replace(second=NOW.second - 6),
+        market_timestamp=NOW - timedelta(seconds=6),
         broker_connected=True,
         demo_mode=True,
         reconciled=True,
