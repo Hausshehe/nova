@@ -135,6 +135,27 @@ def test_request_bytes_retries_transient_503(monkeypatch):
     assert sleeps == [2.0, 4.0]
 
 
+def test_historical_prices_reports_progress(monkeypatch):
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    payload = _compressed_rows([(0, 100, 105, 90, 110, 1.0)])
+    session = FakeSession([FakeResponse(200, payload)])
+    messages = []
+    client = DukascopyClient(session=session)
+    candles = client.historical_prices(
+        instrument="EURUSD",
+        timeframe="1D",
+        start_utc="2024-01-01T00:00:00+00:00",
+        end_utc="2024-01-02T00:00:00+00:00",
+        progress=messages.append,
+    )
+    assert candles[0].timestamp_utc == base.isoformat()
+    assert messages == [
+        "request EURUSD 1D 2024",
+        "received EURUSD 1D 2024: bars=1",
+        "validated EURUSD 1D: bars=1",
+    ]
+
+
 def test_aggregate_4h_uses_only_complete_utc_buckets():
     rows = [
         Candle("2024-01-01T00:00:00+00:00", 10, 12, 9, 11, 1),
