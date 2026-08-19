@@ -55,6 +55,7 @@ class AutonomousResearchSession:
     The session owns one Researcher instance, so its hypothesis and revision
     budgets cannot reset between proposals. The caller supplies a deterministic
     signal compiler; the AI never supplies executable Python or changes gates.
+    Evidence reuse is controlled by durable research memory before execution.
     """
 
     def __init__(
@@ -79,10 +80,14 @@ class AutonomousResearchSession:
         self.researcher = Researcher.from_memory(memory, budget=budget)
 
     def propose_and_test(self, question: ResearchQuestion, *, csv_path: str) -> ResearchCycleResult:
-        """Admit at most one novel hypothesis and immediately run its deterministic test."""
+        """Admit at most one proposal and immediately run its deterministic test."""
         try:
             proposal = self.generator.propose(question)
-            fingerprint = self.researcher.accept_proposal(proposal)
+            fingerprint = self.researcher.accept_proposal_for_dataset(
+                proposal,
+                memory=self.memory,
+                dataset=csv_path,
+            )
             signal = self.signal_compiler(proposal.hypothesis)
             record = run_experiment(
                 csv_path=csv_path,
@@ -102,10 +107,15 @@ class AutonomousResearchSession:
                 source=proposal.source,
                 experiment=record,
             )
-        except DuplicateHypothesis:
+        except DuplicateHypothesis as exc:
+            message = str(exc)
+            status = {
+                "DUPLICATE_EVIDENCE": "DUPLICATE_EVIDENCE",
+                "EVIDENCE_UNAVAILABLE": "EVIDENCE_UNAVAILABLE",
+            }.get(message, "DUPLICATE_HYPOTHESIS")
             return ResearchCycleResult(
-                status="DUPLICATE_HYPOTHESIS",
-                message="Proposal matched prior research and was not tested.",
+                status=status,
+                message="Proposal was blocked by the deterministic research-memory gate.",
             )
         except ResearchBudgetExhausted as exc:
             return ResearchCycleResult(
