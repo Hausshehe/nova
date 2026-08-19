@@ -1,42 +1,25 @@
-"""Reproducible Dukascopy native-candle acquisition and validation."""
+"""Reproducible Dukascopy historical-candle acquisition and validation."""
 
 from __future__ import annotations
 
 import csv
 import hashlib
 import json
-import lzma
-import struct
-import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import requests
 
-DATAFEED_BASE_URL = "https://datafeed.dukascopy.com/datafeed"
+BASE_URL = "https://freeserv.dukascopy.com/2.0/"
 INSTRUMENTS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
     "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
 )
-INSTRUMENT_DATAFEED = {
-    "US500": "USA500IDXUSD",
-    "NAS100": "USATECHIDXUSD",
-    "US30": "USA30IDXUSD",
-    "WTI": "LIGHTCMDUSD",
-}
-WTI_LEGACY_DATAFEED = "WTICMDUSD"
-WTI_DUAL_DIRECTORY_YEAR = 2014
-WTI_LEGACY_END_YEAR = 2013
 TIMEFRAMES = ("1D", "4H")
-MAX_429_RETRIES = 5
-MAX_5XX_RETRIES = 7
-MAX_NETWORK_RETRIES = 5
-DEFAULT_429_BACKOFF_SECONDS = 2.0
-MAX_429_BACKOFF_SECONDS = 120.0
-CANDLE_RECORD_SIZE = 24
-CANDLE_STRUCT = struct.Struct(">IIIIIf")
+TIMEFRAME_API = {"1D": "1day", "4H": "4hour"}
+MAX_COUNT = 5000
 
 
 @dataclass(frozen=True)
@@ -57,8 +40,6 @@ class DatasetManifest:
     end_utc: str
     sha256: str
     bars: int
-    source: str
-    price_units: str = "native_feed_units"
 
 
 def _parse_time(value: str) -> datetime:
@@ -68,262 +49,101 @@ def _parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _feed_symbol(instrument: str) -> str:
-    return INSTRUMENT_DATAFEED.get(instrument, instrument)
+def _unix_ms(value: str) -> int:
+    return int(_parse_time(value).timestamp() * 1000)
 
 
-def _feed_symbols_for_period(instrument: str, year: int) -> tuple[str, ...]:
-    """Return the historical Dukascopy directories used for an instrument/year."""
-    if instrument != "WTI":
-        return (_feed_symbol(instrument),)
-    if year <= WTI_LEGACY_END_YEAR:
-        return (WTI_LEGACY_DATAFEED,)
-    if year == WTI_DUAL_DIRECTORY_YEAR:
-        return (WTI_LEGACY_DATAFEED, _feed_symbol(instrument))
-    return (_feed_symbol(instrument),)
-
-
-def _month_zero_based(month: int) -> str:
-    if not 1 <= month <= 12:
-        raise ValueError("month_out_of_range")
-    return f"{month - 1:02d}"
-
-
-def _native_url(
-    instrument: str,
-    timeframe: str,
-    year: int,
-    month: int | None = None,
-    *,
-    feed_symbol: str | None = None,
-) -> str:
-    symbol = feed_symbol or _feed_symbol(instrument)
-    if timeframe == "1D":
-        return f"{DATAFEED_BASE_URL}/{symbol}/{year}/BID_candles_day_1.bi5"
-    if timeframe == "1H":
-        if month is None:
-            raise ValueError("month_required_for_1H")
-        return f"{DATAFEED_BASE_URL}/{symbol}/{year}/{_month_zero_based(month)}/BID_candles_hour_1.bi5"
-    raise ValueError(f"unsupported_native_timeframe:{timeframe}")
-
-
-def _retry_delay(response: requests.Response, attempt: int) -> float:
-    retry_after = response.headers.get("Retry-After")
-    try:
-        return float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
-    except (TypeError, ValueError):
-        return DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
-
-
-def _request_bytes(
-    session: requests.Session,
-    url: str,
-    *,
-    progress: Callable[[str], None] | None = None,
-) -> bytes | None:
-    headers = {
-        "User-Agent": "Nova-TradingResearch/1.0",
-        "Referer": "https://freeserv.dukascopy.com/",
-        "Accept": "*/*",
-    }
-    network_attempts = 0
-    rate_attempts = 0
-    server_attempts = 0
-    while True:
-        try:
-            response = session.get(url, timeout=(20, 90), headers=headers)
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
-            if network_attempts >= MAX_NETWORK_RETRIES:
-                raise
-            delay = min(DEFAULT_429_BACKOFF_SECONDS * (2**network_attempts), MAX_429_BACKOFF_SECONDS)
-            if progress:
-                progress(
-                    f"retry network {network_attempts + 1}/{MAX_NETWORK_RETRIES}: "
-                    f"delay={delay:.0f}s url={url} error={type(exc).__name__}"
-                )
-            time.sleep(delay)
-            network_attempts += 1
-            continue
-        network_attempts = 0
-        if response.status_code == 404:
-            return None
-        if response.status_code == 429:
-            if rate_attempts >= MAX_429_RETRIES:
-                response.raise_for_status()
-            delay = min(_retry_delay(response, rate_attempts), MAX_429_BACKOFF_SECONDS)
-            if progress:
-                progress(f"retry 429 {rate_attempts + 1}/{MAX_429_RETRIES}: delay={delay:.0f}s url={url}")
-            time.sleep(delay)
-            rate_attempts += 1
-            continue
-        if 500 <= response.status_code < 600:
-            if server_attempts >= MAX_5XX_RETRIES:
-                response.raise_for_status()
-            delay = min(_retry_delay(response, server_attempts), MAX_429_BACKOFF_SECONDS)
-            if progress:
-                progress(
-                    f"retry {response.status_code} {server_attempts + 1}/{MAX_5XX_RETRIES}: "
-                    f"delay={delay:.0f}s url={url}"
-                )
-            time.sleep(delay)
-            server_attempts += 1
-            continue
-        response.raise_for_status()
-        if not response.content:
-            return None
-        return response.content
-
-
-def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:
-    try:
-        raw = lzma.decompress(payload)
-    except lzma.LZMAError as exc:
-        raise ValueError("candle_file_lzma_error") from exc
-    if len(raw) % CANDLE_RECORD_SIZE != 0:
-        raise ValueError(f"candle_file_bad_record_length:{len(raw)}")
-    candles: list[Candle] = []
-    for offset in range(0, len(raw), CANDLE_RECORD_SIZE):
-        seconds_from_base, open_raw, close_raw, low_raw, high_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
-        timestamp = base_time + timedelta(seconds=int(seconds_from_base))
-        candles.append(
-            Candle(
-                timestamp_utc=timestamp.isoformat(),
-                open=float(open_raw),
-                high=float(high_raw),
-                low=float(low_raw),
-                close=float(close_raw),
-                volume=float(volume),
-            )
-        )
-    candles.sort(key=lambda candle: candle.timestamp_utc)
-    return candles
-
-
-def _deduplicate_and_validate(
-    candles: list[Candle],
-    *,
-    reject_duplicate_conflicts: bool = False,
-) -> list[Candle]:
-    by_timestamp: dict[str, Candle] = {}
-    for candle in candles:
-        previous = by_timestamp.get(candle.timestamp_utc)
-        if reject_duplicate_conflicts and previous is not None and previous != candle:
-            raise ValueError(f"duplicate_timestamp_conflict:{candle.timestamp_utc}")
-        by_timestamp[candle.timestamp_utc] = candle
-    ordered = [by_timestamp[key] for key in sorted(by_timestamp)]
-    for index, candle in enumerate(ordered):
-        if not (candle.low <= candle.open <= candle.high and candle.low <= candle.close <= candle.high):
-            raise ValueError(
-                "candle_ohlc_invalid:"
-                f"timestamp={candle.timestamp_utc}:"
-                f"open={candle.open}:high={candle.high}:"
-                f"low={candle.low}:close={candle.close}:"
-                f"index={index}"
-            )
-        if index and candle.timestamp_utc <= ordered[index - 1].timestamp_utc:
-            raise ValueError("candle_timestamps_not_strictly_increasing")
-    return ordered
-
-
-def _aggregate_4h(hourly: list[Candle]) -> list[Candle]:
-    buckets: dict[datetime, list[Candle]] = {}
-    for candle in hourly:
-        ts = _parse_time(candle.timestamp_utc)
-        bucket = ts.replace(hour=(ts.hour // 4) * 4, minute=0, second=0, microsecond=0)
-        buckets.setdefault(bucket, []).append(candle)
-    result: list[Candle] = []
-    for bucket in sorted(buckets):
-        rows = sorted(buckets[bucket], key=lambda row: row.timestamp_utc)
-        expected = [bucket + timedelta(hours=i) for i in range(4)]
-        actual = [_parse_time(row.timestamp_utc) for row in rows]
-        if actual != expected:
-            continue
-        result.append(
-            Candle(
-                timestamp_utc=bucket.isoformat(),
-                open=rows[0].open,
-                high=max(row.high for row in rows),
-                low=min(row.low for row in rows),
-                close=rows[-1].close,
-                volume=sum(row.volume for row in rows),
-            )
-        )
-    return _deduplicate_and_validate(result)
+def _instrument_name(item: dict[str, Any]) -> str:
+    for key in ("name", "symbol", "nameLong"):
+        value = item.get(key)
+        if isinstance(value, str):
+            return value.replace("/", "").replace("_", "").upper()
+    return ""
 
 
 class DukascopyClient:
-    """Native candle feed client; no instrument-list API dependency."""
-
-    def __init__(self, *, session: requests.Session | None = None):
+    def __init__(self, *, session: requests.Session | None = None, key: str | None = None):
         self.session = session or requests.Session()
+        self.key = key
+
+    def _get(self, params: dict[str, Any]) -> Any:
+        query = dict(params)
+        if self.key:
+            query["key"] = self.key
+        response = self.session.get(BASE_URL, params=query, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def resolve_instruments(self) -> dict[str, int]:
+        payload = self._get({"path": "api/instrumentList", "fields": "id,name,pipValue,nameLong"})
+        if not isinstance(payload, list):
+            raise ValueError("instrument_list_not_array")
+        result: dict[str, int] = {}
+        for item in payload:
+            if not isinstance(item, dict) or "id" not in item:
+                continue
+            name = _instrument_name(item)
+            if name:
+                result[name] = int(item["id"])
+        missing = sorted(set(INSTRUMENTS) - set(result))
+        if missing:
+            raise ValueError(f"missing_instruments:{','.join(missing)}")
+        return {name: result[name] for name in INSTRUMENTS}
 
     def historical_prices(
         self,
         *,
-        instrument: str,
+        instrument_id: int,
         timeframe: str,
         start_utc: str,
         end_utc: str,
-        progress: Callable[[str], None] | None = None,
-    ) -> list[Candle]:
-        start = _parse_time(start_utc)
-        end = _parse_time(end_utc)
-        if end <= start:
-            raise ValueError("end_must_be_after_start")
-        if instrument not in INSTRUMENTS:
-            raise ValueError(f"unsupported_instrument:{instrument}")
-        reject_conflicts = instrument == "WTI"
-        if timeframe == "1D":
-            candles: list[Candle] = []
-            for year in range(start.year, end.year + 1):
-                for symbol in _feed_symbols_for_period(instrument, year):
-                    url = _native_url(instrument, "1D", year, feed_symbol=symbol)
-                    if progress:
-                        progress(f"request {instrument} 1D {year} symbol={symbol}")
-                    payload = _request_bytes(self.session, url, progress=progress)
-                    if not payload:
-                        if progress:
-                            progress(f"empty {instrument} 1D {year} symbol={symbol}")
-                        continue
-                    decoded = _decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc))
-                    candles.extend(decoded)
-                    if progress:
-                        progress(f"received {instrument} 1D {year} symbol={symbol}: bars={len(decoded)}")
-            result = [
-                c for c in _deduplicate_and_validate(candles, reject_duplicate_conflicts=reject_conflicts)
-                if start <= _parse_time(c.timestamp_utc) < end
-            ]
-            if progress:
-                progress(f"validated {instrument} 1D: bars={len(result)}")
-            return result
-        if timeframe == "4H":
-            hourly: list[Candle] = []
-            month = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
-            last_month = datetime(end.year, end.month, 1, tzinfo=timezone.utc)
-            while month <= last_month:
-                for symbol in _feed_symbols_for_period(instrument, month.year):
-                    url = _native_url(instrument, "1H", month.year, month.month, feed_symbol=symbol)
-                    if progress:
-                        progress(f"request {instrument} 1H {month.year}-{month.month:02d} symbol={symbol}")
-                    payload = _request_bytes(self.session, url, progress=progress)
-                    if payload:
-                        decoded = _decode_candle_file(payload, month)
-                        hourly.extend(decoded)
-                        if progress:
-                            progress(f"received {instrument} 1H {month.year}-{month.month:02d} symbol={symbol}: bars={len(decoded)}")
-                    elif progress:
-                        progress(f"empty {instrument} 1H {month.year}-{month.month:02d} symbol={symbol}")
-                if month.month == 12:
-                    month = datetime(month.year + 1, 1, 1, tzinfo=timezone.utc)
-                else:
-                    month = datetime(month.year, month.month + 1, 1, tzinfo=timezone.utc)
-            normalized_hourly = _deduplicate_and_validate(hourly, reject_duplicate_conflicts=reject_conflicts)
-            four_hour = _aggregate_4h(normalized_hourly)
-            result = [c for c in four_hour if start <= _parse_time(c.timestamp_utc) < end]
-            if progress:
-                progress(f"validated {instrument} 4H: bars={len(result)}")
-            return result
-        raise ValueError(f"unsupported_timeframe:{timeframe}")
+        offer_side: str = "B",
+    ) -> list[dict[str, Any]]:
+        if timeframe not in TIMEFRAME_API:
+            raise ValueError(f"unsupported_timeframe:{timeframe}")
+        if offer_side not in {"B", "A"}:
+            raise ValueError("offer_side_must_be_B_or_A")
+        payload = self._get({
+            "path": "api/historicalPrices",
+            "instrument": instrument_id,
+            "timeFrame": TIMEFRAME_API[timeframe],
+            "count": MAX_COUNT,
+            "start": _unix_ms(start_utc),
+            "end": _unix_ms(end_utc),
+            "dayStartTime": "UTC",
+            "offerSide": offer_side,
+        })
+        if not isinstance(payload, list):
+            raise ValueError("historical_prices_not_array")
+        return payload
+
+
+def normalize_candles(raw: list[dict[str, Any]]) -> list[Candle]:
+    candles: list[Candle] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("candle_not_object")
+        ts = item.get("timestamp", item.get("time"))
+        if ts is None:
+            raise ValueError("candle_timestamp_missing")
+        if isinstance(ts, (int, float)):
+            timestamp = datetime.fromtimestamp(float(ts) / (1000 if ts > 10**12 else 1), tz=timezone.utc)
+        elif isinstance(ts, str):
+            timestamp = _parse_time(ts)
+        else:
+            raise ValueError("candle_timestamp_invalid")
+        try:
+            values = {name: float(item[name]) for name in ("open", "high", "low", "close", "volume")}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("candle_numeric_field_missing") from exc
+        if not (values["low"] <= values["open"] <= values["high"] and values["low"] <= values["close"] <= values["high"]):
+            raise ValueError("candle_ohlc_invalid")
+        candles.append(Candle(timestamp.isoformat(), **values))
+    candles.sort(key=lambda candle: candle.timestamp_utc)
+    for previous, current in zip(candles, candles[1:]):
+        if current.timestamp_utc <= previous.timestamp_utc:
+            raise ValueError("candle_timestamps_not_strictly_increasing")
+    return candles
 
 
 def write_csv(candles: list[Candle], path: str | Path) -> str:
@@ -341,7 +161,8 @@ def write_csv(candles: list[Candle], path: str | Path) -> str:
                 f"{candle.close:.12g}",
                 f"{candle.volume:.12g}",
             ])
-    return hashlib.sha256(target.read_bytes()).hexdigest()
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    return digest
 
 
 def save_manifest(manifests: list[DatasetManifest], path: str | Path) -> None:
@@ -359,25 +180,24 @@ def download_universe(
     client: DukascopyClient,
     progress: Callable[[str], None] | None = None,
 ) -> list[DatasetManifest]:
-    start = _parse_time(start_utc)
-    end = _parse_time(end_utc)
-    if end <= start:
+    _parse_time(start_utc)
+    _parse_time(end_utc)
+    if _parse_time(end_utc) <= _parse_time(start_utc):
         raise ValueError("end_must_be_after_start")
+    ids = client.resolve_instruments()
     manifests: list[DatasetManifest] = []
     out = Path(output_dir)
-    total = len(INSTRUMENTS) * len(TIMEFRAMES)
-    completed = 0
     for instrument in INSTRUMENTS:
         for timeframe in TIMEFRAMES:
             if progress:
-                progress(f"START dataset {completed + 1}/{total}: {instrument} {timeframe}")
-            candles = client.historical_prices(
-                instrument=instrument,
+                progress(f"downloading {instrument} {timeframe}")
+            raw = client.historical_prices(
+                instrument_id=ids[instrument],
                 timeframe=timeframe,
                 start_utc=start_utc,
                 end_utc=end_utc,
-                progress=progress,
             )
+            candles = normalize_candles(raw)
             if len(candles) < 100:
                 raise ValueError(f"insufficient_bars:{instrument}:{timeframe}:{len(candles)}")
             filename = f"{instrument}_{timeframe}.csv"
@@ -389,26 +209,6 @@ def download_universe(
                 end_utc=candles[-1].timestamp_utc,
                 sha256=digest,
                 bars=len(candles),
-                source=DATAFEED_BASE_URL,
             ))
-            completed += 1
-            if progress:
-                progress(f"DONE dataset {completed}/{total}: {instrument} {timeframe} bars={len(candles)} sha256={digest}")
     save_manifest(manifests, out / "manifest.json")
     return manifests
-
-
-def main() -> None:
-    output = Path("data/research/universe_v2")
-    client = DukascopyClient()
-    download_universe(
-        output_dir=output,
-        start_utc="2010-01-01T00:00:00Z",
-        end_utc="2026-01-01T00:00:00Z",
-        client=client,
-        progress=print,
-    )
-
-
-if __name__ == "__main__":
-    main()
