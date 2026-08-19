@@ -63,6 +63,7 @@ class DemoTradingOrchestrator:
         demo_mode: bool,
         reconciled: bool,
         market_timestamp: datetime | None = None,
+        reference_time: datetime | None = None,
         risk: RiskSnapshot | None = None,
         price: float | None = None,
         quantity: float = 1.0,
@@ -72,6 +73,7 @@ class DemoTradingOrchestrator:
             broker_connected=broker_connected,
             demo_mode=demo_mode,
             reconciled=reconciled,
+            reference_time=reference_time,
         )
         if not supervisor_snapshot.healthy:
             return DemoCycleResult(event, None, False, "supervisor_unhealthy", None)
