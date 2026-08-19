@@ -65,7 +65,7 @@ def test_setup_does_not_execute_without_explicit_enter_action():
     assert gateway.records == ()
 
 
-def test_risk_exit_with_approved_strategy_reaches_demo_gateway():
+def test_risk_exit_with_approved_strategy_and_known_position_direction_reaches_demo_gateway():
     analysis = MarketAnalysis(
         assessment="RISK",
         rationale="risk condition requires an exit",
@@ -81,6 +81,7 @@ def test_risk_exit_with_approved_strategy_reaches_demo_gateway():
         gateway=gateway,
         strategy_lookup=lambda name, version: (name, version) == ("approved_v1", "1.0"),
         strategy_version_resolver=lambda *_: "1.0",
+        position_direction_resolver=lambda _: "LONG",
     )
     result = orchestrator.process_event(
         _event(),
@@ -92,6 +93,34 @@ def test_risk_exit_with_approved_strategy_reaches_demo_gateway():
     assert result.execution is not None
     assert result.execution.accepted is True
     assert result.execution.environment == "DEMO"
+
+
+def test_exit_is_rejected_when_position_direction_is_unknown():
+    analysis = MarketAnalysis(
+        assessment="RISK",
+        rationale="risk condition requires an exit",
+        relevant_strategies=("approved_v1",),
+        urgency="CRITICAL",
+    )
+    gateway = DemoExecutionGateway()
+    orchestrator = DemoTradingOrchestrator(
+        brain=FakeBrain(analysis),
+        supervisor=DemoTradingSupervisor(now=lambda: NOW),
+        experience=ExperienceStore(":memory:"),
+        gateway=gateway,
+        strategy_lookup=lambda *_: True,
+        strategy_version_resolver=lambda *_: "1.0",
+        position_direction_resolver=lambda _: None,
+    )
+    result = orchestrator.process_event(
+        _event(),
+        broker_connected=True,
+        demo_mode=True,
+        reconciled=True,
+    )
+    assert result.policy_allowed is False
+    assert result.policy_reason == "exit_position_direction_unresolved"
+    assert gateway.records == ()
 
 
 def test_unhealthy_supervisor_stops_before_brain_execution():
@@ -110,6 +139,7 @@ def test_unhealthy_supervisor_stops_before_brain_execution():
         gateway=gateway,
         strategy_lookup=lambda *_: True,
         strategy_version_resolver=lambda *_: "1.0",
+        position_direction_resolver=lambda _: "LONG",
     )
     result = orchestrator.process_event(
         _event(),
