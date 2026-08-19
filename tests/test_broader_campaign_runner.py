@@ -30,7 +30,7 @@ def test_momentum_requires_50_bars_and_then_uses_frozen_sma_rule() -> None:
 
 
 def test_mean_reversion_enters_on_frozen_two_sigma_rule_and_exits_at_mean() -> None:
-    closes = [100.0] * 20 + [70.0, 100.0]
+    closes = [100.0] * 19 + [101.0, 70.0, 100.0]
     states = mean_reversion_signal_series(make_bars(closes))
     assert states[19] is False
     assert states[20] is True
