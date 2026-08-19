@@ -50,7 +50,7 @@ def validate_recommendation(
 
     if risk.daily_loss_fraction >= policy.max_daily_loss_fraction:
         return PolicyDecision(False, "daily_loss_limit_reached")
-    if risk.open_positions > policy.max_open_positions:
+    if risk.open_positions >= policy.max_open_positions:
         return PolicyDecision(False, "open_position_limit_reached")
     if risk.spread_bps is not None and risk.spread_bps > policy.max_spread_bps:
         return PolicyDecision(False, "spread_above_limit")
