@@ -13,7 +13,10 @@ def test_policy_is_causal():
     bars = _bars()
     decisions = build_walk_forward_policy(bars, min_samples=2)
     assert len(decisions) == len(bars)
-    assert decisions[0].request_ai is False
+    # Lack of historical labels does not authorize trading; it preserves the
+    # trusted candidate and may request advisory AI review using current data.
+    assert decisions[0].request_ai is True
+    assert "insufficient evidence" in decisions[0].reason
 
 
 def test_policy_thresholds_validate():
