@@ -78,42 +78,26 @@ def evaluate_strategy_escalation_efficiency(
     slow_period: int = 50,
     recall_floor: float = 0.98,
 ) -> StrategyEscalationEfficiencyReport:
-    """Optimize escalation only when a causal candidate preserves recall.
+    """Measure the bounded escalation path without tuning it.
 
-    The baseline deliberately preserves the broad strategy signal: a bar is
-    eligible for AI review when either the causal strategy hint or the bounded
-    market escalation says the bar deserves review. The adaptive policy is an
-    optimization candidate only. If its walk-forward recall is below the hard
-    floor, the broad baseline is retained.
+    The baseline preserves the broad strategy signal. The adaptive policy is
+    only a filter, and it is retained only when the causal recall floor passes.
     """
     if not 0 < recall_floor <= 1:
         raise ValueError("recall_floor must be between 0 and 1")
-    if not bars:
+    if not bars or len(bars) < max(2, slow_period):
         return StrategyEscalationEfficiencyReport(0, 0, 0, 0, 0.0, 0.0, 0)
 
     ordered = tuple(bars)
     monitor = MarketMonitor()
     events = monitor.observe_history("EURUSD", "15m", ordered)
-    decisions = evaluate_strategy_escalation(
-        ordered,
-        events,
-        fast_period=fast_period,
-        slow_period=slow_period,
-    )
-
-    # Recover the proven broad baseline: strategy hints must not disappear
-    # merely because the market-side cooldown did not independently escalate.
-    # Deduplicate all event paths at the bar level before counting requests.
+    decisions = evaluate_strategy_escalation(ordered, events, fast_period=fast_period, slow_period=slow_period)
     baseline_indices = {
         decision.index
         for decision in decisions
         if decision.request_ai or decision.strategy_hint.request_ai
     }
 
-    # Adaptive optimization is a filter over the trusted baseline, not a new
-    # opportunity detector. This prevents the optimizer from throwing away
-    # strategy/market evidence before the recall constraint gets a chance to
-    # evaluate it.
     adaptive = build_walk_forward_policy(
         ordered,
         future_bars=future_bars,
@@ -134,20 +118,12 @@ def evaluate_strategy_escalation_efficiency(
         slow_period=slow_period,
     )
     adaptive_recall = len(actionable & adaptive_indices) / len(actionable) if actionable else 0.0
-
-    # Hard safety constraint: an adaptive policy that misses too many
-    # actionable opportunities is never allowed into the selected path.
     selected = adaptive_indices if adaptive_recall >= recall_floor else baseline_indices
-
     reviewed = actionable & selected
     recall = len(reviewed) / len(actionable) if actionable else 0.0
     precision, justified_count = _precision(
-        ordered,
-        selected,
-        future_bars=future_bars,
-        opportunity_move_bps=opportunity_move_bps,
+        ordered, selected, future_bars=future_bars, opportunity_move_bps=opportunity_move_bps
     )
-
     quality = evaluate_strategy_opportunities(
         ordered,
         future_bars=future_bars,
@@ -156,7 +132,6 @@ def evaluate_strategy_escalation_efficiency(
         fast_period=fast_period,
         slow_period=slow_period,
     )
-
     return StrategyEscalationEfficiencyReport(
         ai_requests=len(selected),
         unique_ai_request_bars=len(selected),
