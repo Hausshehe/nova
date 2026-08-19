@@ -19,6 +19,7 @@ from .decision_policy import PolicyDecision, RiskSnapshot
 class ExecutionRequest:
     recommendation: AIRecommendation
     symbol: str
+    timeframe: str
     price: float
     quantity: float
     timestamp_utc: datetime
@@ -27,6 +28,8 @@ class ExecutionRequest:
         self.recommendation.validate()
         if not self.symbol.strip():
             raise ValueError("symbol is required")
+        if not self.timeframe.strip() or self.timeframe.upper() == "UNKNOWN":
+            raise ValueError("timeframe is required and cannot be UNKNOWN")
         if self.price <= 0:
             raise ValueError("price must be positive")
         if self.quantity <= 0:
@@ -92,6 +95,7 @@ class DecisionExecutor:
         recommendation: AIRecommendation,
         *,
         symbol: str,
+        timeframe: str,
         price: float,
         quantity: float,
         timestamp_utc: datetime | None,
@@ -113,6 +117,7 @@ class DecisionExecutor:
         request = ExecutionRequest(
             recommendation=recommendation,
             symbol=symbol,
+            timeframe=timeframe,
             price=price,
             quantity=quantity,
             timestamp_utc=timestamp_utc or datetime.now(timezone.utc),
