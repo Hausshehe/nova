@@ -13,6 +13,8 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
+
 from typing import Any
 
 
@@ -76,7 +78,7 @@ class ExperienceStore:
         self._keeper: sqlite3.Connection | None = None
         if str(path) == ":memory:":
             self.path = Path(":memory:")
-            self._shared_memory_uri = f"file:nova_experience_{id(self)}?mode=memory&cache=shared"
+            self._shared_memory_uri = f"file:nova_experience_{uuid4().hex}?mode=memory&cache=shared"
             self._keeper = sqlite3.connect(self._shared_memory_uri, uri=True)
             self._keeper.row_factory = sqlite3.Row
             self._initialize(self._keeper)
