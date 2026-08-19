@@ -41,6 +41,7 @@ class DemoTradingOrchestrator:
         experience: ExperienceStore,
         strategy_lookup: Callable[[str, str], bool],
         strategy_version_resolver: Callable[[str, MarketEvent], str | None],
+        position_direction_resolver: Callable[[MarketEvent], str | None] | None = None,
         gateway: DemoExecutionGateway | None = None,
         policy: DecisionPolicy | None = None,
         recommendation_parser: Callable[[str | dict], AIRecommendation] = parse_recommendation,
@@ -51,6 +52,7 @@ class DemoTradingOrchestrator:
         self.gateway = gateway or DemoExecutionGateway()
         self.strategy_lookup = strategy_lookup
         self.strategy_version_resolver = strategy_version_resolver
+        self.position_direction_resolver = position_direction_resolver
         self.policy = policy or DecisionPolicy()
         self.recommendation_parser = recommendation_parser
         self.journal = TradeJournal(experience)
@@ -136,6 +138,14 @@ class DemoTradingOrchestrator:
         if recommendation.action not in {"ENTER", "EXIT"}:
             return DemoCycleResult(event, recommendation, True, policy_decision.reason, None)
 
+        direction = "LONG"
+        if recommendation.action == "EXIT":
+            if self.position_direction_resolver is None:
+                return DemoCycleResult(event, recommendation, False, "exit_position_direction_unresolved", None)
+            direction = self.position_direction_resolver(event) or ""
+            if direction not in {"LONG", "SHORT"}:
+                return DemoCycleResult(event, recommendation, False, "exit_position_direction_unresolved", None)
+
         request = ExecutionRequest(
             recommendation=recommendation,
             symbol=event.symbol,
@@ -149,7 +159,7 @@ class DemoTradingOrchestrator:
             request,
             execution,
             timeframe=event.timeframe,
-            direction="LONG" if recommendation.action == "ENTER" else "SHORT",
+            direction=direction,
             market_state={"event_type": event.event_type, "change_bps": event.change_bps},
         )
         return DemoCycleResult(event, recommendation, True, policy_decision.reason, execution)
