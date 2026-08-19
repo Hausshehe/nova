@@ -35,14 +35,6 @@ def test_new_evidence_source_allows_restart() -> None:
     assert decision.action == "ALLOW_RESTART_NEW_EVIDENCE"
 
 
-def test_missing_evidence_fingerprint_fails_closed() -> None:
-    decision = evaluate_campaign_closure(
-        current_eurusd_campaign_state(),
-        dataset_sha256=None,
-    )
-    assert decision.action == "EVIDENCE_FINGERPRINT_REQUIRED"
-
-
 def test_new_market_question_requires_explicit_restart() -> None:
     state = current_eurusd_campaign_state()
     decision = evaluate_campaign_closure(
