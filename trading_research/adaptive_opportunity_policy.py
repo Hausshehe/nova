@@ -110,9 +110,10 @@ def build_walk_forward_policy(
 ) -> tuple[AdaptivePolicyDecision, ...]:
     """Build a causal adaptive filter over a trusted candidate set.
 
-    The optional ``observable_context`` lets the policy condition on state
-    already known at decision time, such as strategy confidence tier and a
-    coarse escalation-reason family. It never contains future outcomes.
+    Evidence is hierarchical. The policy first uses the exact observable
+    feature/context state, then backs off to context-only and finally
+    tier-only evidence when the finer state has too few historical samples.
+    Every label is still delayed until its complete future horizon is known.
     """
     if future_bars <= 0 or opportunity_move_bps <= 0 or transaction_cost_bps_round_trip < 0:
         raise ValueError("invalid opportunity parameters")
@@ -135,6 +136,8 @@ def build_walk_forward_policy(
             raise ValueError("observable_context contains an out-of-range index")
 
     history: dict[tuple[int, ...], deque[bool]] = defaultdict(lambda: deque(maxlen=500))
+    context_history: dict[tuple[int, int], deque[bool]] = defaultdict(lambda: deque(maxlen=500))
+    tier_history: dict[int, deque[bool]] = defaultdict(lambda: deque(maxlen=500))
     results: list[AdaptivePolicyDecision] = []
     actionable_threshold = opportunity_move_bps + transaction_cost_bps_round_trip
     non_actionable_floor = 1.0 - min_confidence
@@ -151,6 +154,7 @@ def build_walk_forward_policy(
                 slow_period=slow_period,
             )
             if label is not None:
+                context = observable_context.get(label_index) if observable_context is not None else None
                 bucket = _bucket_for(
                     bars,
                     label_index,
@@ -161,6 +165,10 @@ def build_walk_forward_policy(
                     observable_context=observable_context,
                 )
                 history[bucket].append(label)
+                if context is not None:
+                    tier_code, reason_code = context
+                    context_history[(tier_code, reason_code)].append(label)
+                    tier_history[tier_code].append(label)
 
         bucket = _bucket_for(
             bars,
@@ -172,6 +180,17 @@ def build_walk_forward_policy(
             observable_context=observable_context,
         )
         prior = history[bucket]
+        evidence_source = "exact feature/context state"
+
+        if len(prior) < min_samples and observable_context is not None:
+            context = observable_context.get(index)
+            if context is not None and len(context_history[context]) >= min_samples:
+                prior = context_history[context]
+                evidence_source = "observable context state"
+            elif context is not None and len(tier_history[context[0]]) >= min_samples:
+                prior = tier_history[context[0]]
+                evidence_source = "strategy confidence tier"
+
         enough_evidence = len(prior) >= min_samples
         confidence = sum(prior) / len(prior) if enough_evidence else 0.0
         is_candidate = candidates is None or index in candidates
@@ -184,10 +203,10 @@ def build_walk_forward_policy(
             reason = "insufficient evidence; preserve trusted candidate"
         elif confidence <= non_actionable_floor:
             request = False
-            reason = "historically low actionable rate; adaptive suppression"
+            reason = f"historically low actionable rate; adaptive suppression ({evidence_source})"
         else:
             request = True
-            reason = "historically actionable feature state"
+            reason = f"historically actionable feature state ({evidence_source})"
 
         results.append(AdaptivePolicyDecision(index, request, confidence, bucket, reason))
 
