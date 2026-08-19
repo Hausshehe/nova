@@ -11,6 +11,7 @@ arrive as a validated deterministic rule function plus an explicit contract.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Callable, Sequence
@@ -40,6 +41,7 @@ class ExperimentRecord:
     created_at_utc: str
     hypothesis: Hypothesis
     dataset: str
+    dataset_sha256: str
     total_bars: int
     split_sizes: dict[str, int]
     costs: dict[str, float]
@@ -54,6 +56,14 @@ class ExperimentRecord:
             segment["decision"]["decision"] = segment["decision"]["decision"].value
         payload["final_decision"] = self.final_decision.value
         return payload
+
+
+def _dataset_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _metrics(result: BacktestResult) -> BacktestMetrics:
@@ -194,10 +204,11 @@ def run_experiment(
         final_decision = Decision.PROMISING
 
     record = ExperimentRecord(
-        schema_version=1,
+        schema_version=2,
         created_at_utc=datetime.now(timezone.utc).isoformat(),
         hypothesis=hypothesis,
         dataset=str(csv_path),
+        dataset_sha256=_dataset_sha256(csv_path),
         total_bars=len(bars),
         split_sizes={
             "train": len(split.train),
