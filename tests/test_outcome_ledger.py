@@ -21,7 +21,7 @@ def test_ledger_keeps_future_outcomes_as_labels_only():
     assert records[59].opportunity_label is True
     assert records[59].actionable_label is False
     assert records[-1].insufficient_future_window is True
-    assert records[-1].max_abs_close_move_bps is not None
+    assert records[-1].max_abs_close_move_bps is None
 
 
 def test_ledger_rejects_invalid_parameters():
