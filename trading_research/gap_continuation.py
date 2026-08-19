@@ -58,11 +58,18 @@ class GapContinuationSignal:
             return self._in_position
 
         for current in range(self._last_index + 1, index + 1):
+            just_exited = False
             if self._in_position and self._exit_index is not None and current >= self._exit_index:
                 self._in_position = False
                 self._exit_index = None
+                just_exited = True
 
-            if current > 0 and bars[current].open > bars[current - 1].close:
+            if (
+                not just_exited
+                and current > 0
+                and not self._in_position
+                and bars[current].open > bars[current - 1].close
+            ):
                 self._in_position = True
                 self._exit_index = current + 1
 
