@@ -63,6 +63,8 @@ class TradeJournal:
         request: ExecutionRequest,
         result: ExecutionResult,
         *,
+        timeframe: str,
+        direction: str,
         outcome: str = "OPEN",
         exit_price: float | None = None,
         pnl: float | None = None,
@@ -72,6 +74,11 @@ class TradeJournal:
     ) -> TradeRecord | None:
         if not result.accepted:
             return None
+        if not timeframe.strip() or timeframe.upper() == "UNKNOWN":
+            raise ValueError("trade timeframe is required and cannot be UNKNOWN")
+        if direction not in {"LONG", "SHORT"}:
+            raise ValueError("trade direction must be LONG or SHORT")
+
         recommendation = request.recommendation
         strategy_name = recommendation.strategy_name
         strategy_version = recommendation.strategy_version
@@ -83,8 +90,8 @@ class TradeJournal:
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             symbol=request.symbol.strip().upper(),
-            timeframe="UNKNOWN",
-            direction="LONG" if recommendation.action == "ENTER" else "SHORT",
+            timeframe=timeframe.strip().upper(),
+            direction=direction,
             entry_price=request.price,
             exit_price=exit_price,
             quantity=request.quantity,
