@@ -35,7 +35,7 @@ def test_deduplicate_and_validate_sorts_and_rejects_invalid_ohlc():
     assert [row.timestamp_utc for row in ordered] == [candle(0).timestamp_utc, candle(1).timestamp_utc]
 
     with pytest.raises(ValueError, match="candle_ohlc_invalid"):
-        _deduplicate_and_validate([candle(0, open_=3)])
+        _deduplicate_and_validate([candle(0), candle(1, open_=3)])
 
 
 def test_deduplicate_and_validate_keeps_one_row_per_timestamp():
