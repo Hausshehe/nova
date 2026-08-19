@@ -53,6 +53,17 @@ def _unix_ms(value: str) -> int:
     return int(_parse_time(value).timestamp() * 1000)
 
 
+def _item_timestamp(item: dict[str, Any]) -> datetime:
+    ts = item.get("timestamp", item.get("time"))
+    if ts is None:
+        raise ValueError("candle_timestamp_missing")
+    if isinstance(ts, (int, float)):
+        return datetime.fromtimestamp(float(ts) / (1000 if ts > 10**12 else 1), tz=timezone.utc)
+    if isinstance(ts, str):
+        return _parse_time(ts)
+    raise ValueError("candle_timestamp_invalid")
+
+
 def _instrument_name(item: dict[str, Any]) -> str:
     for key in ("name", "symbol", "nameLong"):
         value = item.get(key)
@@ -103,19 +114,33 @@ class DukascopyClient:
             raise ValueError(f"unsupported_timeframe:{timeframe}")
         if offer_side not in {"B", "A"}:
             raise ValueError("offer_side_must_be_B_or_A")
-        payload = self._get({
-            "path": "api/historicalPrices",
-            "instrument": instrument_id,
-            "timeFrame": TIMEFRAME_API[timeframe],
-            "count": MAX_COUNT,
-            "start": _unix_ms(start_utc),
-            "end": _unix_ms(end_utc),
-            "dayStartTime": "UTC",
-            "offerSide": offer_side,
-        })
-        if not isinstance(payload, list):
-            raise ValueError("historical_prices_not_array")
-        return payload
+        start_ms = _unix_ms(start_utc)
+        end_ms = _unix_ms(end_utc)
+        all_rows: list[dict[str, Any]] = []
+        while start_ms <= end_ms:
+            payload = self._get({
+                "path": "api/historicalPrices",
+                "instrument": instrument_id,
+                "timeFrame": TIMEFRAME_API[timeframe],
+                "count": MAX_COUNT,
+                "start": start_ms,
+                "end": end_ms,
+                "dayStartTime": "UTC",
+                "offerSide": offer_side,
+            })
+            if not isinstance(payload, list):
+                raise ValueError("historical_prices_not_array")
+            if not payload:
+                break
+            all_rows.extend(payload)
+            if len(payload) < MAX_COUNT:
+                break
+            last_time = max(_item_timestamp(item) for item in payload)
+            next_ms = int(last_time.timestamp() * 1000) + 1
+            if next_ms <= start_ms:
+                raise ValueError("historical_pagination_stalled")
+            start_ms = next_ms
+        return all_rows
 
 
 def normalize_candles(raw: list[dict[str, Any]]) -> list[Candle]:
@@ -123,15 +148,7 @@ def normalize_candles(raw: list[dict[str, Any]]) -> list[Candle]:
     for item in raw:
         if not isinstance(item, dict):
             raise ValueError("candle_not_object")
-        ts = item.get("timestamp", item.get("time"))
-        if ts is None:
-            raise ValueError("candle_timestamp_missing")
-        if isinstance(ts, (int, float)):
-            timestamp = datetime.fromtimestamp(float(ts) / (1000 if ts > 10**12 else 1), tz=timezone.utc)
-        elif isinstance(ts, str):
-            timestamp = _parse_time(ts)
-        else:
-            raise ValueError("candle_timestamp_invalid")
+        timestamp = _item_timestamp(item)
         try:
             values = {name: float(item[name]) for name in ("open", "high", "low", "close", "volume")}
         except (KeyError, TypeError, ValueError) as exc:
@@ -161,8 +178,7 @@ def write_csv(candles: list[Candle], path: str | Path) -> str:
                 f"{candle.close:.12g}",
                 f"{candle.volume:.12g}",
             ])
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    return digest
+    return hashlib.sha256(target.read_bytes()).hexdigest()
 
 
 def save_manifest(manifests: list[DatasetManifest], path: str | Path) -> None:
@@ -180,9 +196,9 @@ def download_universe(
     client: DukascopyClient,
     progress: Callable[[str], None] | None = None,
 ) -> list[DatasetManifest]:
-    _parse_time(start_utc)
-    _parse_time(end_utc)
-    if _parse_time(end_utc) <= _parse_time(start_utc):
+    start = _parse_time(start_utc)
+    end = _parse_time(end_utc)
+    if end <= start:
         raise ValueError("end_must_be_after_start")
     ids = client.resolve_instruments()
     manifests: list[DatasetManifest] = []
