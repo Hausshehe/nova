@@ -14,7 +14,7 @@ from typing import Sequence
 from .data import load_csv
 from .horizon_robustness_audit import _all_bar_baseline_predictions, _non_overlapping
 from .online_horizon_expert_ensemble import HORIZONS, collect_online_horizon_predictions
-from .statistical_diagnostics import moving_block_bootstrap_mean_ci
+from .statistical_diagnostics import DEFAULT_BLOCK_LENGTHS, bootstrap_block_sensitivity, moving_block_bootstrap_mean_ci
 
 
 def _net_values(predictions, cost_bps: float) -> list[float]:
@@ -62,6 +62,7 @@ def run(
         "evaluation_cost_bps": cost_bps,
         "block_length": block_length,
         "bootstrap_samples": samples,
+        "block_sensitivity_lengths": list(DEFAULT_BLOCK_LENGTHS),
         "interpretation_guardrail": "Bootstrap intervals quantify uncertainty in frozen return streams; they do not establish statistical significance, executable PnL, or future profitability.",
         "configurations": {},
     }
@@ -72,6 +73,12 @@ def run(
         result["configurations"][name] = {
             "decisions": len(values),
             "bootstrap": _diagnostic(values, block_length=block_length, samples=samples, seed=17),
+            "block_sensitivity": bootstrap_block_sensitivity(
+                values,
+                block_lengths=DEFAULT_BLOCK_LENGTHS,
+                samples=samples,
+                seed=17,
+            ),
         }
 
     return result
