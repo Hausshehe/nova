@@ -22,6 +22,7 @@ def _decision(decision_id, decided_at_utc, *, strategy_name="candidate", strateg
         evidence_experiment_ids=(),
         market_state={"regime": "range"},
         risk_snapshot={"risk_per_trade": 0.005},
+        memory_context={},
     )
 
 
