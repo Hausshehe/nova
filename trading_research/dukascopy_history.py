@@ -14,6 +14,7 @@ from typing import Any, Callable
 import requests
 
 BASE_URL = "https://freeserv.dukascopy.com/2.0/"
+INSTRUMENTS_FALLBACK_URL = "https://freeserv.dukascopy.com/2.0/index.php"
 INSTRUMENTS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
     "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
@@ -72,8 +73,46 @@ def _instrument_name(item: dict[str, Any]) -> str:
     for key in ("name", "symbol", "nameLong"):
         value = item.get(key)
         if isinstance(value, str):
-            return value.replace("/", "").replace("_", "").upper()
+            return value.replace("/", "").replace("_", "").replace(".", "").replace(" ", "").upper()
     return ""
+
+
+def _json_payload(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except requests.exceptions.JSONDecodeError as exc:
+        text = response.text.strip()
+        candidates: list[str] = []
+        if "(" in text and text.endswith(")"):
+            candidates.append(text[text.find("(") + 1 : -1].strip().rstrip(";"))
+        if "=" in text:
+            candidates.append(text.split("=", 1)[1].strip().rstrip(";"))
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        preview = text[:200].replace("\n", " ")
+        raise ValueError(
+            f"dukascopy_invalid_json:status={response.status_code}:content_type={response.headers.get('Content-Type')}:body={preview!r}"
+        ) from exc
+
+
+def _find_instrument_records(payload: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if "id" in value and any(key in value for key in ("name", "symbol", "nameLong")):
+                records.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return records
 
 
 class DukascopyClient:
@@ -81,7 +120,7 @@ class DukascopyClient:
         self.session = session or requests.Session()
         self.key = key
 
-    def _get(self, params: dict[str, Any]) -> Any:
+    def _get_url(self, url: str, params: dict[str, Any]) -> Any:
         query = dict(params)
         if self.key:
             query["key"] = self.key
@@ -91,7 +130,7 @@ class DukascopyClient:
             "Accept": "application/json, text/plain, */*",
         }
         for attempt in range(MAX_429_RETRIES + 1):
-            response = self.session.get(BASE_URL, params=query, timeout=30, headers=headers)
+            response = self.session.get(url, params=query, timeout=30, headers=headers)
             if response.status_code == 429:
                 if attempt >= MAX_429_RETRIES:
                     response.raise_for_status()
@@ -103,26 +142,34 @@ class DukascopyClient:
                 time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
                 continue
             response.raise_for_status()
-            try:
-                return response.json()
-            except requests.exceptions.JSONDecodeError as exc:
-                preview = response.text[:200].replace("\n", " ")
-                raise ValueError(
-                    f"dukascopy_invalid_json:status={response.status_code}:content_type={response.headers.get('Content-Type')}:body={preview!r}"
-                ) from exc
+            return _json_payload(response)
         raise RuntimeError("unreachable")
 
+    def _get(self, params: dict[str, Any]) -> Any:
+        return self._get_url(BASE_URL, params)
+
     def resolve_instruments(self) -> dict[str, int]:
-        payload = self._get({"path": "api/instrumentList", "fields": "id,name,pipValue,nameLong"})
-        if not isinstance(payload, list):
-            raise ValueError("instrument_list_not_array")
+        try:
+            payload = self._get({"path": "api/instrumentList", "fields": "id,name,pipValue,nameLong"})
+        except ValueError as exc:
+            if not str(exc).startswith("dukascopy_invalid_json:status=204:"):
+                raise
+            payload = self._get_url(INSTRUMENTS_FALLBACK_URL, {"path": "common/instruments"})
+
+        if not isinstance(payload, (list, dict)):
+            raise ValueError("instrument_list_not_collection")
+        records = payload if isinstance(payload, list) else _find_instrument_records(payload)
         result: dict[str, int] = {}
-        for item in payload:
+        for item in records:
             if not isinstance(item, dict) or "id" not in item:
+                continue
+            try:
+                instrument_id = int(item["id"])
+            except (TypeError, ValueError):
                 continue
             name = _instrument_name(item)
             if name:
-                result[name] = int(item["id"])
+                result[name] = instrument_id
         missing = sorted(set(INSTRUMENTS) - set(result))
         if missing:
             raise ValueError(f"missing_instruments:{','.join(missing)}")
