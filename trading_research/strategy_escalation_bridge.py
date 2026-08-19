@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -34,7 +35,15 @@ def evaluate_strategy_escalation(
     min_setup_score: float = 1.0,
     strong_setup_score: float = 1.5,
 ) -> tuple[StrategyEscalationDecision, ...]:
-    """Combine confidence-tiered strategy hints with bounded market escalation."""
+    """Combine confidence-tiered strategy hints with bounded market escalation.
+
+    An event is evaluated against the latest bar whose timestamp is not later
+    than the event. This avoids dropping live events merely because they occur
+    between bar timestamps while never introducing a future bar into context.
+    """
+    if not bars:
+        return ()
+
     hints = build_strategy_escalation_hints(
         bars,
         fast_period=fast_period,
@@ -46,13 +55,13 @@ def evaluate_strategy_escalation(
         min_setup_score=min_setup_score,
         strong_setup_score=strong_setup_score,
     )
-    by_timestamp = {bar.timestamp: i for i, bar in enumerate(bars)}
+    timestamps = [bar.timestamp for bar in bars]
     escalator = AdaptiveEscalator(thresholds)
     results: list[StrategyEscalationDecision] = []
 
     for event in events:
-        index = by_timestamp.get(event.timestamp)
-        if index is None:
+        index = bisect_right(timestamps, event.timestamp) - 1
+        if index < 0:
             continue
         hint = hints[index]
         state_value = hint.sma_gap_bps + hint.momentum_bps
