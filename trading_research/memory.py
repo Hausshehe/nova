@@ -1,6 +1,6 @@
 """Persistent, dependency-free research and trading experience memory.
 
-SQLite keeps Nova's experience local and queryable without adding a service.
+SQLite keeps Nova's trading experience local and queryable without adding a service.
 This layer records evidence; it does not promote strategies or authorize trades.
 Research experiments are immutable once recorded; trade rows remain updateable
 because an OPEN trade legitimately transitions to a closed outcome.
@@ -33,6 +33,14 @@ class TradeRecord:
     closed_at: str | None
     market_state: dict[str, Any]
     notes: str = ""
+    approval_status: str = "NOT_RECORDED"
+    order_status: str = "NOT_RECORDED"
+    broker_order_id: str | None = None
+    requested_entry_price: float | None = None
+    executed_entry_price: float | None = None
+    execution_latency_ms: float | None = None
+    execution_slippage_bps: float | None = None
+    exit_reason: str | None = None
 
 
 def _canonical_json(value: Any) -> str:
@@ -61,7 +69,7 @@ def _evidence_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class ExperienceStore:
-    """SQLite store for experiments, strategy versions, and trades."""
+    """SQLite store for experiments, strategy versions, and trading experience."""
 
     def __init__(self, path: str | Path):
         self._shared_memory_uri: str | None = None
@@ -132,13 +140,35 @@ class ExperienceStore:
                     opened_at TEXT NOT NULL,
                     closed_at TEXT,
                     market_state_json TEXT NOT NULL,
-                    notes TEXT NOT NULL DEFAULT ''
+                    notes TEXT NOT NULL DEFAULT '',
+                    approval_status TEXT NOT NULL DEFAULT 'NOT_RECORDED',
+                    order_status TEXT NOT NULL DEFAULT 'NOT_RECORDED',
+                    broker_order_id TEXT,
+                    requested_entry_price REAL,
+                    executed_entry_price REAL,
+                    execution_latency_ms REAL,
+                    execution_slippage_bps REAL,
+                    exit_reason TEXT
                 );
                 """
             )
-            self._ensure_column(connection, "experiments", "dataset_sha256", "TEXT")
-            self._ensure_column(connection, "experiments", "hypothesis_fingerprint", "TEXT")
-            self._ensure_column(connection, "experiments", "record_hash", "TEXT")
+            for column, definition in {
+                "dataset_sha256": "TEXT",
+                "hypothesis_fingerprint": "TEXT",
+                "record_hash": "TEXT",
+            }.items():
+                self._ensure_column(connection, "experiments", column, definition)
+            for column, definition in {
+                "approval_status": "TEXT NOT NULL DEFAULT 'NOT_RECORDED'",
+                "order_status": "TEXT NOT NULL DEFAULT 'NOT_RECORDED'",
+                "broker_order_id": "TEXT",
+                "requested_entry_price": "REAL",
+                "executed_entry_price": "REAL",
+                "execution_latency_ms": "REAL",
+                "execution_slippage_bps": "REAL",
+                "exit_reason": "TEXT",
+            }.items():
+                self._ensure_column(connection, "trades", column, definition)
 
             rows = connection.execute(
                 "SELECT experiment_id, record_json, record_hash FROM experiments ORDER BY created_at_utc ASC, experiment_id ASC"
@@ -297,14 +327,22 @@ class ExperienceStore:
             raise ValueError("trade quantity must be positive")
         if trade.outcome not in {"OPEN", "WIN", "LOSS", "BREAKEVEN", "CANCELLED"}:
             raise ValueError(f"unsupported trade outcome: {trade.outcome}")
+        if trade.approval_status not in {"APPROVED", "REJECTED", "NOT_RECORDED"}:
+            raise ValueError("unsupported approval status")
+        if trade.order_status not in {"REQUESTED", "FILLED", "REJECTED", "CANCELLED", "NOT_RECORDED"}:
+            raise ValueError("unsupported order status")
+        if trade.execution_latency_ms is not None and trade.execution_latency_ms < 0:
+            raise ValueError("execution latency cannot be negative")
         with self._connect() as db:
             db.execute(
                 """
                 INSERT OR REPLACE INTO trades
                 (trade_id, strategy_name, strategy_version, symbol, timeframe, direction,
                  entry_price, exit_price, quantity, pnl, outcome, opened_at, closed_at,
-                 market_state_json, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 market_state_json, notes, approval_status, order_status, broker_order_id,
+                 requested_entry_price, executed_entry_price, execution_latency_ms,
+                 execution_slippage_bps, exit_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.trade_id, trade.strategy_name, trade.strategy_version,
@@ -312,7 +350,10 @@ class ExperienceStore:
                     trade.exit_price, trade.quantity, trade.pnl, trade.outcome,
                     trade.opened_at, trade.closed_at,
                     json.dumps(trade.market_state, ensure_ascii=False, sort_keys=True),
-                    trade.notes,
+                    trade.notes, trade.approval_status, trade.order_status,
+                    trade.broker_order_id, trade.requested_entry_price,
+                    trade.executed_entry_price, trade.execution_latency_ms,
+                    trade.execution_slippage_bps, trade.exit_reason,
                 ),
             )
 
@@ -329,6 +370,10 @@ class ExperienceStore:
                 entry_price=row["entry_price"], exit_price=row["exit_price"], quantity=row["quantity"],
                 pnl=row["pnl"], outcome=row["outcome"], opened_at=row["opened_at"], closed_at=row["closed_at"],
                 market_state=json.loads(row["market_state_json"]), notes=row["notes"],
+                approval_status=row["approval_status"], order_status=row["order_status"],
+                broker_order_id=row["broker_order_id"], requested_entry_price=row["requested_entry_price"],
+                executed_entry_price=row["executed_entry_price"], execution_latency_ms=row["execution_latency_ms"],
+                execution_slippage_bps=row["execution_slippage_bps"], exit_reason=row["exit_reason"],
             )
             for row in rows
         ]
@@ -339,6 +384,8 @@ class ExperienceStore:
         pnl_values = [float(trade.pnl) for trade in closed]
         wins = [value for value in pnl_values if value > 0]
         losses = [value for value in pnl_values if value < 0]
+        slippages = [float(trade.execution_slippage_bps) for trade in trades if trade.execution_slippage_bps is not None]
+        latencies = [float(trade.execution_latency_ms) for trade in trades if trade.execution_latency_ms is not None]
         return {
             "strategy_name": strategy_name,
             "strategy_version": strategy_version,
@@ -349,4 +396,8 @@ class ExperienceStore:
             "net_pnl": sum(pnl_values),
             "win_rate": len(wins) / len(closed) if closed else 0.0,
             "profit_factor": sum(wins) / -sum(losses) if losses and wins else (float("inf") if wins else 0.0),
+            "execution_slippage_bps_avg": sum(slippages) / len(slippages) if slippages else None,
+            "execution_latency_ms_avg": sum(latencies) / len(latencies) if latencies else None,
+            "approved_trades": sum(1 for trade in trades if trade.approval_status == "APPROVED"),
+            "filled_orders": sum(1 for trade in trades if trade.order_status == "FILLED"),
         }
