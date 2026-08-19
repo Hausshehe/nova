@@ -1,0 +1,1 @@
+Campaign guard: current EURUSD research campaign is closed at 5/5 frozen hypotheses. Do not generate a sixth same-dataset hypothesis. Restart only with materially new evidence or a materially new market question.
