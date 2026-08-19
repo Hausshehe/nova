@@ -7,10 +7,9 @@ on:
         description: "Failed broader campaign run whose successful frozen dataset artifacts should be reused"
         required: true
         type: string
-      source_commit:
-        description: "Optional frozen research commit to use instead of the source run head; use only for infrastructure-only recovery fixes"
-        required: false
-        default: ""
+      recovery_commit:
+        description: "Reviewed code commit to run recovery; this must contain the decoder fix and recovery migration"
+        required: true
         type: string
 
 jobs:
@@ -22,10 +21,10 @@ jobs:
       contents: read
     env:
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RECOVERY_COMMIT: ${{ inputs.recovery_commit }}
 
     steps:
-      - name: Resolve source run commit
+      - name: Resolve source run and recovery commit
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,7 +36,10 @@ jobs:
 
           repo = os.environ["GITHUB_REPOSITORY"]
           run_id = os.environ["SOURCE_RUN_ID"]
-          override = os.environ.get("SOURCE_COMMIT", "").strip()
+          recovery_commit = os.environ["RECOVERY_COMMIT"].strip()
+          if not recovery_commit:
+              raise SystemExit("recovery_commit_required")
+
           request = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
               headers={
@@ -55,35 +57,42 @@ jobs:
           if not head_sha:
               raise SystemExit("source_run_missing_head_sha")
 
-          selected_sha = override or head_sha
-          if override:
-              commit_request = urllib.request.Request(
-                  f"https://api.github.com/repos/{repo}/commits/{override}",
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
-              )
-              with urllib.request.urlopen(commit_request, timeout=30) as response:
-                  commit = json.load(response)
-              resolved_sha = commit.get("sha")
-              if resolved_sha != override:
-                  raise SystemExit("source_commit_not_found_or_mismatched")
+          commit_request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/commits/{recovery_commit}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(commit_request, timeout=30) as response:
+              recovery = json.load(response)
+          resolved_sha = recovery.get("sha")
+          if resolved_sha != recovery_commit:
+              raise SystemExit("recovery_commit_not_found_or_mismatched")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"head_sha={selected_sha}\n")
+              output.write(f"recovery_sha={recovery_commit}\n")
           print(
               f"SOURCE RUN id={run_id} status={run.get('status')} conclusion={run.get('conclusion')} "
-              f"run_head_sha={head_sha} selected_commit={selected_sha} override={'yes' if override else 'no'}",
+              f"run_head_sha={head_sha} recovery_commit={recovery_commit}",
               flush=True,
           )
           PY
 
-      - name: Checkout source run commit
+      - name: Checkout reviewed recovery commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.source.outputs.head_sha }}
+          ref: ${{ steps.source.outputs.recovery_sha }}
+
+      - name: Verify recovery code is present
+        run: |
+          test -f trading_research/dukascopy_history.py
+          test -f trading_research/migrate_legacy_broader_artifacts.py
+          python - <<'PY'
+          from trading_research.migrate_legacy_broader_artifacts import LEGACY_SOURCE_RUN_ID
+          print(f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID}")
+          PY
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -103,41 +112,49 @@ jobs:
           path: data/research/universe_v2
           merge-multiple: true
 
-      - name: Migrate legacy decoder artifacts
+      - name: Migrate legacy decoder artifacts when required
         run: |
           python - <<'PY'
-          from trading_research.migrate_legacy_broader_artifacts import LEGACY_SOURCE_RUN_ID, migrate_legacy_artifacts
+          from trading_research.migrate_legacy_broader_artifacts import (
+              LEGACY_DAILY_DATASETS,
+              LEGACY_FOUR_HOUR_DATASETS,
+              LEGACY_SOURCE_RUN_ID,
+              migrate_legacy_artifacts,
+          )
 
           source_run_id = "${{ inputs.source_run_id }}"
           if source_run_id != LEGACY_SOURCE_RUN_ID:
-              raise SystemExit(f"legacy_migration_required_for_known_source_only:{source_run_id}")
-
-          repaired_daily, removed_four_hour = migrate_legacy_artifacts(
-              "data/research/universe_v2",
-              source_run_id=source_run_id,
-          )
-          expected_daily = 12
-          expected_four_hour = 13
-          if len(repaired_daily) != expected_daily:
-              raise SystemExit(
-                  f"legacy_daily_migration_count_mismatch:{len(repaired_daily)}:{expected_daily}"
+              print(f"LEGACY MIGRATION SKIPPED source_run={source_run_id}", flush=True)
+          else:
+              repaired_daily, removed_four_hour = migrate_legacy_artifacts(
+                  "data/research/universe_v2",
+                  source_run_id=source_run_id,
               )
-          if len(removed_four_hour) != expected_four_hour:
-              raise SystemExit(
-                  f"legacy_four_hour_removal_count_mismatch:{len(removed_four_hour)}:{expected_four_hour}"
+              if repaired_daily != list(LEGACY_DAILY_DATASETS):
+                  raise SystemExit(
+                      f"legacy_daily_migration_snapshot_mismatch:{repaired_daily}"
+                  )
+              if removed_four_hour != list(LEGACY_FOUR_HOUR_DATASETS):
+                  raise SystemExit(
+                      f"legacy_four_hour_migration_snapshot_mismatch:{removed_four_hour}"
+                  )
+              print(
+                  f"LEGACY MIGRATION COMPLETE repaired_daily={len(repaired_daily)} "
+                  f"removed_four_hour={len(removed_four_hour)}",
+                  flush=True,
               )
-          print(
-              f"LEGACY MIGRATION COMPLETE repaired_daily={len(repaired_daily)} "
-              f"removed_four_hour={len(removed_four_hour)}",
-              flush=True,
-          )
           PY
 
       - name: Recover only missing frozen datasets
         run: |
           python - <<'PY'
           from pathlib import Path
-          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES, write_csv
+          from trading_research.dukascopy_history import (
+              DukascopyClient,
+              INSTRUMENTS,
+              TIMEFRAMES,
+              write_csv,
+          )
 
           root = Path("data/research/universe_v2")
           root.mkdir(parents=True, exist_ok=True)
@@ -148,13 +165,32 @@ jobs:
               if not (root / f"{instrument}_{timeframe}.csv").is_file()
           ]
 
-          print(f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}", flush=True)
+          expected_legacy_missing = {
+              ("EURUSD", "4H"),
+              ("NAS100", "4H"),
+              ("NZDUSD", "4H"),
+              ("US500", "4H"),
+              ("WTI", "1D"),
+          }
+          if "${{ inputs.source_run_id }}" == "32293018258":
+              if set(missing) != expected_legacy_missing:
+                  raise SystemExit(
+                      f"legacy_missing_snapshot_mismatch:{sorted(missing)}"
+                  )
+
+          print(
+              f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}",
+              flush=True,
+          )
           print(f"RECOVER missing datasets={len(missing)}", flush=True)
 
           for instrument, timeframe in missing:
               recovered = False
               for attempt in range(1, 4):
-                  print(f"RECOVERY attempt={attempt}/3 dataset={instrument} {timeframe}", flush=True)
+                  print(
+                      f"RECOVERY attempt={attempt}/3 dataset={instrument} {timeframe}",
+                      flush=True,
+                  )
                   try:
                       client = DukascopyClient()
                       candles = client.historical_prices(
