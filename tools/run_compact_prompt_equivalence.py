@@ -5,6 +5,11 @@ Final gate for prompt compaction. It never changes production behavior and
 never suppresses AI reviews. It samples one AI-review decision per bar and
 compares current vs compact prompts using identical model settings.
 
+This runner is deliberately bounded and observable: it builds O(1) event
+lookups, prints progress before every model call, and defaults to a small
+sample so a slow/unavailable provider cannot look like a local computation
+hang. It is still only an experiment; production behavior is untouched.
+
 Environment:
     GROQ_API_KEY must be set.
 
@@ -12,7 +17,7 @@ Arguments:
     dataset output
 
 Optional:
-    --sample N   number of unique baseline review bars to compare (default: 32)
+    --sample N   number of unique baseline review bars to compare (default: 8)
 """
 
 from __future__ import annotations
@@ -169,9 +174,6 @@ def _unique_bar_sample(decisions, sample_size: int):
         if d.request_ai or d.strategy_hint.request_ai:
             by_index[d.index].append(d)
     selected = []
-    # Deterministic, one decision per bar. Prefer the first AI-requesting
-    # decision in source event order; this preserves one-AI-decision-per-bar
-    # accounting for this equivalence gate.
     for index in sorted(by_index):
         selected.append(by_index[index][0])
         if len(selected) >= sample_size:
@@ -183,53 +185,65 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset")
     parser.add_argument("output")
-    parser.add_argument("--sample", type=int, default=32)
+    parser.add_argument("--sample", type=int, default=8)
     args = parser.parse_args()
 
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise SystemExit("GROQ_API_KEY is required for the equivalence experiment")
+    if args.sample < 1:
+        raise SystemExit("--sample must be >= 1")
 
     bars = tuple(load_csv(args.dataset))
     events = MarketMonitor().observe_history("EURUSD", "15m", bars)
     decisions = evaluate_strategy_escalation(bars, events)
-    sample = _unique_bar_sample(decisions, min(args.sample, len({d.index for d in decisions if d.request_ai or d.strategy_hint.request_ai})))
+    ai_indices = {d.index for d in decisions if d.request_ai or d.strategy_hint.request_ai}
+    sample = _unique_bar_sample(decisions, min(args.sample, len(ai_indices)))
 
-    event_by_index = {}
-    for event in events:
-        for d in decisions:
-            if d.index == next((i for i, b in enumerate(bars) if b.timestamp == event.timestamp), -1):
-                event_by_index.setdefault(d.index, event)
-                break
+    # O(1) event lookup. The previous implementation repeatedly scanned every
+    # bar for every event, which made startup unnecessarily expensive.
+    bar_index_by_timestamp = {bar.timestamp: index for index, bar in enumerate(bars)}
+    event_by_index = {
+        bar_index_by_timestamp[event.timestamp]: event
+        for event in events
+        if event.timestamp in bar_index_by_timestamp
+    }
 
-    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL)
+    print(f"bounded equivalence: {len(sample)} unique bars / {len(sample) * 2} AI calls", flush=True)
+    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL, temperature=0.1)
 
     comparisons = []
     errors = []
     current_chars = 0
     compact_chars = 0
-    for d in sample:
+    for position, d in enumerate(sample, start=1):
         event = event_by_index.get(d.index)
         if event is None:
             errors.append({"index": d.index, "error": "event_not_found"})
+            print(f"[{position}/{len(sample)}] index={d.index}: event not found", flush=True)
             continue
         try:
             fs, fu = _full_context(d, event)
             cs, cu = _compact_contexts(d, event)
             current_chars += len(fs) + len(fu)
             compact_chars += len(cs) + len(cu)
+            print(f"[{position}/{len(sample)}] index={d.index}: full", flush=True)
             full = _call(reasoner, fs, fu)
+            print(f"[{position}/{len(sample)}] index={d.index}: compact", flush=True)
             compact = _call(reasoner, cs, cu)
+            match = _decision_key(full) == _decision_key(compact)
             comparisons.append({
                 "index": d.index,
                 "full": _decision_key(full),
                 "compact": _decision_key(compact),
-                "match": _decision_key(full) == _decision_key(compact),
+                "match": match,
                 "confidence_full": full.recommendation.confidence if full.recommendation else None,
                 "confidence_compact": compact.recommendation.confidence if compact.recommendation else None,
             })
+            print(f"[{position}/{len(sample)}] index={d.index}: {'MATCH' if match else 'DISAGREEMENT'}", flush=True)
         except Exception as exc:
             errors.append({"index": d.index, "error": f"{type(exc).__name__}: {exc}"})
+            print(f"[{position}/{len(sample)}] index={d.index}: ERROR {type(exc).__name__}: {exc}", flush=True)
 
     matches = sum(1 for c in comparisons if c["match"])
     valid = len(comparisons) == len(sample) and not errors
@@ -244,7 +258,7 @@ def main() -> None:
         status = "not_equivalent"
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "policy": "bounded_compact_prompt_equivalence",
         "dataset": args.dataset,
         "sample_requested": args.sample,
