@@ -28,6 +28,7 @@ INSTRUMENT_DATAFEED = {
 }
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
+MAX_5XX_RETRIES = 4
 MAX_NETWORK_RETRIES = 3
 DEFAULT_429_BACKOFF_SECONDS = 2.0
 MAX_429_BACKOFF_SECONDS = 120.0
@@ -85,6 +86,14 @@ def _native_url(instrument: str, timeframe: str, year: int, month: int | None = 
     raise ValueError(f"unsupported_native_timeframe:{timeframe}")
 
 
+def _retry_delay(response: requests.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    try:
+        return float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
+    except (TypeError, ValueError):
+        return DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
+
+
 def _request_bytes(session: requests.Session, url: str) -> bytes | None:
     headers = {
         "User-Agent": "Nova-TradingResearch/1.0",
@@ -93,6 +102,7 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
     }
     network_attempts = 0
     rate_attempts = 0
+    server_attempts = 0
     while True:
         try:
             response = session.get(url, timeout=45, headers=headers)
@@ -108,13 +118,14 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
         if response.status_code == 429:
             if rate_attempts >= MAX_429_RETRIES:
                 response.raise_for_status()
-            retry_after = response.headers.get("Retry-After")
-            try:
-                delay = float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**rate_attempts)
-            except ValueError:
-                delay = DEFAULT_429_BACKOFF_SECONDS * (2**rate_attempts)
-            time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
+            time.sleep(min(_retry_delay(response, rate_attempts), MAX_429_BACKOFF_SECONDS))
             rate_attempts += 1
+            continue
+        if 500 <= response.status_code < 600:
+            if server_attempts >= MAX_5XX_RETRIES:
+                response.raise_for_status()
+            time.sleep(min(_retry_delay(response, server_attempts), MAX_429_BACKOFF_SECONDS))
+            server_attempts += 1
             continue
         response.raise_for_status()
         if not response.content:
