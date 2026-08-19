@@ -205,7 +205,7 @@ def build_walk_forward_policy(
             reason = "insufficient evidence; preserve trusted candidate"
         elif confidence <= non_actionable_floor:
             request = False
-            reason = f"historically low actionable rate; adaptive suppression ({evidence_source})"
+            reason = "historically low actionable rate; adaptive suppression"
         else:
             request = True
             reason = f"historically actionable feature state ({evidence_source})"
