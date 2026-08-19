@@ -26,6 +26,8 @@ INSTRUMENT_DATAFEED = {
     "US30": "USA30IDXUSD",
     "WTI": "LIGHTCMDUSD",
 }
+WTI_LEGACY_DATAFEED = "WTICMDUSD"
+WTI_SYMBOL_SWITCH_YEAR = 2015
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
 MAX_5XX_RETRIES = 7
@@ -69,6 +71,13 @@ def _feed_symbol(instrument: str) -> str:
     return INSTRUMENT_DATAFEED.get(instrument, instrument)
 
 
+def _feed_symbol_for_period(instrument: str, timeframe: str, year: int) -> str:
+    """Resolve feed symbol while preserving known historical WTI directories."""
+    if instrument == "WTI" and timeframe == "1D" and year < WTI_SYMBOL_SWITCH_YEAR:
+        return WTI_LEGACY_DATAFEED
+    return _feed_symbol(instrument)
+
+
 def _month_zero_based(month: int) -> str:
     if not 1 <= month <= 12:
         raise ValueError("month_out_of_range")
@@ -76,7 +85,7 @@ def _month_zero_based(month: int) -> str:
 
 
 def _native_url(instrument: str, timeframe: str, year: int, month: int | None = None) -> str:
-    symbol = _feed_symbol(instrument)
+    symbol = _feed_symbol_for_period(instrument, timeframe, year)
     if timeframe == "1D":
         return f"{DATAFEED_BASE_URL}/{symbol}/{year}/BID_candles_day_1.bi5"
     if timeframe == "1H":
