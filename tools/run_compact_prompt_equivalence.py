@@ -13,6 +13,12 @@ Arguments:
 
 Optional:
     --sample N   number of unique baseline review bars to compare (default: 8)
+    --model NAME model to use for this experiment; production model is not changed
+
+Deployment rule:
+    Only an exact 100% match on material decision fields with 100% valid
+    responses may produce "equivalent_candidate". Any material disagreement
+    produces "not_equivalent". API/runtime failures produce "inconclusive".
 """
 
 from __future__ import annotations
@@ -181,6 +187,7 @@ def main() -> None:
     parser.add_argument("dataset")
     parser.add_argument("output")
     parser.add_argument("--sample", type=int, default=8)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     args = parser.parse_args()
 
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
@@ -201,7 +208,8 @@ def main() -> None:
     }
 
     print(f"bounded equivalence: {len(sample)} unique bars / {len(sample) * 2} AI calls", flush=True)
-    reasoner = GroqMarketReasoner(api_key, model=DEFAULT_MODEL)
+    print(f"model: {args.model}", flush=True)
+    reasoner = GroqMarketReasoner(api_key, model=args.model)
 
     comparisons = []
     errors = []
@@ -249,13 +257,13 @@ def main() -> None:
         status = "not_equivalent"
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "policy": "bounded_compact_prompt_equivalence",
         "dataset": args.dataset,
         "sample_requested": args.sample,
         "sample_tested": len(sample),
         "sample_unique_bars": len({d.index for d in sample}),
-        "current_model": DEFAULT_MODEL,
+        "current_model": args.model,
         "temperature": 0.1,
         "coverage_unchanged": True,
         "comparisons": comparisons,
