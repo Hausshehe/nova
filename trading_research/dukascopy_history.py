@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import requests
 
-BASE_URL = "https://freeserv.dukascopy.com/2.0/"
+BASE_URL = "https://freeserv.dukascopy.com/2.0/index.php"
 INSTRUMENTS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
     "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
@@ -85,24 +85,31 @@ class DukascopyClient:
         query = dict(params)
         if self.key:
             query["key"] = self.key
+        headers = {
+            "User-Agent": "Nova-TradingResearch/1.0",
+            "Referer": "https://freeserv.dukascopy.com/",
+            "Accept": "application/json, text/plain, */*",
+        }
         for attempt in range(MAX_429_RETRIES + 1):
-            response = self.session.get(
-                BASE_URL,
-                params=query,
-                timeout=30,
-                headers={"User-Agent": "Nova-TradingResearch/1.0"},
-            )
-            if response.status_code != 429:
-                response.raise_for_status()
-                return response.json()
-            if attempt >= MAX_429_RETRIES:
-                response.raise_for_status()
-            retry_after = response.headers.get("Retry-After")
+            response = self.session.get(BASE_URL, params=query, timeout=30, headers=headers)
+            if response.status_code == 429:
+                if attempt >= MAX_429_RETRIES:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
+                except ValueError:
+                    delay = DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
+                time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
+                continue
+            response.raise_for_status()
             try:
-                delay = float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
-            except ValueError:
-                delay = DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
-            time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
+                return response.json()
+            except requests.exceptions.JSONDecodeError as exc:
+                preview = response.text[:200].replace("\n", " ")
+                raise ValueError(
+                    f"dukascopy_invalid_json:status={response.status_code}:content_type={response.headers.get('Content-Type')}:body={preview!r}"
+                ) from exc
         raise RuntimeError("unreachable")
 
     def resolve_instruments(self) -> dict[str, int]:
