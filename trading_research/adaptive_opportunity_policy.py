@@ -99,7 +99,7 @@ def build_walk_forward_policy(
     momentum_lookback: int = 3,
     min_samples: int = 20,
     min_confidence: float = 0.65,
-    bucket_width_bps: float = 5.0,
+    bucket_width_bps: float = 25.0,
     candidate_indices: Iterable[int] | None = None,
 ) -> tuple[AdaptivePolicyDecision, ...]:
     """Build a causal adaptive *filter* over an optional trusted candidate set.
@@ -108,6 +108,11 @@ def build_walk_forward_policy(
     suppress requests from that set; it can never invent a new request outside
     the trusted baseline. Candidates are preserved by default until enough
     historical evidence exists to justify suppression.
+
+    The default feature buckets are deliberately broad enough to accumulate
+    historical samples on a 2,400-bar research set. Fine buckets can otherwise
+    leave almost every state permanently below ``min_samples``, turning the
+    adaptive layer into a no-op while still appearing structurally correct.
 
     Crucially, a label for bar ``N`` is not added to training history until bar
     ``N + future_bars`` has been observed. This prevents future leakage into
