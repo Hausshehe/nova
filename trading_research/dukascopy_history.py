@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,9 @@ INSTRUMENTS = (
 TIMEFRAMES = ("1D", "4H")
 TIMEFRAME_API = {"1D": "1day", "4H": "4hour"}
 MAX_COUNT = 5000
+MAX_429_RETRIES = 5
+DEFAULT_429_BACKOFF_SECONDS = 2.0
+MAX_429_BACKOFF_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -81,9 +85,25 @@ class DukascopyClient:
         query = dict(params)
         if self.key:
             query["key"] = self.key
-        response = self.session.get(BASE_URL, params=query, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        for attempt in range(MAX_429_RETRIES + 1):
+            response = self.session.get(
+                BASE_URL,
+                params=query,
+                timeout=30,
+                headers={"User-Agent": "Nova-TradingResearch/1.0"},
+            )
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json()
+            if attempt >= MAX_429_RETRIES:
+                response.raise_for_status()
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after is not None else DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
+            except ValueError:
+                delay = DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
+            time.sleep(min(delay, MAX_429_BACKOFF_SECONDS))
+        raise RuntimeError("unreachable")
 
     def resolve_instruments(self) -> dict[str, int]:
         payload = self._get({"path": "api/instrumentList", "fields": "id,name,pipValue,nameLong"})
