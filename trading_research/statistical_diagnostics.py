@@ -13,6 +13,9 @@ from statistics import mean
 from typing import Sequence
 
 
+DEFAULT_BLOCK_LENGTHS = (1, 3, 5, 10, 20)
+
+
 def moving_block_bootstrap_mean_ci(
     values: Sequence[float],
     *,
@@ -83,4 +86,35 @@ def compare_frozen_streams(
         ),
         "difference_of_means": mean(left) - mean(right),
         "interpretation": "Exploratory uncertainty only; this comparison does not establish statistical significance or executable PnL.",
+    }
+
+
+def bootstrap_block_sensitivity(
+    values: Sequence[float],
+    *,
+    block_lengths: Sequence[int] = DEFAULT_BLOCK_LENGTHS,
+    samples: int = 2000,
+    seed: int = 0,
+) -> dict[str, object]:
+    """Report a predeclared block-length sensitivity grid for a frozen stream.
+
+    The grid is an uncertainty-robustness diagnostic, not a parameter search.
+    Every requested block length is reported so no block is selected because
+    it produces a favorable interval.
+    """
+    lengths = tuple(int(value) for value in block_lengths)
+    if not lengths or any(value <= 0 for value in lengths):
+        raise ValueError("block_lengths must contain positive values")
+    if len(set(lengths)) != len(lengths):
+        raise ValueError("block_lengths must be unique")
+    if samples <= 0:
+        raise ValueError("samples must be positive")
+    return {
+        str(length): moving_block_bootstrap_mean_ci(
+            values,
+            block_length=min(length, len(values)),
+            samples=samples,
+            seed=seed + offset,
+        )
+        for offset, length in enumerate(lengths)
     }
