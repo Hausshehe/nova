@@ -55,6 +55,13 @@ def _file_sha256(path: str | Path) -> str | None:
     return digest.hexdigest()
 
 
+def _evidence_payload(record: dict[str, Any]) -> dict[str, Any]:
+    """Exclude runtime creation time from experiment evidence identity."""
+    payload = dict(record)
+    payload.pop("created_at_utc", None)
+    return payload
+
+
 class ExperienceStore:
     """SQLite store for experiments, strategy versions, and trades."""
 
@@ -153,7 +160,7 @@ class ExperienceStore:
 
     @staticmethod
     def _experiment_hash(record: dict[str, Any]) -> str:
-        return hashlib.sha256(_canonical_json(record).encode("utf-8")).hexdigest()
+        return hashlib.sha256(_canonical_json(_evidence_payload(record)).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _validate_experiment_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -186,11 +193,11 @@ class ExperienceStore:
 
         with self._connect() as db:
             existing = db.execute(
-                "SELECT record_json, record_hash FROM experiments WHERE experiment_id = ?",
+                "SELECT record_hash FROM experiments WHERE experiment_id = ?",
                 (experiment_id,),
             ).fetchone()
             if existing is not None:
-                if existing["record_json"] == payload and existing["record_hash"] == record_hash:
+                if existing["record_hash"] == record_hash:
                     return
                 raise ValueError(f"experiment_id already exists with different evidence: {experiment_id}")
 
@@ -226,19 +233,10 @@ class ExperienceStore:
         return self._validate_experiment_row(row)
 
     def list_experiment_hypotheses(self) -> list[dict[str, Any]]:
-        """Return previously recorded hypotheses in chronological order.
-
-        Only the stored hypothesis payload is exposed. The memory layer does
-        not interpret results or promote strategies.
-        """
         with self._connect() as db:
             rows = db.execute(
-                """
-                SELECT experiment_id, record_json, record_hash FROM experiments
-                ORDER BY created_at_utc ASC, experiment_id ASC
-                """
+                "SELECT experiment_id, record_json, record_hash FROM experiments ORDER BY created_at_utc ASC, experiment_id ASC"
             ).fetchall()
-
         hypotheses: list[dict[str, Any]] = []
         for row in rows:
             record = self._validate_experiment_row(row)
@@ -352,7 +350,6 @@ class ExperienceStore:
                 """,
                 (strategy_name, strategy_version),
             ).fetchall()
-
         return [
             TradeRecord(
                 trade_id=row["trade_id"],
