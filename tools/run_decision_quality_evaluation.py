@@ -25,8 +25,9 @@ def _outcome_for_index(bars, index: int, *, future_bars: int = 4, move_bps: floa
     max_up = max(moves)
     max_down = min(moves)
     max_abs = max(abs(x) for x in moves)
-    opportunity = max_abs >= move_bps
-    actionable = opportunity and max_abs >= move_bps + cost_bps
+    epsilon = 1e-9
+    opportunity = max_abs + epsilon >= move_bps
+    actionable = opportunity and max_abs + epsilon >= move_bps + cost_bps
     return {"max_up_bps": max_up, "max_down_bps": max_down, "max_abs_bps": max_abs, "opportunity": opportunity, "actionable": actionable}
 
 
