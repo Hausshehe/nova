@@ -3,6 +3,7 @@ from __future__ import annotations
 import lzma
 from datetime import datetime, timezone
 
+import pytest
 import requests
 
 from trading_research.dukascopy_history import (
@@ -12,6 +13,7 @@ from trading_research.dukascopy_history import (
     INSTRUMENTS,
     _aggregate_4h,
     _decode_candle_file,
+    _deduplicate_and_validate,
     _native_url,
     _request_bytes,
     Candle,
@@ -73,6 +75,22 @@ def test_native_candle_decoder():
         Candle("2024-01-01T00:00:00+00:00", 100.0, 110.0, 90.0, 105.0, 2.5),
         Candle("2024-01-01T01:00:00+00:00", 105.0, 120.0, 100.0, 115.0, 3.0),
     ]
+
+
+def test_validation_rejects_invalid_first_and_middle_rows():
+    rows = [
+        Candle("2024-01-01T00:00:00+00:00", 120, 110, 90, 100, 1),
+        Candle("2024-01-01T01:00:00+00:00", 100, 110, 90, 105, 1),
+    ]
+    with pytest.raises(ValueError, match="candle_ohlc_invalid:timestamp=2024-01-01T00:00:00\+00:00"):
+        _deduplicate_and_validate(rows)
+
+    rows = [
+        Candle("2024-01-01T00:00:00+00:00", 100, 110, 90, 105, 1),
+        Candle("2024-01-01T01:00:00+00:00", 120, 110, 90, 100, 1),
+    ]
+    with pytest.raises(ValueError, match="candle_ohlc_invalid:timestamp=2024-01-01T01:00:00\+00:00"):
+        _deduplicate_and_validate(rows)
 
 
 def test_request_bytes_retries_429_and_honors_retry_after(monkeypatch):
