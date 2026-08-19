@@ -79,7 +79,6 @@ jobs:
           pattern: frozen-*
           path: data/research/universe_v2
           merge-multiple: true
-          if-no-artifact-found: warn
 
       - name: Recover only missing frozen datasets
         run: |
@@ -96,8 +95,8 @@ jobs:
               if not (root / f"{instrument}_{timeframe}.csv").is_file()
           ]
 
-          print(f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}")
-          print(f"RECOVER missing datasets={len(missing)}")
+          print(f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}", flush=True)
+          print(f"RECOVER missing datasets={len(missing)}", flush=True)
 
           for instrument, timeframe in missing:
               recovered = False
