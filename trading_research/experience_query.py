@@ -1,16 +1,11 @@
-"""Read-only queries over Nova's research experience memory.
-
-This layer answers research-history questions without mutating memory,
-running experiments, selecting strategies, or authorizing execution.
-"""
+"""Read-only queries over Nova's existing research experience memory."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
-from .experience_lifecycle import ExperienceMetadata, available_at_or_before, validate_lineage
+from .experience_lifecycle import ExperienceMetadata, available_at_or_before
 from .memory import ExperienceStore
 from .researcher import hypothesis_fingerprint
 
@@ -23,7 +18,6 @@ class ExperienceSummary:
     final_decision: str
     knowledge_class: str
     observed_at_utc: str
-    parent_experiment_id: str | None
 
 
 class ExperienceQuery:
@@ -34,26 +28,22 @@ class ExperienceQuery:
 
     def history_for_hypothesis(self, hypothesis: Any) -> list[ExperienceSummary]:
         fingerprint = hypothesis_fingerprint(hypothesis)
-        return [self._summary(item) for item in self._store.list_experience_metadata(fingerprint)]
+        records = self._store.list_experiments_for_hypothesis(fingerprint)
+        return [self._summary_from_record(record, fingerprint) for record in records]
 
     def available_history(self, hypothesis: Any, decision_time_utc: str) -> list[ExperienceSummary]:
-        items = [
-            self._metadata_from_row(row)
-            for row in self._store.list_experience_metadata(hypothesis_fingerprint(hypothesis))
+        fingerprint = hypothesis_fingerprint(hypothesis)
+        records = self._store.list_experiments_for_hypothesis(fingerprint)
+        metadata = [self._metadata_from_record(record, fingerprint) for record in records]
+        return [
+            self._summary_from_metadata(item)
+            for item in available_at_or_before(metadata, decision_time_utc)
         ]
-        return [self._summary(item) for item in available_at_or_before(items, decision_time_utc)]
 
     def explain_experiment(self, experiment_id: str) -> dict[str, Any] | None:
         payload = self._store.get_experiment(experiment_id)
         if payload is None:
             return None
-        metadata = self._store.get_experience_metadata(experiment_id)
-        if metadata is not None:
-            known = {
-                row["experiment_id"]
-                for row in self._store.list_experience_metadata()
-            }
-            self._validate_metadata(metadata, known)
         return {
             "experiment_id": experiment_id,
             "final_decision": payload.get("final_decision"),
@@ -62,27 +52,46 @@ class ExperienceQuery:
             "dataset_sha256": payload.get("dataset_sha256"),
             "costs": payload.get("costs"),
             "segments": payload.get("segments"),
-            "knowledge_class": metadata["knowledge_class"] if metadata else None,
-            "parent_experiment_id": metadata["parent_experiment_id"] if metadata else None,
+            "knowledge_class": self._knowledge_class(str(payload.get("final_decision", ""))),
         }
 
     def prior_dispositions(self, hypothesis: Any) -> tuple[str, ...]:
-        return tuple(item.final_decision for item in self._metadata_for_hypothesis(hypothesis))
+        fingerprint = hypothesis_fingerprint(hypothesis)
+        records = self._store.list_experiments_for_hypothesis(fingerprint)
+        return tuple(str(record.get("final_decision", "")) for record in records)
 
-    @staticmethod
-    def _metadata_from_row(row: dict[str, Any]) -> ExperienceMetadata:
+    @classmethod
+    def _metadata_from_record(cls, record: dict[str, Any], fingerprint: str) -> ExperienceMetadata:
         return ExperienceMetadata(
-            experiment_id=str(row["experiment_id"]),
-            observed_at_utc=str(row["created_at_utc"]),
-            hypothesis_fingerprint=str(row["hypothesis_fingerprint"] or ""),
-            dataset_sha256=row["dataset_sha256"],
-            final_decision=str(row["final_decision"]),
-            knowledge_class=row["knowledge_class"],
-            parent_experiment_id=row["parent_experiment_id"],
+            experiment_id=cls._experiment_id_from_record(record),
+            observed_at_utc=str(record.get("created_at_utc", "")),
+            hypothesis_fingerprint=fingerprint,
+            dataset_sha256=record.get("dataset_sha256"),
+            final_decision=str(record.get("final_decision", "")),
+            knowledge_class=cls._knowledge_class(str(record.get("final_decision", ""))),
         )
 
     @staticmethod
-    def _summary(item: ExperienceMetadata) -> ExperienceSummary:
+    def _experiment_id_from_record(record: dict[str, Any]) -> str:
+        value = record.get("experiment_id")
+        if isinstance(value, str) and value:
+            return value
+        # Older records do not embed the SQLite primary key. Preserve a stable
+        # identity from the immutable evidence payload instead of inventing one.
+        import hashlib
+        import json
+        canonical = dict(record)
+        canonical.pop("created_at_utc", None)
+        return hashlib.sha256(
+            json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:24]
+
+    @classmethod
+    def _summary_from_record(cls, record: dict[str, Any], fingerprint: str) -> ExperienceSummary:
+        return cls._summary_from_metadata(cls._metadata_from_record(record, fingerprint))
+
+    @staticmethod
+    def _summary_from_metadata(item: ExperienceMetadata) -> ExperienceSummary:
         return ExperienceSummary(
             experiment_id=item.experiment_id,
             hypothesis_fingerprint=item.hypothesis_fingerprint,
@@ -90,24 +99,12 @@ class ExperienceQuery:
             final_decision=item.final_decision,
             knowledge_class=item.knowledge_class,
             observed_at_utc=item.observed_at_utc,
-            parent_experiment_id=item.parent_experiment_id,
         )
-
-    def _metadata_for_hypothesis(self, hypothesis: Any) -> list[ExperienceMetadata]:
-        return [
-            self._metadata_from_row(row)
-            for row in self._store.list_experience_metadata(hypothesis_fingerprint(hypothesis))
-        ]
 
     @staticmethod
-    def _validate_metadata(metadata: dict[str, Any], known_ids: set[str]) -> None:
-        typed = ExperienceMetadata(
-            experiment_id=str(metadata["experiment_id"]),
-            observed_at_utc=str(metadata["created_at_utc"]),
-            hypothesis_fingerprint=str(metadata["hypothesis_fingerprint"] or ""),
-            dataset_sha256=metadata["dataset_sha256"],
-            final_decision=str(metadata["final_decision"]),
-            knowledge_class=metadata["knowledge_class"],
-            parent_experiment_id=metadata["parent_experiment_id"],
-        )
-        validate_lineage(typed, known_ids)
+    def _knowledge_class(final_decision: str) -> str:
+        return {
+            "REJECT": "REJECTED",
+            "INCONCLUSIVE": "INCONCLUSIVE",
+            "PROMISING": "HISTORICAL_RESEARCH",
+        }.get(final_decision, "HISTORICAL_RESEARCH")
