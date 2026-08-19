@@ -1,25 +1,27 @@
-# Nova Trading Research — Frozen Horizon Hypothesis Status
+# Nova Trading Research — Frozen Hypothesis Status
 
 Date: 2026-08-19
 
-## Disposition
+## Current disposition
 
-The fixed-8-bar hypothesis is **rejected as a current edge candidate**.
+No strategy tested so far has demonstrated sufficient evidence for MT5 demo or live execution.
 
-The adaptive 2/4/8 horizon configuration is **not promoted**. It remains an exploratory null/near-zero observation only.
+The current evidence campaign is deliberately finite. See `docs/research_campaign_policy.md`.
 
-No strategy from this audit is approved for paper/demo or live execution.
+## Dataset used for the current campaign
 
-## Evidence
-
-Dataset: `data/research/eurusd_daily.csv`
+`data/research/eurusd_daily.csv`
 
 - 2400 daily EURUSD bars
 - 2012-12-04 through 2022-03-04
-- SHA-256 recorded by the audit runner: `e4c70add8d77bcf5aa97ea9eeaa08d0fc8cc91679e6fd6a85ee3ad4a913b7f9e`
-- Evaluation cost: 4 bps
+- SHA-256: `e4c70add8d77bcf5aa97ea9eeaa08d0fc8cc91679e6fd6a85ee3ad4a913b7f9e`
+- Evaluation cost: 4 bps round-trip (1 bps fee + 1 bps slippage per side)
 
-Frozen non-overlapping results:
+## 1. Horizon / expert adaptation family
+
+**Disposition: REJECTED / NOT PROMOTED.**
+
+Frozen non-overlapping results at 4 bps:
 
 | Configuration | Mean net return | 95% moving-block bootstrap CI |
 |---|---:|---:|
@@ -28,33 +30,60 @@ Frozen non-overlapping results:
 | Adaptive 2/4/8 | +0.890 bps | [-14.75, 17.43] |
 | Fixed expert 8 | -10.124 bps | [-25.57, 8.66] |
 
-The original overlapping fixed-8 result of approximately +2.43 bps at 4 bps cost is therefore not considered evidence of a robust edge. Removing overlapping holdings reverses the sign to approximately -10.12 bps.
+The original overlapping fixed-8 result of approximately +2.43 bps was not robust. Removing overlapping holdings reversed the sign to approximately -10.12 bps.
 
-## Robustness finding
+**Rule:** do not retune the horizon/expert family on this dataset.
 
-The predeclared bootstrap block-length grid (1, 3, 5, 10, 20) produces confidence intervals that continue to cross zero for the adaptive and baseline configurations, while fixed-8 remains materially negative in sample and never obtains a positive lower confidence bound.
+## 2. Volatility-normalized mean reversion
 
-This does **not** establish that the adaptive strategy is profitable. Its observed mean is small and its uncertainty is large.
+Frozen rule:
 
-## Research rule now enforced
+- 20-bar rolling mean;
+- 20-bar rolling population standard deviation;
+- enter long at or below mean - 2 sigma;
+- exit when close returns to the mean or above;
+- next-bar-open execution.
 
-Do not:
+**Final disposition: REJECTED.**
 
-- tune the 8-bar horizon against this dataset;
-- add another confidence threshold to rescue it;
-- add another ensemble/regime layer solely because this result is weak;
-- use AI to rescue the hypothesis;
-- reinterpret overlapping forecast counts as independent trade evidence;
-- promote any configuration based on this audit.
+At 4 bps round-trip:
 
-## Next research direction
+| Segment | Net return | Profit factor | Trades | Decision |
+|---|---:|---:|---:|---|
+| Train | -9.82% | 0.56 | 23 | REJECT |
+| Validation | +10.66% | 14.71 | 12 | INCONCLUSIVE |
+| Test | -1.06% | 0.85 | 10 | REJECT |
 
-The next hypothesis must be materially different from simply adding complexity around the same horizon/expert family.
+The positive validation period was too small to clear the predefined evidence gate and therefore was not used to rescue the hypothesis.
 
-A valid next experiment should begin with a new causal hypothesis, a predefined success/failure criterion, and a fresh evaluation protocol. The current 2012–2022 sample should not be repeatedly reused as an optimization target.
+**Rule:** do not tune the mean-reversion threshold, lookback, or exit against this dataset.
 
-The lab's next goal is therefore **hypothesis generation and independent validation design**, not further tuning of the frozen horizon family.
+## 3. Donchian breakout trend following
 
-## Interpretation
+Frozen rule:
 
-This result is a successful research outcome: the system prevented a modest overlapping backtest from being mistaken for robust edge and stopped the project from entering another architecture/tuning loop.
+- enter long when close is strictly above the prior 55 completed daily highs;
+- exit when close is strictly below the prior 20 completed daily lows;
+- next-bar-open execution.
+
+**Final disposition: REJECTED.**
+
+At 4 bps round-trip:
+
+| Segment | Net return | Profit factor | Trades | Decision |
+|---|---:|---:|---:|---|
+| Train | -3.56% | 0.78 | 8 | REJECT |
+| Validation | -7.92% | 0.00 | 2 | REJECT |
+| Test | +0.56% | 1.31 | 3 | INCONCLUSIVE |
+
+The test segment was mildly positive but contained only three trades, so it cannot establish evidence of a tradable edge.
+
+**Rule:** do not tune the 55/20 breakout after seeing this result.
+
+## Research interpretation
+
+The first three materially different families have all failed to establish a robust edge on the current evidence source.
+
+This does **not** prove that no trading edge exists. It proves that these tested hypotheses did not provide sufficient evidence under the predefined research rules.
+
+The next experiment must be materially different, frozen before evaluation, and bounded by the finite campaign policy. A positive result among several attempts remains exploratory and must survive independent validation before MT5 work.
