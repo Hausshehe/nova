@@ -61,6 +61,7 @@ def _request():
     return ExecutionRequest(
         recommendation=recommendation,
         symbol="EURUSD",
+        timeframe="1D",
         price=1.10,
         quantity=0.01,
         timestamp_utc=datetime.now(timezone.utc),
