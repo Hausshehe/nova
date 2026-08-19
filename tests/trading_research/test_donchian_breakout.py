@@ -3,17 +3,19 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trading_research.data import Bar
-from trading_research.donchian_breakout import HYPOTHESIS, LOOKBACK_ENTRY, LOOKBACK_EXIT, DonchianSignal
+from trading_research.donchian_breakout import HYPOTHESIS, LOOKBACK_ENTRY, DonchianSignal
 
 
-def _bars(closes):
+def _bars(closes, highs=None, lows=None):
     start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    highs = highs or closes
+    lows = lows or closes
     return [
         Bar(
             timestamp=start + timedelta(days=index),
             open=value,
-            high=value,
-            low=value,
+            high=highs[index],
+            low=lows[index],
             close=value,
             volume=1.0,
         )
@@ -70,10 +72,10 @@ def test_signal_does_not_use_future_bars():
         assert left == right
 
 
-def test_signal_uses_completed_bars_only_at_entry_boundary():
-    closes = [100.0] * (LOOKBACK_ENTRY - 1) + [200.0, 201.0]
-    bars = _bars(closes)
+def test_current_bar_high_does_not_set_entry_level():
+    closes = [100.0] * LOOKBACK_ENTRY + [101.0]
+    highs = [100.0] * LOOKBACK_ENTRY + [500.0]
+    bars = _bars(closes, highs=highs)
     signal = DonchianSignal()
 
-    assert signal(bars, LOOKBACK_ENTRY - 1) is False
-    assert signal(bars, LOOKBACK_ENTRY) is False
+    assert signal(bars, LOOKBACK_ENTRY) is True
