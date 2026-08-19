@@ -22,7 +22,7 @@ def test_positive_gap_requests_long_for_one_subsequent_bar() -> None:
         bar("2024-01-02T00:00:00", 1.1000, 1.1020),
         bar("2024-01-03T00:00:00", 1.1050, 1.1030),  # positive opening gap
         bar("2024-01-04T00:00:00", 1.1040, 1.1060),
-        bar("2024-01-05T00:00:00", 1.1070, 1.1080),
+        bar("2024-01-05T00:00:00", 1.1060, 1.1080),  # no new gap
     ]
     signal = GapContinuationSignal()
     assert signal(bars, 0) is False
