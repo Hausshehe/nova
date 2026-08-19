@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .experience_lifecycle import ExperienceMetadata, available_at_or_before
+from .experience_lifecycle_store import ExperienceLifecycleStore
 from .memory import ExperienceStore
 from .researcher import hypothesis_fingerprint
 
@@ -18,23 +19,34 @@ class ExperienceSummary:
     final_decision: str
     knowledge_class: str
     observed_at_utc: str
+    parent_experiment_id: str | None = None
 
 
 class ExperienceQuery:
     """Read-only facade for durable research experience."""
 
-    def __init__(self, store: ExperienceStore):
+    def __init__(
+        self,
+        store: ExperienceStore,
+        lifecycle_store: ExperienceLifecycleStore | None = None,
+    ):
         self._store = store
+        self._lifecycle_store = lifecycle_store
 
     def history_for_hypothesis(self, hypothesis: Any) -> list[ExperienceSummary]:
         fingerprint = hypothesis_fingerprint(hypothesis)
         records = self._store.list_experiments_for_hypothesis(fingerprint)
-        return [self._summary_from_record(record, fingerprint) for record in records]
+        summaries = [self._summary_from_record(record, fingerprint) for record in records]
+        if self._lifecycle_store is not None:
+            lifecycle = self._lifecycle_store.list_for_hypothesis(fingerprint)
+            by_id = {item.experiment_id: item for item in lifecycle}
+            summaries = [self._summary_with_lifecycle(item, by_id.get(item.experiment_id)) for item in summaries]
+        return summaries
 
     def available_history(self, hypothesis: Any, decision_time_utc: str) -> list[ExperienceSummary]:
         fingerprint = hypothesis_fingerprint(hypothesis)
-        records = self._store.list_experiments_for_hypothesis(fingerprint)
-        metadata = [self._metadata_from_record(record, fingerprint) for record in records]
+        summaries = self.history_for_hypothesis(hypothesis)
+        metadata = [self._metadata_from_summary(item) for item in summaries]
         return [
             self._summary_from_metadata(item)
             for item in available_at_or_before(metadata, decision_time_utc)
@@ -44,6 +56,7 @@ class ExperienceQuery:
         payload = self._store.get_experiment(experiment_id)
         if payload is None:
             return None
+        lifecycle = self._lifecycle_store.get(experiment_id) if self._lifecycle_store is not None else None
         return {
             "experiment_id": experiment_id,
             "final_decision": payload.get("final_decision"),
@@ -52,13 +65,12 @@ class ExperienceQuery:
             "dataset_sha256": payload.get("dataset_sha256"),
             "costs": payload.get("costs"),
             "segments": payload.get("segments"),
-            "knowledge_class": self._knowledge_class(str(payload.get("final_decision", ""))),
+            "knowledge_class": lifecycle.knowledge_class if lifecycle else self._knowledge_class(str(payload.get("final_decision", ""))),
+            "parent_experiment_id": lifecycle.parent_experiment_id if lifecycle else None,
         }
 
     def prior_dispositions(self, hypothesis: Any) -> tuple[str, ...]:
-        fingerprint = hypothesis_fingerprint(hypothesis)
-        records = self._store.list_experiments_for_hypothesis(fingerprint)
-        return tuple(str(record.get("final_decision", "")) for record in records)
+        return tuple(item.final_decision for item in self.history_for_hypothesis(hypothesis))
 
     @classmethod
     def _metadata_from_record(cls, record: dict[str, Any], fingerprint: str) -> ExperienceMetadata:
@@ -71,13 +83,39 @@ class ExperienceQuery:
             knowledge_class=cls._knowledge_class(str(record.get("final_decision", ""))),
         )
 
+    def _metadata_from_summary(self, summary: ExperienceSummary) -> ExperienceMetadata:
+        return ExperienceMetadata(
+            experiment_id=summary.experiment_id,
+            observed_at_utc=summary.observed_at_utc,
+            hypothesis_fingerprint=summary.hypothesis_fingerprint,
+            dataset_sha256=summary.dataset_sha256,
+            final_decision=summary.final_decision,
+            knowledge_class=summary.knowledge_class,
+            parent_experiment_id=summary.parent_experiment_id,
+        )
+
+    @staticmethod
+    def _summary_with_lifecycle(
+        summary: ExperienceSummary,
+        lifecycle: ExperienceMetadata | None,
+    ) -> ExperienceSummary:
+        if lifecycle is None:
+            return summary
+        return ExperienceSummary(
+            experiment_id=summary.experiment_id,
+            hypothesis_fingerprint=summary.hypothesis_fingerprint,
+            dataset_sha256=lifecycle.dataset_sha256,
+            final_decision=lifecycle.final_decision,
+            knowledge_class=lifecycle.knowledge_class,
+            observed_at_utc=lifecycle.observed_at_utc,
+            parent_experiment_id=lifecycle.parent_experiment_id,
+        )
+
     @staticmethod
     def _experiment_id_from_record(record: dict[str, Any]) -> str:
         value = record.get("experiment_id")
         if isinstance(value, str) and value:
             return value
-        # Older records do not embed the SQLite primary key. Preserve a stable
-        # identity from the immutable evidence payload instead of inventing one.
         import hashlib
         import json
         canonical = dict(record)
@@ -99,6 +137,7 @@ class ExperienceQuery:
             final_decision=item.final_decision,
             knowledge_class=item.knowledge_class,
             observed_at_utc=item.observed_at_utc,
+            parent_experiment_id=item.parent_experiment_id,
         )
 
     @staticmethod
