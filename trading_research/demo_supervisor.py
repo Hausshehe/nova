@@ -8,7 +8,7 @@ reconciliation, and explicit demo-mode status.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable
 
 from .trade_safety import TradingKillSwitch
@@ -59,8 +59,10 @@ class DemoTradingSupervisor:
         broker_connected: bool,
         demo_mode: bool,
         reconciled: bool,
+        reference_time: datetime | None = None,
     ) -> SupervisorSnapshot:
-        now = self._utc_now()
+        """Check live health, or use reference_time for deterministic replay."""
+        now = reference_time.astimezone(timezone.utc) if reference_time is not None else self._utc_now()
         reasons: list[str] = []
 
         timestamp = market_timestamp
