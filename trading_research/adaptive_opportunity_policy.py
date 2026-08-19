@@ -28,18 +28,64 @@ def _features(
 ) -> tuple[float, float, float]:
     if index + 1 < slow_period:
         return 0.0, 0.0, 0.0
-    fast = sum(x.close for x in bars[index - fast_period + 1:index + 1]) / fast_period
-    slow = sum(x.close for x in bars[index - slow_period + 1:index + 1]) / slow_period
+    fast = sum(x.close for x in bars[index - fast_period + 1 : index + 1]) / fast_period
+    slow = sum(x.close for x in bars[index - slow_period + 1 : index + 1]) / slow_period
     gap = abs(fast / slow - 1.0) * 10_000.0 if slow else 0.0
     start = max(0, index - momentum_lookback)
     momentum = abs(bars[index].close / bars[start].close - 1.0) * 10_000.0 if bars[start].close else 0.0
     gap_slope = 0.0
     if index >= momentum_lookback and start + 1 >= slow_period:
-        start_fast = sum(x.close for x in bars[start - fast_period + 1:start + 1]) / fast_period
-        start_slow = sum(x.close for x in bars[start - slow_period + 1:start + 1]) / slow_period
+        start_fast = sum(x.close for x in bars[start - fast_period + 1 : start + 1]) / fast_period
+        start_slow = sum(x.close for x in bars[start - slow_period + 1 : start + 1]) / slow_period
         start_gap = abs(start_fast / start_slow - 1.0) * 10_000.0 if start_slow else 0.0
         gap_slope = gap - start_gap
     return momentum, gap, gap_slope
+
+
+def _bucket_for(
+    bars: Sequence[Bar],
+    index: int,
+    *,
+    fast_period: int,
+    slow_period: int,
+    momentum_lookback: int,
+    bucket_width_bps: float,
+) -> tuple[int, int, int]:
+    momentum, gap, slope = _features(
+        bars,
+        index,
+        fast_period=fast_period,
+        slow_period=slow_period,
+        momentum_lookback=momentum_lookback,
+    )
+    return (
+        int(momentum // bucket_width_bps),
+        int(gap // bucket_width_bps),
+        int(abs(slope) // bucket_width_bps),
+    )
+
+
+def _label_at(
+    bars: Sequence[Bar],
+    index: int,
+    *,
+    future_bars: int,
+    actionable_threshold: float,
+    fast_period: int,
+    slow_period: int,
+) -> bool | None:
+    """Return a label only when the full future horizon is now observable."""
+    future = bars[index + 1 : index + 1 + future_bars]
+    if len(future) < future_bars or index + 1 < slow_period:
+        return None
+
+    move = max(abs(next_bar.close / bars[index].close - 1.0) * 10_000.0 for next_bar in future)
+    if move < actionable_threshold:
+        return False
+
+    fast = sum(x.close for x in bars[index - fast_period + 1 : index + 1]) / fast_period
+    slow = sum(x.close for x in bars[index - slow_period + 1 : index + 1]) / slow_period
+    return fast != slow
 
 
 def build_walk_forward_policy(
@@ -61,13 +107,11 @@ def build_walk_forward_policy(
     When ``candidate_indices`` is supplied, the adaptive policy can only
     suppress requests from that set; it can never invent a new request outside
     the trusted baseline. Candidates are preserved by default until enough
-    historical evidence exists to justify suppression. This makes the adaptive
-    layer an efficiency optimizer rather than a replacement opportunity
-    detector.
+    historical evidence exists to justify suppression.
 
-    Labels are added only after the decision for the current bar and require a
-    complete future horizon. Therefore the decision at bar ``N`` only uses
-    outcomes that were observable by ``N`` and never uses future information.
+    Crucially, a label for bar ``N`` is not added to training history until bar
+    ``N + future_bars`` has been observed. This prevents future leakage into
+    decisions made before the outcome horizon is complete.
     """
     if future_bars <= 0 or opportunity_move_bps <= 0 or transaction_cost_bps_round_trip < 0:
         raise ValueError("invalid opportunity parameters")
@@ -90,17 +134,35 @@ def build_walk_forward_policy(
     non_actionable_floor = 1.0 - min_confidence
 
     for index in range(len(bars)):
-        momentum, gap, slope = _features(
+        # Only now is the label for ``index - future_bars`` fully observable.
+        label_index = index - future_bars
+        if label_index >= 0:
+            label = _label_at(
+                bars,
+                label_index,
+                future_bars=future_bars,
+                actionable_threshold=actionable_threshold,
+                fast_period=fast_period,
+                slow_period=slow_period,
+            )
+            if label is not None:
+                bucket = _bucket_for(
+                    bars,
+                    label_index,
+                    fast_period=fast_period,
+                    slow_period=slow_period,
+                    momentum_lookback=momentum_lookback,
+                    bucket_width_bps=bucket_width_bps,
+                )
+                history[bucket].append(label)
+
+        bucket = _bucket_for(
             bars,
             index,
             fast_period=fast_period,
             slow_period=slow_period,
             momentum_lookback=momentum_lookback,
-        )
-        bucket = (
-            int(momentum // bucket_width_bps),
-            int(gap // bucket_width_bps),
-            int(abs(slope) // bucket_width_bps),
+            bucket_width_bps=bucket_width_bps,
         )
         prior = history[bucket]
         enough_evidence = len(prior) >= min_samples
@@ -121,19 +183,5 @@ def build_walk_forward_policy(
             reason = "historically actionable feature state"
 
         results.append(AdaptivePolicyDecision(index, request, confidence, bucket, reason))
-
-        # Do not train on an incomplete horizon. This avoids making the tail of
-        # a replay behave differently merely because fewer future bars exist.
-        future = bars[index + 1:index + 1 + future_bars]
-        if len(future) < future_bars or index + 1 < slow_period:
-            continue
-
-        move = max(abs(next_bar.close / bars[index].close - 1.0) * 10_000.0 for next_bar in future)
-        label = False
-        if move >= actionable_threshold:
-            fast = sum(x.close for x in bars[index - fast_period + 1:index + 1]) / fast_period
-            slow = sum(x.close for x in bars[index - slow_period + 1:index + 1]) / slow_period
-            label = fast != slow
-        history[bucket].append(label)
 
     return tuple(results)
