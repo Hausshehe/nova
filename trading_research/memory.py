@@ -59,12 +59,24 @@ class ExperienceStore:
     """SQLite store for experiments, strategy versions, and trades."""
 
     def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self._shared_memory_uri: str | None = None
+        self._keeper: sqlite3.Connection | None = None
+        if str(path) == ":memory:":
+            self.path = Path(":memory:")
+            self._shared_memory_uri = f"file:nova_experience_{id(self)}?mode=memory&cache=shared"
+            self._keeper = sqlite3.connect(self._shared_memory_uri, uri=True)
+            self._keeper.row_factory = sqlite3.Row
+            self._initialize(self._keeper)
+        else:
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        if self._shared_memory_uri is not None:
+            connection = sqlite3.connect(self._shared_memory_uri, uri=True)
+        else:
+            connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -74,9 +86,11 @@ class ExperienceStore:
         if column not in columns:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-    def _initialize(self) -> None:
-        with self._connect() as db:
-            db.executescript(
+    def _initialize(self, db: sqlite3.Connection | None = None) -> None:
+        owns_connection = db is None
+        connection = db or self._connect()
+        try:
+            connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS experiments (
                     experiment_id TEXT PRIMARY KEY,
@@ -117,21 +131,25 @@ class ExperienceStore:
                 );
                 """
             )
-            self._ensure_column(db, "experiments", "dataset_sha256", "TEXT")
-            self._ensure_column(db, "experiments", "hypothesis_fingerprint", "TEXT")
-            self._ensure_column(db, "experiments", "record_hash", "TEXT")
+            self._ensure_column(connection, "experiments", "dataset_sha256", "TEXT")
+            self._ensure_column(connection, "experiments", "hypothesis_fingerprint", "TEXT")
+            self._ensure_column(connection, "experiments", "record_hash", "TEXT")
 
-            rows = db.execute(
+            rows = connection.execute(
                 "SELECT experiment_id, record_json, record_hash FROM experiments ORDER BY created_at_utc ASC, experiment_id ASC"
             ).fetchall()
             for row in rows:
                 if row["record_hash"]:
                     continue
                 payload = json.loads(row["record_json"])
-                db.execute(
+                connection.execute(
                     "UPDATE experiments SET record_hash = ? WHERE experiment_id = ?",
                     (self._experiment_hash(payload), row["experiment_id"]),
                 )
+            connection.commit()
+        finally:
+            if owns_connection:
+                connection.close()
 
     @staticmethod
     def _experiment_hash(record: dict[str, Any]) -> str:
