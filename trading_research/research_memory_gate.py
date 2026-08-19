@@ -7,12 +7,12 @@ independent dataset. It never decides that a strategy is profitable.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from .contracts import Hypothesis
+from .evidence_identity import same_evidence, sha256_file
 from .memory import ExperienceStore
 from .researcher import hypothesis_fingerprint
 
@@ -41,14 +41,7 @@ class MemoryGateDecision:
 
 
 def dataset_sha256(path: str | Path) -> str | None:
-    candidate = Path(path)
-    if not candidate.is_file():
-        return None
-    digest = hashlib.sha256()
-    with candidate.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def evaluate_research_memory(
@@ -62,7 +55,8 @@ def evaluate_research_memory(
     A known hypothesis is not automatically rejected: a genuinely independent
     dataset is a valid validation experiment. Reusing the same evidence is
     blocked so that repeated tuning cannot turn the test set into training data.
-    Missing current evidence is fail-closed whenever prior evidence exists.
+    Stored dataset fingerprints are authoritative; historical file paths are not
+    consulted when deciding whether prior evidence matches.
     """
     hypothesis.validate()
     fingerprint = hypothesis_fingerprint(hypothesis)
@@ -85,12 +79,9 @@ def evaluate_research_memory(
             ),
         )
 
-    matches = 0
-    for item in prior:
-        old_path = item.get("dataset")
-        old_hash = dataset_sha256(old_path) if old_path else None
-        if evidence_hash is not None and old_hash is not None and old_hash == evidence_hash:
-            matches += 1
+    matches = sum(
+        1 for item in prior if same_evidence(item, evidence_hash)
+    )
 
     if matches:
         return MemoryGateDecision(
