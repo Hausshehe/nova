@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import trading_research.autonomous_research as autonomous_research
 from trading_research.autonomous_research import AutonomousResearchSession
 from trading_research.campaign_closure import (
     CURRENT_EURUSD_DATASET_SHA256,
@@ -61,16 +62,20 @@ class _FailIfCalledGenerator:
         raise AssertionError("closed campaign must block before AI proposal generation")
 
 
-def test_autonomous_session_blocks_before_ai_proposal(tmp_path: Path) -> None:
+def test_autonomous_session_blocks_before_ai_proposal(tmp_path: Path, monkeypatch) -> None:
     dataset = tmp_path / "dataset.csv"
     dataset.write_bytes(Path(__file__).read_bytes())
+    monkeypatch.setattr(
+        autonomous_research,
+        "_sha256_file",
+        lambda _: CURRENT_EURUSD_DATASET_SHA256,
+    )
 
     generator = _FailIfCalledGenerator()
     session = AutonomousResearchSession(
         generator=generator,
         memory=ExperienceStore(":memory:"),
         signal_compiler=lambda _: None,
-        campaign_state=current_eurusd_campaign_state(),
     )
     result = session.propose_and_test(
         ResearchQuestion(
