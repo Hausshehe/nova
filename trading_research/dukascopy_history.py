@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import lzma
 import struct
 import time
@@ -119,8 +120,8 @@ def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:
         raise ValueError(f"candle_file_bad_record_length:{len(raw)}")
     candles: list[Candle] = []
     for offset in range(0, len(raw), CANDLE_RECORD_SIZE):
-        millis_or_seconds, open_raw, high_raw, low_raw, close_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
-        timestamp = base_time + timedelta(seconds=int(millis_or_seconds))
+        seconds_from_base, open_raw, high_raw, low_raw, close_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
+        timestamp = base_time + timedelta(seconds=int(seconds_from_base))
         candles.append(
             Candle(
                 timestamp_utc=timestamp.isoformat(),
@@ -157,7 +158,9 @@ def _aggregate_4h(hourly: list[Candle]) -> list[Candle]:
     result: list[Candle] = []
     for bucket in sorted(buckets):
         rows = sorted(buckets[bucket], key=lambda row: row.timestamp_utc)
-        if not rows:
+        expected = [bucket + timedelta(hours=i) for i in range(4)]
+        actual = [_parse_time(row.timestamp_utc) for row in rows]
+        if actual != expected:
             continue
         result.append(
             Candle(
@@ -241,7 +244,7 @@ def save_manifest(manifests: list[DatasetManifest], path: str | Path) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = [manifest.__dict__ for manifest in manifests]
-    target.write_text(__import__("json").dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def download_universe(
