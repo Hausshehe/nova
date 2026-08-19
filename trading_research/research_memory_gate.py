@@ -70,8 +70,9 @@ def evaluate_research_memory(
     prior_decisions = tuple(str(item.get("final_decision", "")) for item in prior)
     matches = 0
     for item in prior:
-        old_hash = dataset_sha256(item.get("dataset", "")) if item.get("dataset") else None
-        if evidence_hash is not None and old_hash == evidence_hash:
+        old_path = item.get("dataset")
+        old_hash = dataset_sha256(old_path) if old_path else None
+        if evidence_hash is not None and old_hash is not None and old_hash == evidence_hash:
             matches += 1
 
     if matches:
