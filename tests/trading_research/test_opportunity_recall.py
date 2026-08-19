@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from trading_research.data import Bar
 from trading_research.opportunity_recall import evaluate_opportunity_recall
 
@@ -10,7 +12,7 @@ def _bar(index: int, close: float) -> Bar:
 
 
 def test_recall_detects_large_move_with_ai_review():
-    bars = [_bar(0, 100.0), _bar(1, 100.05), _bar(2, 100.1), _bar(3, 100.15), _bar(4, 100.7)]
+    bars = [_bar(0, 100.0), _bar(1, 100.0), _bar(2, 100.4), _bar(3, 100.8), _bar(4, 100.8)]
     report = evaluate_opportunity_recall(bars, future_bars=2, opportunity_move_bps=30.0)
     assert report.opportunities >= 1
     assert report.opportunities_with_ai_review >= 1
@@ -26,9 +28,5 @@ def test_empty_input_is_safe():
 
 def test_invalid_parameters_are_rejected():
     bars = [_bar(0, 100.0)]
-    try:
+    with pytest.raises(ValueError):
         evaluate_opportunity_recall(bars, future_bars=0)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("future_bars=0 must fail")
