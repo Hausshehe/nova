@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from .adaptive_opportunity_policy import build_walk_forward_policy
 from .data import Bar
 from .market_monitor import MarketMonitor
 from .strategy_escalation_bridge import evaluate_strategy_escalation
@@ -31,21 +32,49 @@ def evaluate_strategy_escalation_efficiency(
     fast_period: int = 20,
     slow_period: int = 50,
 ) -> StrategyEscalationEfficiencyReport:
-    """Measure whether strategy-aware AI requests are useful without future leakage."""
+    """Measure selective strategy escalation without future leakage.
+
+    Critical market events and strong strategy states retain the bounded live
+    escalation path. Developing/ordinary strategy observations are filtered
+    by the walk-forward policy, which only learns from labels strictly before
+    the current bar.
+    """
     if not bars:
         return StrategyEscalationEfficiencyReport(0, 0, 0, 0, 0.0, 0.0, 0)
 
     ordered = tuple(bars)
     monitor = MarketMonitor()
     events = monitor.observe_history("EURUSD", "15m", ordered)
-    decisions = evaluate_strategy_escalation(
+    bridge_decisions = evaluate_strategy_escalation(
         ordered,
         events,
         fast_period=fast_period,
         slow_period=slow_period,
     )
+    adaptive = build_walk_forward_policy(
+        ordered,
+        future_bars=future_bars,
+        opportunity_move_bps=opportunity_move_bps,
+        transaction_cost_bps_round_trip=transaction_cost_bps_round_trip,
+        fast_period=fast_period,
+        slow_period=slow_period,
+    )
 
-    ai_indices = [decision.index for decision in decisions if decision.request_ai]
+    # The bridge is deliberately still used for the safety-critical market
+    # path. For non-critical strategy-driven observations, use the causal
+    # adaptive policy instead of allowing every elevated market observation
+    # to become an AI request.
+    selected_indices: set[int] = set()
+    for decision in bridge_decisions:
+        adaptive_decision = adaptive[decision.index]
+        if decision.market_decision.level == "CRITICAL":
+            selected_indices.add(decision.index)
+        elif decision.strategy_hint.confidence_tier == "STRONG":
+            selected_indices.add(decision.index)
+        elif adaptive_decision.request_ai:
+            selected_indices.add(decision.index)
+
+    ai_indices = [decision.index for decision in bridge_decisions if decision.index in selected_indices]
     unique_ai = set(ai_indices)
 
     quality = evaluate_strategy_opportunities(
