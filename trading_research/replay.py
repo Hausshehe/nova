@@ -78,6 +78,7 @@ class HistoricalReplay:
                     demo_mode=True,
                     reconciled=True,
                     market_timestamp=event.timestamp,
+                    reference_time=event.timestamp,
                     price=event.price,
                 )
                 results.append(cycle)
