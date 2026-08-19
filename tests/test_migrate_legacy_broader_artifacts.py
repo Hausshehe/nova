@@ -19,6 +19,20 @@ def _write_legacy_csv(path: Path, *, high: int = 110, close: int = 105) -> None:
     )
 
 
+def test_legacy_snapshot_counts_and_missing_contexts_are_exact() -> None:
+    assert len(LEGACY_DAILY_DATASETS) == 12
+    assert len(LEGACY_FOUR_HOUR_DATASETS) == 10
+    expected_missing = {
+        "NAS100_4H.csv",
+        "NZDUSD_4H.csv",
+        "US500_4H.csv",
+        "WTI_1D.csv",
+    }
+    assert expected_missing.isdisjoint(set(LEGACY_DAILY_DATASETS) | set(LEGACY_FOUR_HOUR_DATASETS))
+    assert len(LEGACY_DAILY_DATASETS) + len(LEGACY_FOUR_HOUR_DATASETS) + len(expected_missing) == 26
+    assert LEGACY_SOURCE_RUN_ID == "32293018258"
+
+
 def test_repair_legacy_daily_artifact_swaps_only_high_and_close(tmp_path: Path) -> None:
     dataset = tmp_path / "EURUSD_1D.csv"
     _write_legacy_csv(dataset, high=105, close=110)
