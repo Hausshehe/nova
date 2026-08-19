@@ -77,18 +77,27 @@ def test_wti_daily_uses_legacy_directory_before_symbol_switch():
     )
 
 
-def test_native_candle_decoder():
+def test_native_candle_decoder_preserves_open_high_low_close_order():
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    # Dukascopy native candle records are: seconds, open, close, low, high, volume.
+    # Dukascopy native candle records are seconds, open, high, low, close, volume.
     payload = _compressed_rows([
-        (0, 100, 105, 90, 110, 2.5),
-        (3600, 105, 115, 100, 120, 3.0),
+        (0, 100, 110, 90, 105, 2.5),
+        (3600, 105, 120, 100, 115, 3.0),
     ])
     candles = _decode_candle_file(payload, base)
     assert candles == [
         Candle("2024-01-01T00:00:00+00:00", 100.0, 110.0, 90.0, 105.0, 2.5),
         Candle("2024-01-01T01:00:00+00:00", 105.0, 120.0, 100.0, 115.0, 3.0),
     ]
+
+
+def test_native_candle_decoder_does_not_swap_high_and_close():
+    payload = _compressed_rows([(0, 79840, 81730, 79700, 81690, 1.0)])
+    candles = _decode_candle_file(payload, datetime(2010, 10, 1, tzinfo=timezone.utc))
+    assert candles == [
+        Candle("2010-10-01T00:00:00+00:00", 79840.0, 81730.0, 79700.0, 81690.0, 1.0)
+    ]
+    assert candles[0].low <= candles[0].close <= candles[0].high
 
 
 def test_validation_rejects_invalid_first_and_middle_rows():
@@ -150,7 +159,7 @@ def test_request_bytes_retries_transient_503(monkeypatch):
 
 def test_historical_prices_reports_progress(monkeypatch):
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    payload = _compressed_rows([(0, 100, 105, 90, 110, 1.0)])
+    payload = _compressed_rows([(0, 100, 110, 90, 105, 1.0)])
     session = FakeSession([FakeResponse(200, payload)])
     messages = []
     client = DukascopyClient(session=session)
