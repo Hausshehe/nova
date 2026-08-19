@@ -27,22 +27,22 @@ def evaluate_strategy_escalation(
     thresholds: EscalationThresholds | None = None,
     fast_period: int = 20,
     slow_period: int = 50,
-    momentum_bps: float = 8.0,
-    max_sma_gap_bps: float = 35.0,
+    momentum_bps: float = 5.0,
+    max_sma_gap_bps: float = 50.0,
+    slope_lookback: int = 3,
+    slope_bps: float = 3.0,
+    min_setup_score: float = 1.0,
 ) -> tuple[StrategyEscalationDecision, ...]:
-    """Combine causal strategy hints with normal market escalation.
-
-    A strategy hint can promote an otherwise routine observation, but it is
-    still subject to the same per-symbol/timeframe AI cooldown as ordinary
-    escalation. This prevents strategy awareness from turning into an
-    unrestricted AI polling loop.
-    """
+    """Combine causal strategy hints with state-aware market escalation."""
     hints = build_strategy_escalation_hints(
         bars,
         fast_period=fast_period,
         slow_period=slow_period,
         momentum_bps=momentum_bps,
         max_sma_gap_bps=max_sma_gap_bps,
+        slope_lookback=slope_lookback,
+        slope_bps=slope_bps,
+        min_setup_score=min_setup_score,
     )
     by_timestamp = {bar.timestamp: i for i, bar in enumerate(bars)}
 
@@ -52,15 +52,13 @@ def evaluate_strategy_escalation(
         index = by_timestamp.get(event.timestamp)
         if index is None:
             continue
-        market_decision = escalator.evaluate(event)
         hint = hints[index]
-        request = market_decision.request_ai or hint.request_ai
-        if request and not market_decision.request_ai and hint.request_ai:
-            # Promote through the same escalator so the existing cooldown is
-            # the single source of truth. Use the configured elevated
-            # threshold, not the strategy's momentum threshold: momentum can
-            # be intentionally small while escalation still needs a valid
-            # bounded AI-triggering event.
+        market_state = hint.sma_gap_bps + hint.momentum_bps
+        market_decision = escalator.evaluate(event, state_value_bps=market_state)
+        request = market_decision.request_ai
+        reason = market_decision.reason
+
+        if hint.request_ai and not request:
             configured = thresholds or EscalationThresholds()
             synthetic = MarketEvent(
                 event_type="PRICE_MOVE",
@@ -72,14 +70,15 @@ def evaluate_strategy_escalation(
                 change_bps=configured.elevated_move_bps,
                 spread_bps=event.spread_bps,
             )
-            promoted = escalator.evaluate(synthetic)
+            promoted = escalator.evaluate(synthetic, state_value_bps=market_state)
             request = promoted.request_ai
             reason = (
                 f"strategy hint: {hint.reason}"
                 if request
-                else "strategy hint suppressed by AI cooldown"
+                else "strategy hint suppressed by state-aware AI cooldown"
             )
-        else:
-            reason = market_decision.reason
+        elif hint.request_ai and request:
+            reason = f"strategy hint: {hint.reason}"
+
         results.append(StrategyEscalationDecision(index, request, reason, hint, market_decision))
     return tuple(results)
