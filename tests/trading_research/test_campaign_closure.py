@@ -87,3 +87,26 @@ def test_autonomous_session_blocks_before_ai_proposal(tmp_path: Path, monkeypatc
     )
     assert result.status == "CAMPAIGN_CLOSED"
     assert generator.calls == 0
+
+
+def test_autonomous_session_blocks_when_provenance_is_missing(tmp_path: Path, monkeypatch) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_bytes(b"data")
+    monkeypatch.setattr(autonomous_research, "_sha256_file", lambda _: None)
+
+    generator = _FailIfCalledGenerator()
+    session = AutonomousResearchSession(
+        generator=generator,
+        memory=ExperienceStore(":memory:"),
+        signal_compiler=lambda _: None,
+    )
+    result = session.propose_and_test(
+        ResearchQuestion(
+            question="test question",
+            symbol="EURUSD",
+            timeframe="1D",
+        ),
+        csv_path=str(dataset),
+    )
+    assert result.status == "EVIDENCE_FINGERPRINT_REQUIRED"
+    assert generator.calls == 0
