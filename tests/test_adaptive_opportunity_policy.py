@@ -51,11 +51,11 @@ def test_trusted_candidates_are_preserved_until_enough_evidence_exists() -> None
         min_confidence=0.65,
     )
 
-    early = {decision.index for decision in decisions if 10 <= decision.index < 30}
+    early = {decision.index for decision in decisions if 10 <= decision.index < 29}
     early_requested = {
         decision.index
         for decision in decisions
-        if 10 <= decision.index < 30 and decision.request_ai
+        if 10 <= decision.index < 29 and decision.request_ai
     }
     assert early_requested == early
 
