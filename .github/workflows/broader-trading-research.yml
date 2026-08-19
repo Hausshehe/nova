@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  broader-campaign:
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,8 +31,197 @@ jobs:
       - name: Run full test suite
         run: python -m pytest -q
 
-      - name: Acquire frozen broader universe
-        run: python -m trading_research.download_research_universe
+  acquire:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        instrument:
+          - EURUSD
+          - GBPUSD
+          - USDJPY
+          - AUDUSD
+          - USDCAD
+          - USDCHF
+          - NZDUSD
+          - US500
+          - NAS100
+          - US30
+          - XAUUSD
+          - XAGUSD
+          - WTI
+        timeframe:
+          - 1D
+          - 4H
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt
+
+      - name: Acquire one frozen dataset
+        env:
+          INSTRUMENT: ${{ matrix.instrument }}
+          TIMEFRAME: ${{ matrix.timeframe }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from trading_research.dukascopy_history import (
+              DukascopyClient,
+              TIMEFRAMES,
+              write_csv,
+          )
+
+          instrument = os.environ["INSTRUMENT"]
+          timeframe = os.environ["TIMEFRAME"]
+          if timeframe not in TIMEFRAMES:
+              raise SystemExit(f"unsupported_timeframe:{timeframe}")
+
+          def progress(message: str) -> None:
+              print(message, flush=True)
+
+          client = DukascopyClient()
+          candles = client.historical_prices(
+              instrument=instrument,
+              timeframe=timeframe,
+              start_utc="2010-01-01T00:00:00+00:00",
+              end_utc="2025-12-31T23:59:59+00:00",
+              progress=progress,
+          )
+          if len(candles) < 100:
+              raise SystemExit(f"insufficient_bars:{instrument}:{timeframe}:{len(candles)}")
+
+          target = Path("data/research/universe_v2") / f"{instrument}_{timeframe}.csv"
+          digest = write_csv(candles, target)
+          print(
+              f"FROZEN DATASET COMPLETE instrument={instrument} "
+              f"timeframe={timeframe} bars={len(candles)} sha256={digest}",
+              flush=True,
+          )
+          PY
+
+      - name: Upload frozen dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: frozen-${{ matrix.instrument }}-${{ matrix.timeframe }}
+          path: data/research/universe_v2/${{ matrix.instrument }}_${{ matrix.timeframe }}.csv
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    needs: acquire
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download frozen datasets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Assemble and verify frozen manifest
+        run: |
+          python - <<'PY'
+          import csv
+          import hashlib
+          import json
+          from pathlib import Path
+
+          instruments = (
+              "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
+              "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
+          )
+          timeframes = ("1D", "4H")
+          root = Path("data/research/universe_v2")
+          manifests = []
+
+          for instrument in instruments:
+              for timeframe in timeframes:
+                  path = root / f"{instrument}_{timeframe}.csv"
+                  if not path.is_file():
+                      raise SystemExit(f"missing_frozen_dataset:{instrument}:{timeframe}")
+                  with path.open(newline="", encoding="utf-8") as handle:
+                      rows = list(csv.DictReader(handle))
+                  if len(rows) < 100:
+                      raise SystemExit(f"insufficient_frozen_dataset:{instrument}:{timeframe}:{len(rows)}")
+                  timestamps = [row["timestamp"] for row in rows]
+                  if timestamps != sorted(timestamps) or len(set(timestamps)) != len(timestamps):
+                      raise SystemExit(f"timestamp_integrity_failure:{instrument}:{timeframe}")
+                  for row in rows:
+                      low = float(row["low"])
+                      open_ = float(row["open"])
+                      high = float(row["high"])
+                      close = float(row["close"])
+                      if not (low <= open_ <= high and low <= close <= high):
+                          raise SystemExit(f"ohlc_integrity_failure:{instrument}:{timeframe}:{row['timestamp']}")
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  manifests.append({
+                      "instrument": instrument,
+                      "timeframe": timeframe,
+                      "start_utc": timestamps[0],
+                      "end_utc": timestamps[-1],
+                      "sha256": digest,
+                      "bars": len(rows),
+                      "source": "https://datafeed.dukascopy.com/datafeed",
+                      "price_units": "native_feed_units",
+                  })
+
+          if len(manifests) != 26:
+              raise SystemExit(f"manifest_context_count:{len(manifests)}")
+
+          root.joinpath("manifest.json").write_text(
+              json.dumps(manifests, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(f"FROZEN UNIVERSE VERIFIED: datasets={len(manifests)}")
+          PY
+
+      - name: Upload verified universe
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-frozen-universe
+          path: data/research/universe_v2
+          if-no-files-found: error
+          retention-days: 7
+
+  research:
+    needs: assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt pytest
+
+      - name: Download verified universe
+        uses: actions/download-artifact@v4
+        with:
+          name: nova-frozen-universe
+          path: data/research/universe_v2
+
+      - name: Verify research matrix input
+        run: python -m trading_research.verify_broader_universe
 
       - name: Run frozen 104-context matrix
         run: python -m trading_research.broader_campaign_runner
@@ -42,7 +231,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nova-broader-campaign-evidence
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
             data/research/universe_v2/manifest.json
             data/research/broader_matrix_results.csv
