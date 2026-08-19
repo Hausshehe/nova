@@ -40,8 +40,7 @@ def _canonical_json(value: Any) -> str:
 
 
 def _fingerprint_hypothesis(hypothesis: dict[str, Any]) -> str:
-    canonical = _canonical_json(hypothesis)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_json(hypothesis).encode("utf-8")).hexdigest()
 
 
 def _file_sha256(path: str | Path) -> str | None:
@@ -56,7 +55,6 @@ def _file_sha256(path: str | Path) -> str | None:
 
 
 def _evidence_payload(record: dict[str, Any]) -> dict[str, Any]:
-    """Exclude runtime creation time from experiment evidence identity."""
     payload = dict(record)
     payload.pop("created_at_utc", None)
     return payload
@@ -146,13 +144,15 @@ class ExperienceStore:
                 "SELECT experiment_id, record_json, record_hash FROM experiments ORDER BY created_at_utc ASC, experiment_id ASC"
             ).fetchall()
             for row in rows:
-                if row["record_hash"]:
-                    continue
                 payload = json.loads(row["record_json"])
-                connection.execute(
-                    "UPDATE experiments SET record_hash = ? WHERE experiment_id = ?",
-                    (self._experiment_hash(payload), row["experiment_id"]),
-                )
+                current = row["record_hash"]
+                modern = self._experiment_hash(payload)
+                legacy = self._legacy_experiment_hash(payload)
+                if not current or current == legacy:
+                    connection.execute(
+                        "UPDATE experiments SET record_hash = ? WHERE experiment_id = ?",
+                        (modern, row["experiment_id"]),
+                    )
             connection.commit()
         finally:
             if owns_connection:
@@ -161,6 +161,10 @@ class ExperienceStore:
     @staticmethod
     def _experiment_hash(record: dict[str, Any]) -> str:
         return hashlib.sha256(_canonical_json(_evidence_payload(record)).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _legacy_experiment_hash(record: dict[str, Any]) -> str:
+        return hashlib.sha256(_canonical_json(record).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _validate_experiment_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -186,9 +190,7 @@ class ExperienceStore:
         payload = _canonical_json(record)
         record_hash = self._experiment_hash(record)
         hypothesis = record.get("hypothesis")
-        hypothesis_fingerprint = (
-            _fingerprint_hypothesis(hypothesis) if isinstance(hypothesis, dict) else None
-        )
+        hypothesis_fingerprint = _fingerprint_hypothesis(hypothesis) if isinstance(hypothesis, dict) else None
         dataset_sha256 = _file_sha256(record.get("dataset", ""))
 
         with self._connect() as db:
@@ -224,13 +226,8 @@ class ExperienceStore:
 
     def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
         with self._connect() as db:
-            row = db.execute(
-                "SELECT * FROM experiments WHERE experiment_id = ?",
-                (experiment_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._validate_experiment_row(row)
+            row = db.execute("SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,)).fetchone()
+        return None if row is None else self._validate_experiment_row(row)
 
     def list_experiment_hypotheses(self) -> list[dict[str, Any]]:
         with self._connect() as db:
@@ -239,8 +236,7 @@ class ExperienceStore:
             ).fetchall()
         hypotheses: list[dict[str, Any]] = []
         for row in rows:
-            record = self._validate_experiment_row(row)
-            hypothesis = record.get("hypothesis")
+            hypothesis = self._validate_experiment_row(row).get("hypothesis")
             if isinstance(hypothesis, dict):
                 hypotheses.append(hypothesis)
         return hypotheses
@@ -248,12 +244,7 @@ class ExperienceStore:
     def list_experiments_for_hypothesis(self, hypothesis_fingerprint: str) -> list[dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(
-                """
-                SELECT experiment_id, record_json, record_hash
-                FROM experiments
-                WHERE hypothesis_fingerprint = ?
-                ORDER BY created_at_utc ASC, experiment_id ASC
-                """,
+                "SELECT experiment_id, record_json, record_hash FROM experiments WHERE hypothesis_fingerprint = ? ORDER BY created_at_utc ASC, experiment_id ASC",
                 (hypothesis_fingerprint,),
             ).fetchall()
         return [self._validate_experiment_row(row) for row in rows]
@@ -273,24 +264,14 @@ class ExperienceStore:
         payload = json.dumps(hypothesis, ensure_ascii=False, sort_keys=True)
         with self._connect() as db:
             db.execute(
-                """
-                INSERT OR REPLACE INTO strategies
-                (strategy_name, strategy_version, status, hypothesis_json,
-                 approved_at_utc, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT OR REPLACE INTO strategies (strategy_name, strategy_version, status, hypothesis_json, approved_at_utc, notes) VALUES (?, ?, ?, ?, ?, ?)",
                 (strategy_name, strategy_version, status, payload, approved_at_utc, notes),
             )
 
     def get_strategy(self, strategy_name: str, strategy_version: str) -> dict[str, Any] | None:
         with self._connect() as db:
             row = db.execute(
-                """
-                SELECT strategy_name, strategy_version, status, hypothesis_json,
-                       approved_at_utc, notes
-                FROM strategies
-                WHERE strategy_name = ? AND strategy_version = ?
-                """,
+                "SELECT strategy_name, strategy_version, status, hypothesis_json, approved_at_utc, notes FROM strategies WHERE strategy_name = ? AND strategy_version = ?",
                 (strategy_name, strategy_version),
             ).fetchone()
         if row is None:
@@ -311,30 +292,20 @@ class ExperienceStore:
             raise ValueError("trade quantity must be positive")
         if trade.outcome not in {"OPEN", "WIN", "LOSS", "BREAKEVEN", "CANCELLED"}:
             raise ValueError(f"unsupported trade outcome: {trade.outcome}")
-
         with self._connect() as db:
             db.execute(
                 """
                 INSERT OR REPLACE INTO trades
-                (trade_id, strategy_name, strategy_version, symbol, timeframe,
-                 direction, entry_price, exit_price, quantity, pnl, outcome,
-                 opened_at, closed_at, market_state_json, notes)
+                (trade_id, strategy_name, strategy_version, symbol, timeframe, direction,
+                 entry_price, exit_price, quantity, pnl, outcome, opened_at, closed_at,
+                 market_state_json, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    trade.trade_id,
-                    trade.strategy_name,
-                    trade.strategy_version,
-                    trade.symbol,
-                    trade.timeframe,
-                    trade.direction,
-                    trade.entry_price,
-                    trade.exit_price,
-                    trade.quantity,
-                    trade.pnl,
-                    trade.outcome,
-                    trade.opened_at,
-                    trade.closed_at,
+                    trade.trade_id, trade.strategy_name, trade.strategy_version,
+                    trade.symbol, trade.timeframe, trade.direction, trade.entry_price,
+                    trade.exit_price, trade.quantity, trade.pnl, trade.outcome,
+                    trade.opened_at, trade.closed_at,
                     json.dumps(trade.market_state, ensure_ascii=False, sort_keys=True),
                     trade.notes,
                 ),
@@ -343,30 +314,16 @@ class ExperienceStore:
     def list_strategy_trades(self, strategy_name: str, strategy_version: str) -> list[TradeRecord]:
         with self._connect() as db:
             rows = db.execute(
-                """
-                SELECT * FROM trades
-                WHERE strategy_name = ? AND strategy_version = ?
-                ORDER BY opened_at ASC
-                """,
+                "SELECT * FROM trades WHERE strategy_name = ? AND strategy_version = ? ORDER BY opened_at ASC",
                 (strategy_name, strategy_version),
             ).fetchall()
         return [
             TradeRecord(
-                trade_id=row["trade_id"],
-                strategy_name=row["strategy_name"],
-                strategy_version=row["strategy_version"],
-                symbol=row["symbol"],
-                timeframe=row["timeframe"],
-                direction=row["direction"],
-                entry_price=row["entry_price"],
-                exit_price=row["exit_price"],
-                quantity=row["quantity"],
-                pnl=row["pnl"],
-                outcome=row["outcome"],
-                opened_at=row["opened_at"],
-                closed_at=row["closed_at"],
-                market_state=json.loads(row["market_state_json"]),
-                notes=row["notes"],
+                trade_id=row["trade_id"], strategy_name=row["strategy_name"], strategy_version=row["strategy_version"],
+                symbol=row["symbol"], timeframe=row["timeframe"], direction=row["direction"],
+                entry_price=row["entry_price"], exit_price=row["exit_price"], quantity=row["quantity"],
+                pnl=row["pnl"], outcome=row["outcome"], opened_at=row["opened_at"], closed_at=row["closed_at"],
+                market_state=json.loads(row["market_state_json"]), notes=row["notes"],
             )
             for row in rows
         ]
@@ -386,9 +343,5 @@ class ExperienceStore:
             "losses": len(losses),
             "net_pnl": sum(pnl_values),
             "win_rate": len(wins) / len(closed) if closed else 0.0,
-            "profit_factor": (
-                sum(wins) / -sum(losses)
-                if losses and wins
-                else (float("inf") if wins else 0.0)
-            ),
+            "profit_factor": sum(wins) / -sum(losses) if losses and wins else (float("inf") if wins else 0.0),
         }
