@@ -8,6 +8,7 @@ from typing import Callable, Iterable
 from .escalation import AdaptiveEscalator, EscalationDecision
 from .market_monitor import MarketEvent
 from .market_reasoner import GroqMarketReasoner, MarketAnalysis
+from .multitimeframe_context import MultiTimeframeContext
 
 
 @dataclass(frozen=True)
@@ -24,15 +25,20 @@ class AdaptiveMarketBrain:
         escalator: AdaptiveEscalator,
         reasoner: GroqMarketReasoner | None = None,
         strategy_context_provider: Callable[[MarketEvent], str] | None = None,
+        market_context_provider: Callable[[MarketEvent], str] | None = None,
     ) -> None:
         self.escalator = escalator
         self.reasoner = reasoner
         self.strategy_context_provider = strategy_context_provider
+        self.market_context_provider = market_context_provider
 
     def process(self, event: MarketEvent, *, market_context: str = "") -> AdaptiveMarketResult:
         decision = self.escalator.evaluate(event)
         if not decision.request_ai or self.reasoner is None:
             return AdaptiveMarketResult(decision, None)
+
+        if not market_context and self.market_context_provider is not None:
+            market_context = self.market_context_provider(event)
 
         strategy_context = (
             self.strategy_context_provider(event)
@@ -45,6 +51,16 @@ class AdaptiveMarketBrain:
             strategy_context=strategy_context,
         )
         return AdaptiveMarketResult(decision, analysis)
+
+
+def market_context_from_history(
+    context: MultiTimeframeContext,
+    *,
+    symbol: str,
+    focus_timeframe: str,
+) -> str:
+    """Build bounded multi-timeframe context for one escalated market event."""
+    return context.build(symbol, focus_timeframe=focus_timeframe)
 
 
 def strategy_context_from_records(
