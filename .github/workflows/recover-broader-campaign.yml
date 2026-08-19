@@ -7,6 +7,11 @@ on:
         description: "Failed broader campaign run whose successful frozen dataset artifacts should be reused"
         required: true
         type: string
+      source_commit:
+        description: "Optional frozen research commit to use instead of the source run head; use only for infrastructure-only recovery fixes"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   recover:
@@ -17,6 +22,7 @@ jobs:
       contents: read
     env:
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
 
     steps:
       - name: Resolve source run commit
@@ -31,6 +37,7 @@ jobs:
 
           repo = os.environ["GITHUB_REPOSITORY"]
           run_id = os.environ["SOURCE_RUN_ID"]
+          override = os.environ.get("SOURCE_COMMIT", "").strip()
           request = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
               headers={
@@ -48,11 +55,27 @@ jobs:
           if not head_sha:
               raise SystemExit("source_run_missing_head_sha")
 
+          selected_sha = override or head_sha
+          if override:
+              commit_request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/commits/{override}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(commit_request, timeout=30) as response:
+                  commit = json.load(response)
+              resolved_sha = commit.get("sha")
+              if resolved_sha != override:
+                  raise SystemExit("source_commit_not_found_or_mismatched")
+
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"head_sha={head_sha}\n")
+              output.write(f"head_sha={selected_sha}\n")
           print(
-              f"SOURCE RUN id={run_id} status={run.get('status')} "
-              f"conclusion={run.get('conclusion')} head_sha={head_sha}",
+              f"SOURCE RUN id={run_id} status={run.get('status')} conclusion={run.get('conclusion')} "
+              f"run_head_sha={head_sha} selected_commit={selected_sha} override={'yes' if override else 'no'}",
               flush=True,
           )
           PY
