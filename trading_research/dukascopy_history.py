@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import requests
 
-BASE_URL = "https://freeserv.dukascopy.com/2.0/index.php"
+BASE_URL = "https://freeserv.dukascopy.com/2.0/"
 INSTRUMENTS = (
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
     "US500", "NAS100", "US30", "XAUUSD", "XAGUSD", "WTI",
