@@ -247,7 +247,12 @@ class ExperienceStore:
                 "SELECT experiment_id, record_json, record_hash FROM experiments WHERE hypothesis_fingerprint = ? ORDER BY created_at_utc ASC, experiment_id ASC",
                 (hypothesis_fingerprint,),
             ).fetchall()
-        return [self._validate_experiment_row(row) for row in rows]
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            payload = self._validate_experiment_row(row)
+            payload["experiment_id"] = row["experiment_id"]
+            records.append(payload)
+        return records
 
     def register_strategy(
         self,
