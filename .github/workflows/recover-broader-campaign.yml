@@ -103,6 +103,36 @@ jobs:
           path: data/research/universe_v2
           merge-multiple: true
 
+      - name: Migrate legacy decoder artifacts
+        run: |
+          python - <<'PY'
+          from trading_research.migrate_legacy_broader_artifacts import LEGACY_SOURCE_RUN_ID, migrate_legacy_artifacts
+
+          source_run_id = "${{ inputs.source_run_id }}"
+          if source_run_id != LEGACY_SOURCE_RUN_ID:
+              raise SystemExit(f"legacy_migration_required_for_known_source_only:{source_run_id}")
+
+          repaired_daily, removed_four_hour = migrate_legacy_artifacts(
+              "data/research/universe_v2",
+              source_run_id=source_run_id,
+          )
+          expected_daily = 12
+          expected_four_hour = 13
+          if len(repaired_daily) != expected_daily:
+              raise SystemExit(
+                  f"legacy_daily_migration_count_mismatch:{len(repaired_daily)}:{expected_daily}"
+              )
+          if len(removed_four_hour) != expected_four_hour:
+              raise SystemExit(
+                  f"legacy_four_hour_removal_count_mismatch:{len(removed_four_hour)}:{expected_four_hour}"
+              )
+          print(
+              f"LEGACY MIGRATION COMPLETE repaired_daily={len(repaired_daily)} "
+              f"removed_four_hour={len(removed_four_hour)}",
+              flush=True,
+          )
+          PY
+
       - name: Recover only missing frozen datasets
         run: |
           python - <<'PY'
