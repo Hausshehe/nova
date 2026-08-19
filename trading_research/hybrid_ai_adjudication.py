@@ -1,7 +1,6 @@
 """Bounded hybrid research: deterministic candidate policy plus AI adjudication."""
 from __future__ import annotations
 import os
-from dataclasses import asdict
 from typing import Sequence
 
 from .data import Bar
@@ -30,10 +29,11 @@ def evaluate_hybrid_ai_adjudication(
 ) -> dict[str, object]:
     if limit <= 0:
         raise ValueError("limit must be positive")
-    candidates = high_recall_candidate_indices(bars, fast_period=20, slow_period=50)
+    candidates = sorted(high_recall_candidate_indices(bars, fast_period=20, slow_period=50))
     if not candidates:
         return {"policy": "hybrid_ai_adjudication", "candidate_bars": 0, "evaluated": 0, "api_errors": 0}
-    # Deterministic bounded sample: evenly spaced over the candidate stream.
+
+    # Deterministic bounded sample: evenly spaced over the ordered candidate stream.
     step = max(1, len(candidates) // limit)
     sampled = candidates[::step][:limit]
     closes = [bar.close for bar in bars]
