@@ -3,15 +3,16 @@ from __future__ import annotations
 import lzma
 from datetime import datetime, timezone
 
+import pytest
 import requests
 
 from trading_research.dukascopy_history import (
     CANDLE_STRUCT,
     DATAFEED_BASE_URL,
-    DukascopyClient,
     INSTRUMENTS,
     _aggregate_4h,
     _decode_candle_file,
+    _deduplicate_and_validate,
     _native_url,
     _request_bytes,
     Candle,
@@ -100,6 +101,39 @@ def test_request_bytes_retries_transient_connect_timeout(monkeypatch):
     assert payload == b"payload"
     assert len(session.calls) == 2
     assert sleeps == [2.0]
+
+
+def test_request_bytes_retries_connection_error_and_transient_http(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("trading_research.dukascopy_history.time.sleep", sleeps.append)
+    session = FakeSession([
+        requests.exceptions.ConnectionError("refused"),
+        FakeResponse(503, b""),
+        FakeResponse(200, b"payload"),
+    ])
+    payload = _request_bytes(session, "https://example.test/file.bi5")
+    assert payload == b"payload"
+    assert len(session.calls) == 3
+    assert sleeps == [2.0, 2.0]
+
+
+def test_request_bytes_stops_after_transient_http_retry_budget(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("trading_research.dukascopy_history.time.sleep", sleeps.append)
+    session = FakeSession([FakeResponse(503, b"") for _ in range(6)])
+    with pytest.raises(RuntimeError, match="503 error"):
+        _request_bytes(session, "https://example.test/file.bi5")
+    assert len(session.calls) == 6
+    assert len(sleeps) == 5
+
+
+def test_invalid_ohlc_reports_exact_candle():
+    candles = [
+        Candle("2024-01-01T00:00:00+00:00", 100, 110, 90, 105, 1),
+        Candle("2024-01-02T00:00:00+00:00", 120, 110, 100, 105, 1),
+    ]
+    with pytest.raises(ValueError, match=r"candle_ohlc_invalid:.*2024-01-02T00:00:00\+00:00.*open=120\.0.*high=110\.0"):
+        _deduplicate_and_validate(candles)
 
 
 def test_aggregate_4h_uses_only_complete_utc_buckets():
