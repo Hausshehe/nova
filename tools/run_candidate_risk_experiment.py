@@ -95,7 +95,10 @@ def main() -> None:
 
     history: dict[tuple[int, int, int, int, int], deque[bool]] = defaultdict(lambda: deque(maxlen=500))
     decisions_by_threshold: dict[float, set[int]] = {}
-    thresholds = (0.15, 0.20, 0.25, 0.30, 0.35, 0.40)
+    # Wider sweep: the first experiment showed that 0.15..0.40 all selected
+    # the same policy. Continue upward to discover the actual recall boundary
+    # instead of assuming the adaptive idea has no useful headroom.
+    thresholds = (0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95)
     min_samples = 20
     width = 25.0
 
@@ -119,9 +122,6 @@ def main() -> None:
             if len(tier_values) >= min_samples:
                 probabilities.append(sum(tier_values) / len(tier_values))
 
-        # Conservative: if any sufficiently supported view estimates low
-        # actionability, use the minimum actionable probability. Otherwise keep
-        # the baseline request.
         p_actionable = min(probabilities) if probabilities else None
         for threshold in thresholds:
             selected = decisions_by_threshold.setdefault(threshold, set())
@@ -149,7 +149,7 @@ def main() -> None:
         selected = baseline_metrics
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset": args.dataset,
         "policy": "causal_candidate_risk_filter",
         "recall_floor": 0.98,
