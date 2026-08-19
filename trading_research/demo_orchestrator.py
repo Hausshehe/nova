@@ -83,30 +83,42 @@ class DemoTradingOrchestrator:
             return DemoCycleResult(event, None, False, "no_ai_escalation", None)
 
         analysis = brain_result.analysis
-        action = {
-            "NO_ACTION": "NO_ACTION",
-            "WATCH": "WATCH",
-            "SETUP": "WATCH",
-            "RISK": "EXIT",
-        }[analysis.assessment]
-        strategy_name = analysis.relevant_strategies[0] if analysis.relevant_strategies else None
-        strategy_version = (
-            self.strategy_version_resolver(strategy_name, event)
-            if strategy_name is not None and action in {"ENTER", "EXIT"}
-            else None
-        )
-        if action in {"ENTER", "EXIT"} and (not strategy_name or not strategy_version):
-            return DemoCycleResult(event, None, False, "strategy_identity_unresolved", None)
+        recommendation = analysis.recommendation
+        if recommendation is None:
+            action = {
+                "NO_ACTION": "NO_ACTION",
+                "WATCH": "WATCH",
+                "SETUP": "WATCH",
+                "RISK": "EXIT",
+            }[analysis.assessment]
+            strategy_name = analysis.relevant_strategies[0] if analysis.relevant_strategies else None
+            strategy_version = (
+                self.strategy_version_resolver(strategy_name, event)
+                if strategy_name is not None and action in {"ENTER", "EXIT"}
+                else None
+            )
+            if action in {"ENTER", "EXIT"} and (not strategy_name or not strategy_version):
+                return DemoCycleResult(event, None, False, "strategy_identity_unresolved", None)
 
-        recommendation_value = {
-            "action": action,
-            "strategy_name": strategy_name,
-            "strategy_version": strategy_version,
-            "rationale": analysis.rationale,
-            "urgency": {"NORMAL": "LOW", "ELEVATED": "HIGH", "CRITICAL": "CRITICAL"}[analysis.urgency],
-            "confidence": 0.5,
-        }
-        recommendation = self.recommendation_parser(recommendation_value)
+            recommendation = self.recommendation_parser(
+                {
+                    "action": action,
+                    "strategy_name": strategy_name,
+                    "strategy_version": strategy_version,
+                    "rationale": analysis.rationale,
+                    "urgency": {"NORMAL": "LOW", "ELEVATED": "HIGH", "CRITICAL": "CRITICAL"}[analysis.urgency],
+                    "confidence": 0.5,
+                }
+            )
+        else:
+            recommendation.validate()
+            if recommendation.action in {"ENTER", "EXIT"}:
+                if not recommendation.strategy_name or not recommendation.strategy_version:
+                    return DemoCycleResult(event, recommendation, False, "strategy_identity_unresolved", None)
+                resolved_version = self.strategy_version_resolver(recommendation.strategy_name, event)
+                if resolved_version != recommendation.strategy_version:
+                    return DemoCycleResult(event, recommendation, False, "strategy_version_mismatch", None)
+
         policy_risk = risk or RiskSnapshot(
             daily_loss_fraction=0.0,
             open_positions=0,
@@ -128,7 +140,7 @@ class DemoTradingOrchestrator:
             recommendation=recommendation,
             symbol=event.symbol,
             timeframe=event.timeframe,
-            price=price or event.price,
+            price=price if price is not None else event.price,
             quantity=quantity,
             timestamp_utc=event.timestamp.astimezone(timezone.utc),
         )
