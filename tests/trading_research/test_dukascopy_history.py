@@ -22,10 +22,10 @@ class FakeSession:
         if len(self.calls) == 1:
             rows = []
             for index in range(5000):
-                rows.append({"timestamp": start + index, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1})
+                rows.append({"timestamp": (start // 1000) + index, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1})
             return FakeResponse(rows)
         return FakeResponse([
-            {"timestamp": start, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
+            {"timestamp": (start // 1000), "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
         ])
 
 
@@ -34,8 +34,8 @@ def test_normalize_sorts_and_normalizes_timestamps():
         {"timestamp": 2000, "open": 2, "high": 3, "low": 1, "close": 2.5, "volume": 10},
         {"timestamp": 1000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 5},
     ])
-    assert candles[0].timestamp_utc == "1970-01-01T00:00:01+00:00"
-    assert candles[1].timestamp_utc == "1970-01-01T00:00:02+00:00"
+    assert candles[0].timestamp_utc == "1970-01-01T00:16:40+00:00"
+    assert candles[1].timestamp_utc == "1970-01-01T00:33:20+00:00"
 
 
 def test_normalize_rejects_invalid_ohlc():
