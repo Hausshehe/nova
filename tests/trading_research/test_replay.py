@@ -78,3 +78,23 @@ def test_replay_rejects_mismatched_spread_history(tmp_path):
         assert "match bars length" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_replay_rejects_duplicate_or_out_of_order_bars(tmp_path):
+    source = list(bars())
+    source[2] = Bar(
+        timestamp=source[1].timestamp,
+        open=source[2].open,
+        high=source[2].high,
+        low=source[2].low,
+        close=source[2].close,
+        volume=source[2].volume,
+    )
+    replay = HistoricalReplay(MarketMonitor(), orchestrator(tmp_path, FakeReasoner()))
+
+    try:
+        replay.run("EURUSD", "1D", source)
+    except ValueError as exc:
+        assert "strictly increasing" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
