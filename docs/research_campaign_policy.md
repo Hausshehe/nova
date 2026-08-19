@@ -49,10 +49,14 @@ Evaluation cost:
 | Horizon/expert adaptation | fixed 8-bar / adaptive 2-4-8 family | REJECTED / NOT PROMOTED |
 | Volatility mean reversion | 20-bar mean, 2-sigma long-only | REJECTED |
 | Trend breakout | Donchian 55/20 long-only | REJECTED |
+| Calendar effect | Friday continuation next-session long-only | REJECTED |
+| Opening discontinuity | positive opening gap next-session long-only | REJECTED |
 
 Campaign usage:
 
-**3 / 5 frozen hypotheses used.**
+**5 / 5 frozen hypotheses used — CLOSED / STOPPED.**
+
+No sixth same-dataset hypothesis may be generated from this campaign.
 
 ## Multiple-testing guardrail
 
@@ -74,6 +78,8 @@ Stop research on the current evidence source when:
 3. the evidence repeatedly remains null and further hypotheses are unlikely
 to add information without changing the data or market question.
 
+For this campaign, condition 1 has been reached.
+
 ## Explicitly prohibited
 
 Do not:
@@ -83,7 +89,8 @@ Do not:
 - use AI to rescue failed historical results;
 - select a strategy because it is the best among many failed attempts;
 - treat repeated tests on the same sample as independent confirmation;
-- begin MT5 execution work because a single historical run looks attractive.
+- begin MT5 execution work because a single historical run looks attractive;
+- reopen this campaign without a materially new evidence source or a materially new market question.
 
 ## Goal
 
