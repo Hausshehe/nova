@@ -1,9 +1,6 @@
 name: Broader Trading Research Campaign
 
 on:
-  push:
-    branches:
-      - trading-research-broader-campaign-run
   pull_request:
     branches:
       - trading-research-lab
