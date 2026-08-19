@@ -120,6 +120,20 @@ def test_request_bytes_retries_transient_connect_timeout(monkeypatch):
     assert sleeps == [2.0]
 
 
+def test_request_bytes_retries_transient_503(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("trading_research.dukascopy_history.time.sleep", sleeps.append)
+    session = FakeSession([
+        FakeResponse(503, b""),
+        FakeResponse(503, b""),
+        FakeResponse(200, b"payload"),
+    ])
+    payload = _request_bytes(session, "https://example.test/file.bi5")
+    assert payload == b"payload"
+    assert len(session.calls) == 3
+    assert sleeps == [2.0, 4.0]
+
+
 def test_aggregate_4h_uses_only_complete_utc_buckets():
     rows = [
         Candle("2024-01-01T00:00:00+00:00", 10, 12, 9, 11, 1),
