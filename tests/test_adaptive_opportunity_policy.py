@@ -113,3 +113,41 @@ def test_learning_is_causal_and_does_not_depend_on_distant_future() -> None:
 
     for index in range(10, 26):
         assert first_decisions[index] == second_decisions[index]
+
+
+def test_labels_wait_for_the_full_future_horizon() -> None:
+    first = list(_bars(32))
+    second = list(_bars(32))
+
+    # Keep bar 17 identical, but change bars 18-20. Those bars are still
+    # future information when Nova makes the decision at bar 17.
+    for index in range(18, 21):
+        price = 1.0 + 0.01 * (index - 17)
+        second[index] = Bar(
+            timestamp=second[index].timestamp,
+            open=price,
+            high=price,
+            low=price,
+            close=price,
+            volume=1.0,
+        )
+
+    candidates = set(range(10, 32))
+    first_decisions = build_walk_forward_policy(
+        first,
+        future_bars=4,
+        fast_period=5,
+        slow_period=10,
+        candidate_indices=candidates,
+        min_samples=1,
+    )
+    second_decisions = build_walk_forward_policy(
+        second,
+        future_bars=4,
+        fast_period=5,
+        slow_period=10,
+        candidate_indices=candidates,
+        min_samples=1,
+    )
+
+    assert first_decisions[17] == second_decisions[17]
