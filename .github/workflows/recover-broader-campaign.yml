@@ -35,8 +35,10 @@ jobs:
           import urllib.request
 
           repo = os.environ["GITHUB_REPOSITORY"]
-          run_id = os.environ["SOURCE_RUN_ID"]
+          run_id = os.environ["SOURCE_RUN_ID"].strip()
           recovery_commit = os.environ["RECOVERY_COMMIT"].strip()
+          if not run_id:
+              raise SystemExit("source_run_id_required")
           if not recovery_commit:
               raise SystemExit("recovery_commit_required")
 
@@ -113,8 +115,11 @@ jobs:
           merge-multiple: true
 
       - name: Migrate legacy decoder artifacts when required
+        env:
+          MIGRATION_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           python - <<'PY'
+          import os
           from trading_research.migrate_legacy_broader_artifacts import (
               LEGACY_DAILY_DATASETS,
               LEGACY_FOUR_HOUR_DATASETS,
@@ -122,7 +127,7 @@ jobs:
               migrate_legacy_artifacts,
           )
 
-          source_run_id = "${{ inputs.source_run_id }}"
+          source_run_id = os.environ["MIGRATION_SOURCE_RUN_ID"].strip()
           if source_run_id != LEGACY_SOURCE_RUN_ID:
               print(f"LEGACY MIGRATION SKIPPED source_run={source_run_id}", flush=True)
           else:
@@ -146,8 +151,11 @@ jobs:
           PY
 
       - name: Recover only missing frozen datasets
+        env:
+          RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
           from trading_research.dukascopy_history import (
               DukascopyClient,
@@ -156,6 +164,7 @@ jobs:
               write_csv,
           )
 
+          source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
           root = Path("data/research/universe_v2")
           root.mkdir(parents=True, exist_ok=True)
           missing = [
@@ -171,11 +180,10 @@ jobs:
               ("US500", "4H"),
               ("WTI", "1D"),
           }
-          if "${{ inputs.source_run_id }}" == "32293018258":
-              if set(missing) != expected_legacy_missing:
-                  raise SystemExit(
-                      f"legacy_missing_snapshot_mismatch:{sorted(missing)}"
-                  )
+          if source_run_id == "32293018258" and set(missing) != expected_legacy_missing:
+              raise SystemExit(
+                  f"legacy_missing_snapshot_mismatch:{sorted(missing)}"
+              )
 
           print(
               f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}",
