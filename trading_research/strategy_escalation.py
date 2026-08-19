@@ -16,6 +16,7 @@ class StrategyEscalationHint:
     momentum_bps: float
     sma_gap_bps: float
     setup_score: float
+    confidence_tier: str
 
 
 def build_strategy_escalation_hints(
@@ -28,24 +29,25 @@ def build_strategy_escalation_hints(
     slope_lookback: int = 3,
     slope_bps: float = 3.0,
     min_setup_score: float = 1.0,
+    strong_setup_score: float = 1.5,
 ) -> tuple[StrategyEscalationHint, ...]:
     """Generate live-safe AI hints using only information available at each bar.
 
-    A setup can qualify through fresh momentum, SMA separation slope, or both.
-    This is intentionally more sensitive to developing conditions than the
-    original single-momentum trigger while remaining deterministic.
+    Confidence tiers prevent weak signals from becoming automatic AI requests.
+    Strong setups can escalate immediately; developing setups can escalate when
+    the bounded market layer confirms meaningful change; weak setups stay local.
     """
     if fast_period <= 0 or slow_period <= fast_period:
         raise ValueError("slow_period must exceed fast_period")
     if momentum_bps <= 0 or max_sma_gap_bps <= 0 or slope_lookback <= 0 or slope_bps <= 0:
         raise ValueError("thresholds must be positive")
-    if min_setup_score <= 0:
-        raise ValueError("min_setup_score must be positive")
+    if min_setup_score <= 0 or strong_setup_score < min_setup_score:
+        raise ValueError("invalid setup score thresholds")
 
     hints: list[StrategyEscalationHint] = []
     for index, bar in enumerate(bars):
         if index + 1 < slow_period:
-            hints.append(StrategyEscalationHint(index, False, "insufficient history", 0.0, 0.0, 0.0))
+            hints.append(StrategyEscalationHint(index, False, "insufficient history", 0.0, 0.0, 0.0, "WEAK"))
             continue
 
         fast = sum(x.close for x in bars[index - fast_period + 1 : index + 1]) / fast_period
@@ -73,8 +75,17 @@ def build_strategy_escalation_hints(
             score += 0.5
             reasons.append("SMA setup still developing")
 
-        request = score >= min_setup_score and (momentum >= momentum_bps or abs(gap_slope) >= slope_bps)
+        strong = score >= strong_setup_score and momentum >= momentum_bps
+        developing = score >= min_setup_score and (momentum >= momentum_bps or abs(gap_slope) >= slope_bps)
+        if strong:
+            tier = "STRONG"
+        elif developing:
+            tier = "DEVELOPING"
+        else:
+            tier = "WEAK"
+
+        request = strong or developing
         reason = "; ".join(reasons) if request else "no developing setup"
-        hints.append(StrategyEscalationHint(index, request, reason, momentum, gap_bps, score))
+        hints.append(StrategyEscalationHint(index, request, reason, momentum, gap_bps, score, tier))
 
     return tuple(hints)
