@@ -52,6 +52,7 @@ def orchestrator(tmp_path, reasoner):
         experience=experience,
         gateway=DemoExecutionGateway(),
         strategy_lookup=lambda *_: False,
+        strategy_version_resolver=lambda *_: None,
     )
 
 
