@@ -11,7 +11,7 @@ def test_strategy_escalation_efficiency_runner(tmp_path: Path) -> None:
     dataset.write_text(
         "timestamp,open,high,low,close,volume\n"
         "2026-01-01T00:00:00+00:00,1,1,1,1,1\n"
-        "2026-01-01T00:15:00+00:00,1,1,1,1.01,1\n",
+        "2026-01-01T00:15:00+00:00,1,1.01,1,1.01,1\n",
         encoding="utf-8",
     )
     output = tmp_path / "report.json"
