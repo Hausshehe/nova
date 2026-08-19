@@ -52,6 +52,43 @@ def test_brain_calls_ai_for_critical_event():
     assert len(fake.calls) == 1
 
 
+def test_brain_fills_market_context_from_provider_on_escalation():
+    fake = FakeReasoner()
+    calls = []
+
+    def provider(event):
+        calls.append((event.symbol, event.timeframe))
+        return "MULTI_TF_CONTEXT"
+
+    brain = AdaptiveMarketBrain(
+        AdaptiveEscalator(),
+        fake,
+        market_context_provider=provider,
+    )
+    result = brain.process(_event())
+    assert result.analysis is not None
+    assert calls == [("EURUSD", "1D")]
+    assert fake.calls[0][2] == "MULTI_TF_CONTEXT"
+
+
+def test_explicit_market_context_wins_over_provider():
+    fake = FakeReasoner()
+    calls = []
+
+    def provider(event):
+        calls.append(event)
+        return "PROVIDER_CONTEXT"
+
+    brain = AdaptiveMarketBrain(
+        AdaptiveEscalator(),
+        fake,
+        market_context_provider=provider,
+    )
+    brain.process(_event(), market_context="EXPLICIT_CONTEXT")
+    assert calls == []
+    assert fake.calls[0][2] == "EXPLICIT_CONTEXT"
+
+
 def test_strategy_context_filters_to_approved_matching_strategies():
     records = [
         {
