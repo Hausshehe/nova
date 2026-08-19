@@ -93,13 +93,14 @@ def momentum_signal_series(bars: Sequence[Bar]) -> list[bool]:
 
 
 def mean_reversion_signal_series(bars: Sequence[Bar]) -> list[bool]:
+    """Causal 20-bar two-sigma mean reversion using prior completed bars only."""
     states = [False] * len(bars)
     in_position = False
     for index in range(len(bars)):
-        if index < 19:
+        if index < 20:
             continue
-        mean = _sma(bars, index, 20)
-        std = _std_population(bars, index, 20)
+        mean = _sma(bars, index - 1, 20)
+        std = _std_population(bars, index - 1, 20)
         if not in_position and bars[index].close <= mean - 2.0 * std:
             in_position = True
         elif in_position and bars[index].close >= mean:
