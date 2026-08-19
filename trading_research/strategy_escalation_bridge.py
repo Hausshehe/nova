@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Sequence
 
 from .data import Bar
-from .escalation import EscalationDecision, EscalationThresholds
+from .escalation import AdaptiveEscalator, EscalationDecision, EscalationThresholds
 from .market_monitor import MarketEvent
 from .strategy_escalation import StrategyEscalationHint, build_strategy_escalation_hints
 
@@ -47,9 +46,6 @@ def evaluate_strategy_escalation(
     )
     by_timestamp = {bar.timestamp: i for i, bar in enumerate(bars)}
 
-    # Import here to keep the bridge's dependency surface explicit.
-    from .escalation import AdaptiveEscalator
-
     escalator = AdaptiveEscalator(thresholds)
     results: list[StrategyEscalationDecision] = []
     for event in events:
@@ -60,23 +56,29 @@ def evaluate_strategy_escalation(
         hint = hints[index]
         request = market_decision.request_ai or hint.request_ai
         if request and not market_decision.request_ai and hint.request_ai:
-            # A strategy promotion must respect the same cooldown. Re-evaluate
-            # through a synthetic meaningful event so the escalator owns the
-            # cooldown state instead of duplicating it here.
+            # Promote through the same escalator so the existing cooldown is
+            # the single source of truth. Use the configured elevated
+            # threshold, not the strategy's momentum threshold: momentum can
+            # be intentionally small while escalation still needs a valid
+            # bounded AI-triggering event.
+            configured = thresholds or EscalationThresholds()
             synthetic = MarketEvent(
                 event_type="PRICE_MOVE",
                 timestamp=event.timestamp,
                 symbol=event.symbol,
                 timeframe=event.timeframe,
-                change_bps=max(momentum_bps, 0.0),
+                reason=f"strategy hint: {hint.reason}",
+                price=event.price,
+                change_bps=configured.elevated_move_bps,
                 spread_bps=event.spread_bps,
             )
             promoted = escalator.evaluate(synthetic)
             request = promoted.request_ai
-            if request:
-                reason = f"strategy hint: {hint.reason}"
-            else:
-                reason = f"strategy hint suppressed by AI cooldown"
+            reason = (
+                f"strategy hint: {hint.reason}"
+                if request
+                else "strategy hint suppressed by AI cooldown"
+            )
         else:
             reason = market_decision.reason
         results.append(StrategyEscalationDecision(index, request, reason, hint, market_decision))
