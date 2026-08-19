@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from trading_research.migrate_legacy_broader_artifacts import (
+    LEGACY_DAILY_DATASETS,
+    LEGACY_FOUR_HOUR_DATASETS,
     LEGACY_SOURCE_RUN_ID,
     migrate_legacy_artifacts,
     repair_legacy_daily_artifact,
@@ -31,13 +33,32 @@ def test_repair_legacy_daily_artifact_rejects_bad_result(tmp_path: Path) -> None
         repair_legacy_daily_artifact(dataset)
 
 
-def test_migration_is_restricted_to_known_source_run(tmp_path: Path) -> None:
-    _write_legacy_csv(tmp_path / "EURUSD_1D.csv", high=105, close=110)
-    (tmp_path / "EURUSD_4H.csv").write_text("stale\n", encoding="utf-8")
+def _write_complete_legacy_snapshot(root: Path) -> None:
+    for name in LEGACY_DAILY_DATASETS:
+        _write_legacy_csv(root / name, high=105, close=110)
+    for name in LEGACY_FOUR_HOUR_DATASETS:
+        (root / name).write_text("stale\n", encoding="utf-8")
+
+
+def test_migration_requires_exact_known_legacy_snapshot(tmp_path: Path) -> None:
+    _write_complete_legacy_snapshot(tmp_path)
     repaired, removed = migrate_legacy_artifacts(tmp_path, source_run_id=LEGACY_SOURCE_RUN_ID)
-    assert repaired == ["EURUSD_1D.csv"]
-    assert removed == ["EURUSD_4H.csv"]
-    assert not (tmp_path / "EURUSD_4H.csv").exists()
+    assert repaired == list(LEGACY_DAILY_DATASETS)
+    assert removed == list(LEGACY_FOUR_HOUR_DATASETS)
+    assert not any((tmp_path / name).exists() for name in LEGACY_FOUR_HOUR_DATASETS)
+
+
+def test_migration_rejects_unexpected_file(tmp_path: Path) -> None:
+    _write_complete_legacy_snapshot(tmp_path)
+    (tmp_path / "unexpected_1D.csv").write_text("stale\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="legacy_migration_unexpected_files"):
+        migrate_legacy_artifacts(tmp_path, source_run_id=LEGACY_SOURCE_RUN_ID)
+
+
+def test_migration_rejects_incomplete_snapshot(tmp_path: Path) -> None:
+    _write_legacy_csv(tmp_path / LEGACY_DAILY_DATASETS[0], high=105, close=110)
+    with pytest.raises(ValueError, match="legacy_migration_missing_daily"):
+        migrate_legacy_artifacts(tmp_path, source_run_id=LEGACY_SOURCE_RUN_ID)
 
 
 def test_migration_rejects_unknown_source_run(tmp_path: Path) -> None:
