@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Sequence
 
 from .data import Bar
-from .escalation import AdaptiveEscalator
 from .market_monitor import MarketMonitor
+from .strategy_escalation_bridge import evaluate_strategy_escalation
 
 
 @dataclass(frozen=True)
@@ -29,12 +29,12 @@ def evaluate_strategy_opportunities(
     fast_period: int = 20,
     slow_period: int = 50,
 ) -> StrategyOpportunityReport:
-    """Estimate actionable opportunities and whether escalation reviewed them.
+    """Estimate actionable opportunities and whether strategy-aware escalation reviewed them.
 
     This remains diagnostic: it does not place trades or claim profitability.
     An opportunity must clear the transaction-cost buffer and have enough
-    history for the SMA baseline. AI recall is measured from the same
-    deterministic escalation policy used by the monitoring system.
+    history for the SMA baseline. AI recall is measured through the same
+    causal strategy-aware escalation bridge intended for live monitoring.
     """
     if future_bars <= 0 or opportunity_move_bps <= 0:
         raise ValueError("future_bars and opportunity_move_bps must be positive")
@@ -69,22 +69,21 @@ def evaluate_strategy_opportunities(
             actionable_indices.add(index)
 
     monitor = MarketMonitor()
-    escalator = AdaptiveEscalator()
     events = monitor.observe_history("EURUSD", "D1", bars)
-    timestamp_to_index = {bar.timestamp: index for index, bar in enumerate(bars)}
-    reviewed_actionable: set[int] = set()
-
-    for event in events:
-        decision = escalator.evaluate(event)
-        if not decision.request_ai:
-            continue
-        index = timestamp_to_index.get(event.timestamp)
-        if index is not None and index in actionable_indices:
-            reviewed_actionable.add(index)
-
-    actionable_recall = (
-        len(reviewed_actionable) / actionable if actionable else 0.0
+    decisions = evaluate_strategy_escalation(
+        bars,
+        events,
+        fast_period=fast_period,
+        slow_period=slow_period,
     )
+
+    reviewed_actionable: set[int] = {
+        decision.index
+        for decision in decisions
+        if decision.request_ai and decision.index in actionable_indices
+    }
+
+    actionable_recall = len(reviewed_actionable) / actionable if actionable else 0.0
     return StrategyOpportunityReport(
         opportunities=opportunities,
         actionable_opportunities=actionable,
