@@ -2,9 +2,9 @@
 
 The legacy Dukascopy decoder used the native candle field order incorrectly:
 open, close, low, high instead of open, high, low, close. This helper is deliberately
-restricted to the known legacy source run and repairs only daily CSVs by swapping
-high/close. Four-hour CSVs are not repaired because their aggregate high/close values
-were computed from the wrong fields; callers must rebuild them from raw H1 data.
+restricted to the known legacy source run. It repairs only the known daily artifacts
+by swapping high/close and removes only the known stale four-hour artifacts, which must
+then be rebuilt from corrected raw hourly data.
 """
 
 from __future__ import annotations
@@ -16,10 +16,43 @@ from tempfile import NamedTemporaryFile
 
 LEGACY_SOURCE_RUN_ID = "32293018258"
 
+# Exact successful artifact snapshot from the known cancelled source run.
+LEGACY_DAILY_DATASETS = (
+    "AUDUSD_1D.csv",
+    "EURUSD_1D.csv",
+    "GBPUSD_1D.csv",
+    "NAS100_1D.csv",
+    "NZDUSD_1D.csv",
+    "US30_1D.csv",
+    "US500_1D.csv",
+    "USDCAD_1D.csv",
+    "USDCHF_1D.csv",
+    "USDJPY_1D.csv",
+    "XAGUSD_1D.csv",
+    "XAUUSD_1D.csv",
+)
+
+LEGACY_FOUR_HOUR_DATASETS = (
+    "AUDUSD_4H.csv",
+    "GBPUSD_4H.csv",
+    "US30_4H.csv",
+    "USDCAD_4H.csv",
+    "USDCHF_4H.csv",
+    "USDJPY_4H.csv",
+    "WTI_4H.csv",
+    "XAGUSD_4H.csv",
+    "XAUUSD_4H.csv",
+)
+
 
 def _atomic_write(path: Path, rows: list[dict[str, str]]) -> None:
-    with NamedTemporaryFile("w", newline="", encoding="utf-8", dir=path.parent, delete=False) as handle:
-        writer = csv.DictWriter(handle, fieldnames=["timestamp", "open", "high", "low", "close", "volume"])
+    with NamedTemporaryFile(
+        "w", newline="", encoding="utf-8", dir=path.parent, delete=False
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["timestamp", "open", "high", "low", "close", "volume"],
+        )
         writer.writeheader()
         writer.writerows(rows)
         temp_name = handle.name
@@ -49,13 +82,30 @@ def repair_legacy_daily_artifact(path: str | Path) -> None:
 def migrate_legacy_artifacts(root: str | Path, *, source_run_id: str) -> tuple[list[str], list[str]]:
     if source_run_id != LEGACY_SOURCE_RUN_ID:
         raise ValueError(f"legacy_migration_source_run_mismatch:{source_run_id}")
+
     root_path = Path(root)
+    actual_csv_names = {path.name for path in root_path.glob("*.csv")}
+    expected_names = set(LEGACY_DAILY_DATASETS) | set(LEGACY_FOUR_HOUR_DATASETS)
+    unexpected = sorted(actual_csv_names - expected_names)
+    if unexpected:
+        raise ValueError(f"legacy_migration_unexpected_files:{','.join(unexpected)}")
+
+    missing_daily = [name for name in LEGACY_DAILY_DATASETS if not (root_path / name).is_file()]
+    missing_four_hour = [name for name in LEGACY_FOUR_HOUR_DATASETS if not (root_path / name).is_file()]
+    if missing_daily:
+        raise ValueError(f"legacy_migration_missing_daily:{','.join(missing_daily)}")
+    if missing_four_hour:
+        raise ValueError(f"legacy_migration_missing_four_hour:{','.join(missing_four_hour)}")
+
     repaired_daily: list[str] = []
+    for name in LEGACY_DAILY_DATASETS:
+        repair_legacy_daily_artifact(root_path / name)
+        repaired_daily.append(name)
+
     removed_four_hour: list[str] = []
-    for path in sorted(root_path.glob("*_1D.csv")):
-        repair_legacy_daily_artifact(path)
-        repaired_daily.append(path.name)
-    for path in sorted(root_path.glob("*_4H.csv")):
+    for name in LEGACY_FOUR_HOUR_DATASETS:
+        path = root_path / name
         path.unlink()
-        removed_four_hour.append(path.name)
+        removed_four_hour.append(name)
+
     return repaired_daily, removed_four_hour
