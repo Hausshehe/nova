@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 import sys
 
@@ -18,6 +18,27 @@ from trading_research.market_monitor import MarketMonitor
 from trading_research.strategy_escalation_bridge import evaluate_strategy_escalation
 from trading_research.adaptive_opportunity_policy import build_walk_forward_policy
 from trading_research.strategy_escalation_efficiency import _actionable_indices, _precision
+
+
+def _stratum_metrics(
+    bars,
+    indices: set[int],
+    actionable: set[int],
+) -> dict[str, float | int]:
+    reviewed = len(indices & actionable)
+    precision, justified = _precision(
+        bars,
+        indices,
+        future_bars=4,
+        opportunity_move_bps=30.0,
+    )
+    return {
+        "candidates": len(indices),
+        "actionable": reviewed,
+        "actionable_rate": reviewed / len(indices) if indices else 0.0,
+        "precision": precision,
+        "unnecessary": max(0, len(indices) - justified),
+    }
 
 
 def main() -> None:
@@ -72,17 +93,28 @@ def main() -> None:
     accepted = adaptive_metrics["actionable_recall"] >= recall_floor
     selected = adaptive_indices if accepted else baseline
 
-    reasons = Counter(decision.reason for decision in adaptive if decision.index in baseline)
-    evidence = [
-        decision.confidence
-        for decision in adaptive
-        if decision.index in baseline and decision.reason != "insufficient evidence; preserve trusted candidate"
-    ]
-    suppressible = [
-        decision
-        for decision in adaptive
-        if decision.index in baseline and decision.reason == "historically low actionable rate; adaptive suppression"
-    ]
+    # Diagnose the trusted baseline itself. This is intentionally descriptive:
+    # it does not use future outcomes to alter the policy decision. The goal is
+    # to find causal, observable strata where the 191 unnecessary requests may
+    # be concentrated before changing the adaptive architecture.
+    baseline_by_tier: dict[str, set[int]] = defaultdict(set)
+    baseline_by_reason: dict[str, set[int]] = defaultdict(set)
+    for decision in decisions:
+        if decision.index not in baseline:
+            continue
+        baseline_by_tier[decision.strategy_hint.confidence_tier].add(decision.index)
+        baseline_by_reason[decision.reason].add(decision.index)
+
+    stratum_metrics = {
+        "strategy_confidence_tier": {
+            tier: _stratum_metrics(bars, indices, actionable)
+            for tier, indices in sorted(baseline_by_tier.items())
+        },
+        "escalation_reason": {
+            reason: _stratum_metrics(bars, indices, actionable)
+            for reason, indices in sorted(baseline_by_reason.items())
+        },
+    }
 
     payload = {
         "schema_version": 1,
@@ -102,11 +134,22 @@ def main() -> None:
         "adaptive_diagnostics": {
             "baseline_candidate_count": len(baseline),
             "suppressed_candidate_count": len(baseline - adaptive_indices),
-            "decision_reason_counts": dict(reasons),
-            "evidence_candidate_count": len(evidence),
-            "minimum_observed_confidence_with_evidence": min(evidence) if evidence else None,
-            "maximum_observed_confidence_with_evidence": max(evidence) if evidence else None,
-            "suppression_count": len(suppressible),
+            "decision_reason_counts": dict(Counter(decision.reason for decision in adaptive if decision.index in baseline)),
+            "evidence_candidate_count": sum(
+                1 for decision in adaptive if decision.index in baseline and decision.reason == "historically actionable feature state"
+            ),
+            "minimum_observed_confidence_with_evidence": min(
+                (decision.confidence for decision in adaptive if decision.index in baseline and decision.reason == "historically actionable feature state"),
+                default=None,
+            ),
+            "maximum_observed_confidence_with_evidence": max(
+                (decision.confidence for decision in adaptive if decision.index in baseline and decision.reason == "historically actionable feature state"),
+                default=None,
+            ),
+            "suppression_count": sum(
+                1 for decision in adaptive if decision.index in baseline and "suppression" in decision.reason
+            ),
+            "baseline_observable_strata": stratum_metrics,
         },
     }
 
