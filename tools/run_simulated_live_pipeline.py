@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# ``python tools/run_simulated_live_pipeline.py`` puts ``tools/`` on sys.path.
+# Add the repository root explicitly so the runner works without PYTHONPATH.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from trading_research.adaptive_market_brain import AdaptiveMarketBrain
 from trading_research.data import load_csv
@@ -15,8 +22,8 @@ from trading_research.escalation import AdaptiveEscalator
 from trading_research.execution import DemoExecutionGateway
 from trading_research.live_demo_pipeline import LiveDemoPipeline
 from trading_research.market_history import MarketHistoryStore
-from trading_research.market_monitor import MarketMonitor
 from trading_research.memory import ExperienceStore
+from trading_research.market_monitor import MarketMonitor, MarketSnapshot
 from trading_research.market_reasoner import MarketAnalysis
 
 
@@ -65,7 +72,7 @@ def main() -> None:
     events = 0
     for bar in bars:
         result = pipeline.process_snapshot(
-            __import__("trading_research.market_monitor", fromlist=["MarketSnapshot"]).MarketSnapshot(
+            MarketSnapshot(
                 symbol="EURUSD",
                 timeframe="1D",
                 bar=bar,
