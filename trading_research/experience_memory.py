@@ -16,9 +16,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
+ALLOWED_STATUSES = ("observed", "promising", "rejected", "validated", "superseded", "exploratory")
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,10 @@ class ExperienceRecord:
         timestamp: str | None = None,
         previous_hash: str = "GENESIS",
     ) -> "ExperienceRecord":
+        if status not in ALLOWED_STATUSES:
+            raise ValueError(f"unsupported experience status: {status}")
+        if not experiment_id.strip() or not hypothesis_id.strip():
+            raise ValueError("experiment_id and hypothesis_id are required")
         record = cls(
             experiment_id=experiment_id,
             hypothesis_id=hypothesis_id,
@@ -108,6 +113,8 @@ class ExperienceRecord:
         payload["tags"] = tuple(payload.get("tags", ()))
         payload["constraints"] = tuple(payload.get("constraints", ()))
         record = cls(**payload)
+        if record.status not in ALLOWED_STATUSES:
+            raise ValueError(f"unsupported experience status: {record.status}")
         if record.with_hash().record_hash != record.record_hash:
             raise ValueError("experience record hash mismatch")
         return record
@@ -143,6 +150,30 @@ class ExperienceMemory:
                     f"expected {previous}, got {record.previous_hash}"
                 )
             previous = record.record_hash
+
+    def hypothesis_seen(
+        self,
+        *,
+        hypothesis_id: str,
+        dataset_sha256: str | None,
+    ) -> bool:
+        return any(
+            record.hypothesis_id == hypothesis_id and record.dataset_sha256 == dataset_sha256
+            for record in self.all()
+        )
+
+    def assert_new_hypothesis(
+        self,
+        *,
+        hypothesis_id: str,
+        dataset_sha256: str | None,
+    ) -> None:
+        """Reject accidental hypothesis recycling on identical evidence."""
+        if self.hypothesis_seen(hypothesis_id=hypothesis_id, dataset_sha256=dataset_sha256):
+            raise ValueError(
+                "hypothesis already has recorded experience for this dataset; "
+                "define a genuinely new hypothesis or independent validation dataset"
+            )
 
     def append(self, record: ExperienceRecord) -> ExperienceRecord:
         self.validate_chain()
