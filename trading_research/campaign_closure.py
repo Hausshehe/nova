@@ -8,7 +8,6 @@ can be restarted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
 
 
 CURRENT_EURUSD_DATASET_SHA256 = (
@@ -52,7 +51,15 @@ def evaluate_campaign_closure(
             max_families=state.max_families,
         )
 
-    if dataset_sha256 is None or dataset_sha256 == state.dataset_sha256:
+    if dataset_sha256 is None:
+        return CampaignClosureDecision(
+            action="EVIDENCE_FINGERPRINT_REQUIRED",
+            reason="A dataset fingerprint is required before deciding whether a research campaign may continue.",
+            family_count=state.family_count,
+            max_families=state.max_families,
+        )
+
+    if dataset_sha256 == state.dataset_sha256:
         if state.closed or state.family_count >= state.max_families:
             return CampaignClosureDecision(
                 action="CAMPAIGN_CLOSED",
@@ -60,18 +67,16 @@ def evaluate_campaign_closure(
                 family_count=state.family_count,
                 max_families=state.max_families,
             )
-
-    if dataset_sha256 != state.dataset_sha256:
         return CampaignClosureDecision(
-            action="ALLOW_RESTART_NEW_EVIDENCE",
-            reason="The evidence source is materially new; the campaign may be restarted with fresh provenance.",
+            action="ALLOW_CONTINUE",
+            reason="The campaign remains within its frozen family budget.",
             family_count=state.family_count,
             max_families=state.max_families,
         )
 
     return CampaignClosureDecision(
-        action="ALLOW_CONTINUE",
-        reason="The campaign remains within its frozen family budget.",
+        action="ALLOW_RESTART_NEW_EVIDENCE",
+        reason="The evidence source is materially new; the campaign may be restarted with fresh provenance.",
         family_count=state.family_count,
         max_families=state.max_families,
     )
