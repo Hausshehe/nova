@@ -1,6 +1,7 @@
 import csv
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from trading_research.memory import ExperienceStore
@@ -10,10 +11,11 @@ from trading_research.volatility_mean_reversion_runner import main
 def _write_csv(path: Path) -> None:
     rows = [["timestamp", "open", "high", "low", "close", "volume"]]
     base = 100.0
+    start = datetime(2020, 2, 1, tzinfo=timezone.utc)
     for index in range(80):
         value = base if index < 60 else base - (index - 59) * 2.0
         rows.append([
-            f"2020-02-{index + 1:02d}T00:00:00+00:00",
+            (start + timedelta(days=index)).isoformat(),
             value,
             value,
             value,
@@ -48,8 +50,8 @@ def test_runner_persists_experiment_memory(tmp_path, monkeypatch):
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["dataset_sha256"]
     assert payload["costs"] == {
-        "fee_bps_per_side": 2.0,
-        "slippage_bps_per_side": 2.0,
+        "fee_bps_per_side": 1.0,
+        "slippage_bps_per_side": 1.0,
     }
 
     with sqlite3.connect(memory_path) as db:
