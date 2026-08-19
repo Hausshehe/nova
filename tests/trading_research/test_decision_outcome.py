@@ -71,7 +71,7 @@ def test_invalid_outcome_is_rejected(tmp_path):
 
 def test_list_for_decision_is_chronological(tmp_path):
     store = DecisionOutcomeStore(tmp_path / "experience.sqlite3")
-    store.record(_outcome(outcome_id="O2", recorded_at_utc="2026-01-03T10:00:00+00:00"))
-    store.record(_outcome(outcome_id="O1", recorded_at_utc="2026-01-02T10:00:00+00:00"))
+    store.record(_outcome(outcome_id="O2", trade_id="T2", recorded_at_utc="2026-01-03T10:00:00+00:00"))
+    store.record(_outcome(outcome_id="O1", trade_id="T1", recorded_at_utc="2026-01-02T10:00:00+00:00"))
 
     assert [item.outcome_id for item in store.list_for_decision("D1")] == ["O1", "O2"]
