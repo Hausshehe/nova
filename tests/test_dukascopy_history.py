@@ -66,9 +66,10 @@ def test_native_urls_are_stable():
 
 def test_native_candle_decoder():
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    # Dukascopy native candle records are: seconds, open, close, low, high, volume.
     payload = _compressed_rows([
-        (0, 100, 110, 90, 105, 2.5),
-        (3600, 105, 120, 100, 115, 3.0),
+        (0, 100, 105, 90, 110, 2.5),
+        (3600, 105, 115, 100, 120, 3.0),
     ])
     candles = _decode_candle_file(payload, base)
     assert candles == [
