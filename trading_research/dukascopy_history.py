@@ -29,7 +29,7 @@ INSTRUMENT_DATAFEED = {
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
 MAX_5XX_RETRIES = 4
-MAX_NETWORK_RETRIES = 3
+MAX_NETWORK_RETRIES = 5
 DEFAULT_429_BACKOFF_SECONDS = 2.0
 MAX_429_BACKOFF_SECONDS = 120.0
 CANDLE_RECORD_SIZE = 24
@@ -94,7 +94,12 @@ def _retry_delay(response: requests.Response, attempt: int) -> float:
         return DEFAULT_429_BACKOFF_SECONDS * (2**attempt)
 
 
-def _request_bytes(session: requests.Session, url: str) -> bytes | None:
+def _request_bytes(
+    session: requests.Session,
+    url: str,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> bytes | None:
     headers = {
         "User-Agent": "Nova-TradingResearch/1.0",
         "Referer": "https://freeserv.dukascopy.com/",
@@ -105,11 +110,17 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
     server_attempts = 0
     while True:
         try:
-            response = session.get(url, timeout=45, headers=headers)
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+            response = session.get(url, timeout=(20, 90), headers=headers)
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
             if network_attempts >= MAX_NETWORK_RETRIES:
                 raise
-            time.sleep(min(DEFAULT_429_BACKOFF_SECONDS * (2**network_attempts), MAX_429_BACKOFF_SECONDS))
+            delay = min(DEFAULT_429_BACKOFF_SECONDS * (2**network_attempts), MAX_429_BACKOFF_SECONDS)
+            if progress:
+                progress(
+                    f"retry network {network_attempts + 1}/{MAX_NETWORK_RETRIES}: "
+                    f"delay={delay:.0f}s url={url} error={type(exc).__name__}"
+                )
+            time.sleep(delay)
             network_attempts += 1
             continue
         network_attempts = 0
@@ -118,13 +129,22 @@ def _request_bytes(session: requests.Session, url: str) -> bytes | None:
         if response.status_code == 429:
             if rate_attempts >= MAX_429_RETRIES:
                 response.raise_for_status()
-            time.sleep(min(_retry_delay(response, rate_attempts), MAX_429_BACKOFF_SECONDS))
+            delay = min(_retry_delay(response, rate_attempts), MAX_429_BACKOFF_SECONDS)
+            if progress:
+                progress(f"retry 429 {rate_attempts + 1}/{MAX_429_RETRIES}: delay={delay:.0f}s url={url}")
+            time.sleep(delay)
             rate_attempts += 1
             continue
         if 500 <= response.status_code < 600:
             if server_attempts >= MAX_5XX_RETRIES:
                 response.raise_for_status()
-            time.sleep(min(_retry_delay(response, server_attempts), MAX_429_BACKOFF_SECONDS))
+            delay = min(_retry_delay(response, server_attempts), MAX_429_BACKOFF_SECONDS)
+            if progress:
+                progress(
+                    f"retry {response.status_code} {server_attempts + 1}/{MAX_5XX_RETRIES}: "
+                    f"delay={delay:.0f}s url={url}"
+                )
+            time.sleep(delay)
             server_attempts += 1
             continue
         response.raise_for_status()
@@ -230,7 +250,7 @@ class DukascopyClient:
                 url = _native_url(instrument, "1D", year)
                 if progress:
                     progress(f"request {instrument} 1D {year}")
-                payload = _request_bytes(self.session, url)
+                payload = _request_bytes(self.session, url, progress=progress)
                 if not payload:
                     if progress:
                         progress(f"empty {instrument} 1D {year}")
@@ -251,14 +271,12 @@ class DukascopyClient:
                 url = _native_url(instrument, "1H", month.year, month.month)
                 if progress:
                     progress(f"request {instrument} 1H {month.year}-{month.month:02d}")
-                payload = _request_bytes(self.session, url)
+                payload = _request_bytes(self.session, url, progress=progress)
                 if payload:
                     decoded = _decode_candle_file(payload, month)
                     hourly.extend(decoded)
                     if progress:
-                        progress(
-                            f"received {instrument} 1H {month.year}-{month.month:02d}: bars={len(decoded)}"
-                        )
+                        progress(f"received {instrument} 1H {month.year}-{month.month:02d}: bars={len(decoded)}")
                 elif progress:
                     progress(f"empty {instrument} 1H {month.year}-{month.month:02d}")
                 if month.month == 12:
@@ -340,9 +358,7 @@ def download_universe(
             ))
             completed += 1
             if progress:
-                progress(
-                    f"DONE dataset {completed}/{total}: {instrument} {timeframe} bars={len(candles)} sha256={digest}"
-                )
+                progress(f"DONE dataset {completed}/{total}: {instrument} {timeframe} bars={len(candles)} sha256={digest}")
     save_manifest(manifests, out / "manifest.json")
     if progress:
         progress(f"UNIVERSE COMPLETE: datasets={len(manifests)} manifest={out / 'manifest.json'}")
