@@ -1,4 +1,32 @@
-from trading_research.dukascopy_history import normalize_candles, write_csv
+from trading_research.dukascopy_history import DukascopyClient, normalize_candles, write_csv
+
+
+class FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class FakeSession:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, *, params, timeout):
+        self.calls.append(params)
+        start = int(params["start"])
+        if len(self.calls) == 1:
+            rows = []
+            for index in range(5000):
+                rows.append({"timestamp": start + index, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1})
+            return FakeResponse(rows)
+        return FakeResponse([
+            {"timestamp": start, "open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
+        ])
 
 
 def test_normalize_sorts_and_normalizes_timestamps():
@@ -29,6 +57,20 @@ def test_normalize_rejects_duplicate_timestamps():
         assert str(exc) == "candle_timestamps_not_strictly_increasing"
     else:
         raise AssertionError("duplicate timestamps were accepted")
+
+
+def test_pagination_fetches_more_than_one_page():
+    session = FakeSession()
+    client = DukascopyClient(session=session)
+    rows = client.historical_prices(
+        instrument_id=1,
+        timeframe="4H",
+        start_utc="2020-01-01T00:00:00+00:00",
+        end_utc="2030-01-01T00:00:00+00:00",
+    )
+    assert len(session.calls) == 2
+    assert len(rows) == 5001
+    assert session.calls[1]["start"] > session.calls[0]["start"]
 
 
 def test_write_csv_produces_stable_hash(tmp_path):
