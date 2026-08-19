@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from .data import Bar
 
@@ -14,7 +14,7 @@ class AdaptivePolicyDecision:
     index: int
     request_ai: bool
     confidence: float
-    bucket: tuple[int, int, int]
+    bucket: tuple[int, ...]
     reason: str
 
 
@@ -50,7 +50,8 @@ def _bucket_for(
     slow_period: int,
     momentum_lookback: int,
     bucket_width_bps: float,
-) -> tuple[int, int, int]:
+    observable_context: Mapping[int, tuple[int, int]] | None = None,
+) -> tuple[int, ...]:
     momentum, gap, slope = _features(
         bars,
         index,
@@ -58,11 +59,15 @@ def _bucket_for(
         slow_period=slow_period,
         momentum_lookback=momentum_lookback,
     )
-    return (
+    bucket: tuple[int, ...] = (
         int(momentum // bucket_width_bps),
         int(gap // bucket_width_bps),
         int(abs(slope) // bucket_width_bps),
     )
+    if observable_context is not None:
+        tier_code, reason_code = observable_context.get(index, (-1, -1))
+        bucket += (tier_code, reason_code)
+    return bucket
 
 
 def _label_at(
@@ -101,22 +106,13 @@ def build_walk_forward_policy(
     min_confidence: float = 0.65,
     bucket_width_bps: float = 25.0,
     candidate_indices: Iterable[int] | None = None,
+    observable_context: Mapping[int, tuple[int, int]] | None = None,
 ) -> tuple[AdaptivePolicyDecision, ...]:
-    """Build a causal adaptive *filter* over an optional trusted candidate set.
+    """Build a causal adaptive filter over a trusted candidate set.
 
-    When ``candidate_indices`` is supplied, the adaptive policy can only
-    suppress requests from that set; it can never invent a new request outside
-    the trusted baseline. Candidates are preserved by default until enough
-    historical evidence exists to justify suppression.
-
-    The default feature buckets are deliberately broad enough to accumulate
-    historical samples on a 2,400-bar research set. Fine buckets can otherwise
-    leave almost every state permanently below ``min_samples``, turning the
-    adaptive layer into a no-op while still appearing structurally correct.
-
-    Crucially, a label for bar ``N`` is not added to training history until bar
-    ``N + future_bars`` has been observed. This prevents future leakage into
-    decisions made before the outcome horizon is complete.
+    The optional ``observable_context`` lets the policy condition on state
+    already known at decision time, such as strategy confidence tier and a
+    coarse escalation-reason family. It never contains future outcomes.
     """
     if future_bars <= 0 or opportunity_move_bps <= 0 or transaction_cost_bps_round_trip < 0:
         raise ValueError("invalid opportunity parameters")
@@ -133,13 +129,17 @@ def build_walk_forward_policy(
         if invalid:
             raise ValueError("candidate_indices contains an out-of-range index")
 
-    history: dict[tuple[int, int, int], deque[bool]] = defaultdict(lambda: deque(maxlen=500))
+    if observable_context is not None:
+        invalid_context = [index for index in observable_context if index < 0 or index >= len(bars)]
+        if invalid_context:
+            raise ValueError("observable_context contains an out-of-range index")
+
+    history: dict[tuple[int, ...], deque[bool]] = defaultdict(lambda: deque(maxlen=500))
     results: list[AdaptivePolicyDecision] = []
     actionable_threshold = opportunity_move_bps + transaction_cost_bps_round_trip
     non_actionable_floor = 1.0 - min_confidence
 
     for index in range(len(bars)):
-        # Only now is the label for ``index - future_bars`` fully observable.
         label_index = index - future_bars
         if label_index >= 0:
             label = _label_at(
@@ -158,6 +158,7 @@ def build_walk_forward_policy(
                     slow_period=slow_period,
                     momentum_lookback=momentum_lookback,
                     bucket_width_bps=bucket_width_bps,
+                    observable_context=observable_context,
                 )
                 history[bucket].append(label)
 
@@ -168,6 +169,7 @@ def build_walk_forward_policy(
             slow_period=slow_period,
             momentum_lookback=momentum_lookback,
             bucket_width_bps=bucket_width_bps,
+            observable_context=observable_context,
         )
         prior = history[bucket]
         enough_evidence = len(prior) >= min_samples
