@@ -55,8 +55,9 @@ def evaluate_research_memory(
     A known hypothesis is not automatically rejected: a genuinely independent
     dataset is a valid validation experiment. Reusing the same evidence is
     blocked so that repeated tuning cannot turn the test set into training data.
-    Stored dataset fingerprints are authoritative; historical file paths are not
-    consulted when deciding whether prior evidence matches.
+    Stored dataset fingerprints are authoritative. For legacy records that lack
+    an embedded fingerprint, a readable historical dataset path is used only as
+    a compatibility fallback; missing legacy provenance fails closed.
     """
     hypothesis.validate()
     fingerprint = hypothesis_fingerprint(hypothesis)
@@ -79,9 +80,19 @@ def evaluate_research_memory(
             ),
         )
 
-    matches = sum(
-        1 for item in prior if same_evidence(item, evidence_hash)
-    )
+    matches = 0
+    unknown_provenance = False
+    for item in prior:
+        if same_evidence(item, evidence_hash):
+            matches += 1
+            continue
+        if item.get("dataset_sha256"):
+            continue
+        legacy_hash = dataset_sha256(item.get("dataset")) if item.get("dataset") else None
+        if legacy_hash is None:
+            unknown_provenance = True
+        elif legacy_hash == evidence_hash:
+            matches += 1
 
     if matches:
         return MemoryGateDecision(
@@ -94,6 +105,20 @@ def evaluate_research_memory(
             reasons=(
                 "same_hypothesis_and_same_dataset_already_evaluated",
                 "do_not_retune_against_existing_evidence",
+            ),
+        )
+
+    if unknown_provenance:
+        return MemoryGateDecision(
+            disposition="EVIDENCE_UNAVAILABLE",
+            hypothesis_fingerprint=fingerprint,
+            dataset_sha256=evidence_hash,
+            prior_experiments=len(prior),
+            matching_evidence=0,
+            prior_decisions=prior_decisions,
+            reasons=(
+                "prior_experiment_provenance_unavailable",
+                "fail_closed_instead_of_assuming_independent_validation",
             ),
         )
 
