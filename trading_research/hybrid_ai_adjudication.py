@@ -53,6 +53,7 @@ def evaluate_hybrid_ai_adjudication(
     errors: list[dict[str, object]] = []
     total_request_chars = 0
     retried_requests = 0
+    contract_retries = 0
 
     for index in sampled:
         directions = {expert: _direction(closes, index, expert) for expert in EXPERTS}
@@ -65,17 +66,21 @@ def evaluate_hybrid_ai_adjudication(
             reason="High-recall deterministic candidate; AI is advisory only.",
             price=bars[index].close,
         )
-        context = (
+        base_context = (
             f"i={index};dirs={compact_directions};f={_features(closes, index)};"
-            "candidate=1;ai_advisory_only=1"
+            "candidate=1;ai_advisory_only=1;advisory_action=WATCH_ONLY"
         )
-        total_request_chars += len(context)
+        context = base_context
         attempt = 0
         while True:
+            total_request_chars += len(context)
             try:
                 analysis = reasoner.analyze(
                     event,
-                    strategy_context="high_recall_candidate_policy",
+                    strategy_context=(
+                        "high_recall_candidate_policy;advisory_review_only;"
+                        "never_ENTER_or_EXIT;use_WATCH_only_without_approved_strategy_version"
+                    ),
                     market_context=context,
                 )
                 rec = analysis.recommendation
@@ -102,6 +107,18 @@ def evaluate_hybrid_ai_adjudication(
                 if attempt:
                     retried_requests += 1
                 break
+            except ValueError as exc:
+                message = str(exc)
+                invalid_action_contract = "strategy_version is required for ENTER/EXIT" in message
+                if invalid_action_contract and attempt < max_retries:
+                    attempt += 1
+                    contract_retries += 1
+                    context = base_context + ";contract_correction=ENTER_EXIT_INVALID_USE_WATCH"
+                    continue
+                errors.append({"index": index, "error": f"{type(exc).__name__}: {exc}", "retries": attempt})
+                if attempt:
+                    retried_requests += 1
+                break
             except Exception as exc:
                 errors.append({"index": index, "error": f"{type(exc).__name__}: {exc}", "retries": attempt})
                 break
@@ -120,9 +137,10 @@ def evaluate_hybrid_ai_adjudication(
             "total_context_chars": total_request_chars,
             "mean_context_chars": total_request_chars / len(sampled) if sampled else 0.0,
             "retried_requests": retried_requests,
+            "contract_retries": contract_retries,
             "max_retries": max_retries,
             "retry_sleep_seconds": retry_sleep_seconds,
         },
         "causal_rule": "Only current/past market state is sent to AI; future outcomes are not included in the request and are evaluation-only.",
-        "safety_rule": "AI is advisory only; deterministic policy and permission boundaries remain authoritative.",
+        "safety_rule": "AI is advisory only; deterministic policy and permission boundaries remain authoritative. ENTER/EXIT responses without an approved strategy version are rejected and retried with advisory-only correction.",
     }
