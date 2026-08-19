@@ -85,25 +85,36 @@ def _evaluate_segment(bars, baseline, context, start, end, *, history_bars=None)
     train_end = start if history_bars is None else min(start, history_bars)
     history = defaultdict(lambda: deque(maxlen=500))
 
-    # Build historical labels only from bars strictly before the segment.
-    for index in range(HORIZON, train_end):
-        label_index = index - HORIZON
+    training_actionable = _actionable_indices(
+        bars[:train_end],
+        future_bars=HORIZON,
+        opportunity_move_bps=30.0,
+        transaction_cost_bps_round_trip=4.0,
+        fast_period=20,
+        slow_period=50,
+    )
+    for label_index in sorted(training_actionable | (baseline & set(range(train_end)))):
+        if label_index < 0 or label_index + HORIZON >= train_end:
+            continue
         if label_index not in baseline:
             continue
-        actionable = _actionable_indices(
-            bars[:train_end], future_bars=HORIZON, opportunity_move_bps=30.0,
-            transaction_cost_bps_round_trip=4.0, fast_period=20, slow_period=50,
-        )
-        history[_bucket(bars, label_index, context, width=WIDTH)].append(label_index in actionable)
+        history[_bucket(bars, label_index, context, width=WIDTH)].append(label_index in training_actionable)
+
+    # Evaluate only decisions whose complete future horizon is inside this segment.
+    segment_end = max(start, end - HORIZON)
+    full_segment_actionable = _actionable_indices(
+        bars[:end],
+        future_bars=HORIZON,
+        opportunity_move_bps=30.0,
+        transaction_cost_bps_round_trip=4.0,
+        fast_period=20,
+        slow_period=50,
+    )
+    actionable_segment = {idx for idx in full_segment_actionable if start <= idx < segment_end}
+    evaluated_indices = set(range(start, segment_end))
 
     selected_by_threshold = {threshold: set() for threshold in THRESHOLDS}
-    actionable_segment = _actionable_indices(
-        bars[start:end], future_bars=HORIZON, opportunity_move_bps=30.0,
-        transaction_cost_bps_round_trip=4.0, fast_period=20, slow_period=50,
-    )
-    actionable_segment = {idx + start for idx in actionable_segment}
-
-    for index in range(start, end):
+    for index in evaluated_indices:
         if index not in baseline:
             continue
         probabilities = []
@@ -126,10 +137,13 @@ def _evaluate_segment(bars, baseline, context, start, end, *, history_bars=None)
     results = {}
     for threshold, selected in selected_by_threshold.items():
         recall = len(selected & actionable_segment) / len(actionable_segment) if actionable_segment else 0.0
+        effective = selected
         results[threshold] = {
             "accepted": recall >= RECALL_FLOOR,
-            "metrics": _metrics(bars, selected, actionable_segment),
-            "suppressed": len((baseline & set(range(start, end))) - selected),
+            "metrics": _metrics(bars, effective, actionable_segment),
+            "suppressed": len((baseline & evaluated_indices) - selected),
+            "evaluated_bars": len(evaluated_indices),
+            "evaluated_actionable": len(actionable_segment),
         }
     return results
 
@@ -151,32 +165,24 @@ def main() -> None:
     validation_end = int(n * 0.80)
 
     validation = _evaluate_segment(bars, baseline, context, train_end, validation_end, history_bars=train_end)
+    accepted_validation = [(threshold, result) for threshold, result in validation.items() if result["accepted"]]
+    selected_threshold = max(accepted_validation, key=lambda item: item[0])[0] if accepted_validation else None
 
-    accepted_validation = [
-        (threshold, result) for threshold, result in validation.items() if result["accepted"]
-    ]
-    if accepted_validation:
-        # Prefer more conservative policy among similar request counts: highest threshold
-        # that still satisfies validation recall, avoiding excessive suppression.
-        selected_threshold = max(accepted_validation, key=lambda item: item[0])[0]
-    else:
-        selected_threshold = None
-
-    # For test, rebuild history using all train+validation bars, but never test labels.
     test = _evaluate_segment(bars, baseline, context, validation_end, n, history_bars=validation_end)
-    if selected_threshold is None:
-        selected_test = None
-    else:
-        selected_test = test[selected_threshold]
+    selected_test = test[selected_threshold] if selected_threshold is not None else None
 
     full_actionable = _actionable_indices(
-        bars, future_bars=HORIZON, opportunity_move_bps=30.0,
-        transaction_cost_bps_round_trip=4.0, fast_period=20, slow_period=50,
+        bars,
+        future_bars=HORIZON,
+        opportunity_move_bps=30.0,
+        transaction_cost_bps_round_trip=4.0,
+        fast_period=20,
+        slow_period=50,
     )
     baseline_metrics = _metrics(bars, baseline, full_actionable)
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset": args.dataset,
         "policy": "causal_candidate_risk_filter_walk_forward",
         "split": {"train_bars": train_end, "validation_bars": validation_end - train_end, "test_bars": n - validation_end},
@@ -186,7 +192,7 @@ def main() -> None:
         "validation": {str(k): v for k, v in validation.items()},
         "test": {str(k): v for k, v in test.items()},
         "selected_test": selected_test,
-        "deployment_status": "candidate_only_until_out_of_sample_validation_passes" if selected_test is None or not selected_test["accepted"] else "out_of_sample_recall_passed_candidate",
+        "deployment_status": "out_of_sample_recall_passed_candidate" if selected_test is not None and selected_test["accepted"] else "baseline_required",
     }
 
     output = Path(args.output)
