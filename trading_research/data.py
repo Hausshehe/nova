@@ -25,7 +25,7 @@ class Bar:
     high: float
     low: float
     close: float
-    volume: float
+    volume: float = 0.0
 
     def validate(self) -> None:
         values = (self.open, self.high, self.low, self.close, self.volume)
