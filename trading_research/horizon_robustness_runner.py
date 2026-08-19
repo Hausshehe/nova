@@ -10,6 +10,7 @@ select the best configuration, or modify strategy state.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Sequence
@@ -36,6 +37,17 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _dataset_metadata(path: Path, bars) -> dict[str, object]:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "path": str(path),
+        "sha256": digest,
+        "rows": len(bars),
+        "start_timestamp": bars[0].timestamp.isoformat(),
+        "end_timestamp": bars[-1].timestamp.isoformat(),
+    }
+
+
 def run(
     csv_path: str,
     *,
@@ -45,7 +57,8 @@ def run(
     folds: int = 4,
     cost_grid_bps: Sequence[float] = DEFAULT_COST_GRID,
 ) -> dict[str, object]:
-    bars = load_csv(csv_path)
+    path = Path(csv_path)
+    bars = load_csv(path)
     result = audit_fixed_8_vs_alternatives(
         bars,
         training_cost_bps=training_cost_bps,
@@ -54,10 +67,11 @@ def run(
         min_history=min_history,
         folds=folds,
     )
-    result["dataset"] = str(csv_path)
+    result["dataset"] = _dataset_metadata(path, bars)
     result["total_bars"] = len(bars)
     result["runner"] = "horizon_robustness_runner"
     result["runner_policy"] = "fixed audit only; no parameter search or strategy promotion"
+    result["reproducibility_guardrail"] = "Dataset SHA-256 and chronological bounds are recorded so an empirical audit can be reproduced against the identical input file."
     return result
 
 
