@@ -1,6 +1,8 @@
 import pytest
 
 from trading_research.statistical_diagnostics import (
+    DEFAULT_BLOCK_LENGTHS,
+    bootstrap_block_sensitivity,
     compare_frozen_streams,
     moving_block_bootstrap_mean_ci,
 )
@@ -27,3 +29,16 @@ def test_compare_streams_reports_difference_without_selection():
     assert result["difference_of_means"] == 1.0
     assert result["left"]["sample_mean"] == 2.0
     assert result["right"]["sample_mean"] == 1.0
+
+
+def test_block_sensitivity_reports_every_predeclared_length_without_selection():
+    result = bootstrap_block_sensitivity([1.0, 2.0, 3.0, 4.0] * 5, samples=50, seed=3)
+    assert tuple(int(key) for key in result) == DEFAULT_BLOCK_LENGTHS
+    assert all(entry["sample_mean"] == 2.5 for entry in result.values())
+
+
+def test_block_sensitivity_rejects_invalid_grid():
+    with pytest.raises(ValueError):
+        bootstrap_block_sensitivity([1.0, 2.0], block_lengths=[])
+    with pytest.raises(ValueError):
+        bootstrap_block_sensitivity([1.0, 2.0], block_lengths=[1, 1])
