@@ -19,8 +19,48 @@ jobs:
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
 
     steps:
-      - name: Checkout
+      - name: Resolve source run commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["SOURCE_RUN_ID"]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              run = json.load(response)
+
+          if run.get("repository", {}).get("full_name") != repo:
+              raise SystemExit("source_run_repository_mismatch")
+          head_sha = run.get("head_sha")
+          if not head_sha:
+              raise SystemExit("source_run_missing_head_sha")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"head_sha={head_sha}\n")
+          print(
+              f"SOURCE RUN id={run_id} status={run.get('status')} "
+              f"conclusion={run.get('conclusion')} head_sha={head_sha}",
+              flush=True,
+          )
+          PY
+
+      - name: Checkout source run commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.head_sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
