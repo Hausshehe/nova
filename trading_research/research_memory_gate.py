@@ -21,6 +21,7 @@ Disposition = Literal[
     "NEW_HYPOTHESIS",
     "DUPLICATE_EVIDENCE",
     "INDEPENDENT_VALIDATION",
+    "EVIDENCE_UNAVAILABLE",
 ]
 
 
@@ -36,7 +37,7 @@ class MemoryGateDecision:
 
     @property
     def allowed(self) -> bool:
-        return self.disposition != "DUPLICATE_EVIDENCE"
+        return self.disposition in {"NEW_HYPOTHESIS", "INDEPENDENT_VALIDATION"}
 
 
 def dataset_sha256(path: str | Path) -> str | None:
@@ -61,6 +62,7 @@ def evaluate_research_memory(
     A known hypothesis is not automatically rejected: a genuinely independent
     dataset is a valid validation experiment. Reusing the same evidence is
     blocked so that repeated tuning cannot turn the test set into training data.
+    Missing current evidence is fail-closed whenever prior evidence exists.
     """
     hypothesis.validate()
     fingerprint = hypothesis_fingerprint(hypothesis)
@@ -68,6 +70,21 @@ def evaluate_research_memory(
     prior = store.list_experiments_for_hypothesis(fingerprint)
 
     prior_decisions = tuple(str(item.get("final_decision", "")) for item in prior)
+
+    if prior and evidence_hash is None:
+        return MemoryGateDecision(
+            disposition="EVIDENCE_UNAVAILABLE",
+            hypothesis_fingerprint=fingerprint,
+            dataset_sha256=None,
+            prior_experiments=len(prior),
+            matching_evidence=0,
+            prior_decisions=prior_decisions,
+            reasons=(
+                "current_dataset_evidence_unavailable",
+                "fail_closed_instead_of_assuming_independent_validation",
+            ),
+        )
+
     matches = 0
     for item in prior:
         old_path = item.get("dataset")
