@@ -31,6 +31,19 @@ def test_positive_gap_requests_long_for_one_subsequent_bar() -> None:
     assert signal(bars, 3) is False
 
 
+def test_consecutive_positive_gaps_do_not_extend_existing_hold() -> None:
+    bars = [
+        bar("2024-01-02T00:00:00", 1.1000, 1.1020),
+        bar("2024-01-03T00:00:00", 1.1050, 1.1030),  # gap -> one session
+        bar("2024-01-04T00:00:00", 1.1040, 1.1060),  # gap again, but prior hold exits here
+        bar("2024-01-05T00:00:00", 1.1070, 1.1080),
+    ]
+    signal = GapContinuationSignal()
+    assert signal(bars, 1) is True
+    assert signal(bars, 2) is False
+    assert signal(bars, 3) is True
+
+
 def test_non_positive_gap_does_not_request_long() -> None:
     bars = [
         bar("2024-01-02T00:00:00", 1.1000, 1.1050),
