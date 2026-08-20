@@ -129,7 +129,7 @@ jobs:
 
           root = Path("data/research/universe_v2")
           frozen_start = datetime(2010, 1, 1, tzinfo=timezone.utc)
-          frozen_end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+          frozen_last_daily = datetime(2025, 12, 31, tzinfo=timezone.utc)
           missing = set()
           for instrument in INSTRUMENTS:
               for timeframe in TIMEFRAMES:
@@ -140,12 +140,12 @@ jobs:
                   bars = load_csv(path)
                   if _deduplicate_and_validate(bars) != bars:
                       raise SystemExit(f"noncanonical_dataset:{instrument}:{timeframe}")
-                  if bars[0].timestamp < frozen_start or bars[-1].timestamp >= frozen_end:
+                  if bars[0].timestamp > frozen_start or bars[-1].timestamp < frozen_last_daily:
                       raise SystemExit(
-                          f"source_date_window_failure:{instrument}:{timeframe}:"
+                          f"source_date_coverage_failure:{instrument}:{timeframe}:"
                           f"start={bars[0].timestamp.isoformat()}:end={bars[-1].timestamp.isoformat()}"
                       )
-          expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D")}
+          expected = {('NAS100','4H'), ('NZDUSD','4H'), ('US500','4H'), ('WTI','1D')}
           if missing != expected:
               raise SystemExit(f"source_snapshot_mismatch:{sorted(missing)}")
           print(f"SOURCE SNAPSHOT PASS reused={26-len(missing)} missing={sorted(missing)}", flush=True)
@@ -173,18 +173,14 @@ jobs:
 
           root = Path("data/research/universe_v2")
           frozen_start = datetime(2010, 1, 1, tzinfo=timezone.utc)
-          frozen_end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+          frozen_last_daily = datetime(2025, 12, 31, tzinfo=timezone.utc)
           expected = {
-              ("NAS100", "4H"),
-              ("NZDUSD", "4H"),
-              ("US500", "4H"),
-              ("WTI", "1D"),
-              ("WTI", "4H"),
+              ('NAS100','4H'), ('NZDUSD','4H'), ('US500','4H'), ('WTI','1D'), ('WTI','4H')
           }
           missing = {
               (instrument, timeframe)
-              for instrument in ("EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","USDCHF","NZDUSD","US500","NAS100","US30","XAUUSD","XAGUSD","WTI")
-              for timeframe in ("1D", "4H")
+              for instrument in ('EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD','US500','NAS100','US30','XAUUSD','XAGUSD','WTI')
+              for timeframe in ('1D','4H')
               if not (root / f"{instrument}_{timeframe}.csv").is_file()
           }
           if missing != expected:
@@ -200,13 +196,13 @@ jobs:
                           instrument=instrument,
                           timeframe=timeframe,
                           start_utc="2010-01-01T00:00:00+00:00",
-                          end_utc="2025-12-31T23:59:59+00:00",
+                          end_utc="2026-01-01T00:00:00+00:00",
                       )
                       if len(candles) < 100:
                           raise RuntimeError(f"insufficient_bars:{len(candles)}")
-                      if candles[0].timestamp_utc < frozen_start.isoformat() or candles[-1].timestamp_utc >= frozen_end.isoformat():
+                      if candles[0].timestamp_utc > frozen_start.isoformat() or candles[-1].timestamp_utc < frozen_last_daily.isoformat():
                           raise RuntimeError(
-                              f"recovered_date_window_failure:start={candles[0].timestamp_utc}:end={candles[-1].timestamp_utc}"
+                              f"recovered_date_coverage_failure:start={candles[0].timestamp_utc}:end={candles[-1].timestamp_utc}"
                           )
                       target = root / f"{instrument}_{timeframe}.csv"
                       with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
@@ -240,16 +236,16 @@ jobs:
 
           root = Path("data/research/universe_v2")
           start = datetime(2010, 1, 1, tzinfo=timezone.utc)
-          end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+          last_expected = datetime(2025, 12, 31, tzinfo=timezone.utc)
           for instrument in INSTRUMENTS:
               for timeframe in TIMEFRAMES:
                   bars = load_csv(root / f"{instrument}_{timeframe}.csv")
-                  if bars[0].timestamp < start or bars[-1].timestamp >= end:
+                  if bars[0].timestamp > start or bars[-1].timestamp < last_expected:
                       raise SystemExit(
-                          f"final_date_window_failure:{instrument}:{timeframe}:"
+                          f"final_date_coverage_failure:{instrument}:{timeframe}:"
                           f"start={bars[0].timestamp.isoformat()}:end={bars[-1].timestamp.isoformat()}"
                       )
-          print("FINAL DATE WINDOW PASS: all 26 datasets cover the frozen 2010-2025 window.", flush=True)
+          print("FINAL DATE COVERAGE PASS: all 26 datasets span the frozen 2010-2025 period.", flush=True)
           PY
 
       - name: Run frozen 104-context matrix
@@ -258,10 +254,8 @@ jobs:
       - name: Assert complete matrix evidence
         run: |
           python - <<'PY'
-          import csv
-          import json
+          import csv, json
           from pathlib import Path
-
           results = Path("data/research/broader_matrix_results.csv")
           summary = Path("data/research/broader_matrix_summary.json")
           if not results.is_file() or not summary.is_file():
