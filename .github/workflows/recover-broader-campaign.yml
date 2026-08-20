@@ -147,7 +147,6 @@ jobs:
               ("NZDUSD", "4H"),
               ("US500", "4H"),
               ("WTI", "1D"),
-              ("USDJPY", "1D"),
           }
           if source_run_id == "32293018258" and missing != expected:
               raise SystemExit(f"legacy_source_artifact_snapshot_mismatch:{sorted(missing)}")
@@ -199,7 +198,6 @@ jobs:
               ("US500", "4H"),
               ("WTI", "1D"),
               ("WTI", "4H"),
-              ("USDJPY", "1D"),
           }
           if source_run_id == "32293018258" and missing != expected_legacy_missing_after_migration:
               raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
