@@ -43,14 +43,20 @@ def test_wti_directory_resolution_is_explicit() -> None:
     )
 
 
-def test_native_decoder_remains_frozen_layout() -> None:
+def test_native_decoder_preserves_frozen_layout_on_original_wti_failure_record() -> None:
     candles = _decode_candle_file(
-        _compressed([(0, 79840, 81690, 79700, 81730, 1.0)]),
+        _compressed([(0, 79840, 81730, 79700, 81690, 1.0)]),
         datetime(2010, 10, 1, tzinfo=timezone.utc),
     )
     assert candles == [
-        Candle("2010-10-01T00:00:00+00:00", 79840.0, 81730.0, 79700.0, 81690.0, 1.0)
+        Candle("2010-10-01T00:00:00+00:00", 79840.0, 81690.0, 79700.0, 81730.0, 1.0)
     ]
+
+
+def test_original_wti_failure_record_is_rejected_by_ohlc_validation() -> None:
+    candle = Candle("2010-10-01T00:00:00+00:00", 79840.0, 81690.0, 79700.0, 81730.0, 1.0)
+    with pytest.raises(ValueError, match="candle_ohlc_invalid"):
+        _deduplicate_and_validate([candle])
 
 
 def test_duplicate_conflict_guard_is_opt_in() -> None:
