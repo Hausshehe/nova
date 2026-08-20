@@ -193,7 +193,6 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-          from tempfile import NamedTemporaryFile
           from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES, write_csv
 
           source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
@@ -217,6 +216,9 @@ jobs:
           print(f"REUSE existing frozen datasets={26 - len(missing)}", flush=True)
           print(f"RECOVER missing datasets={len(missing)}", flush=True)
 
+          if len(missing) == 26:
+              raise SystemExit("source_artifacts_empty:no_frozen_datasets_reused")
+
           for instrument, timeframe in sorted(missing):
               recovered = False
               for attempt in range(1, 4):
@@ -231,19 +233,36 @@ jobs:
                       )
                       if len(candles) < 100:
                           raise RuntimeError(f"insufficient_bars:{len(candles)}")
+
                       target = root / f"{instrument}_{timeframe}.csv"
-                      with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
-                          temp_path = Path(temp.name)
+                      temp_path = root / f".{target.name}.{os.getpid()}.{attempt}.tmp"
+
                       digest = write_csv(candles, temp_path)
+                      if not temp_path.is_file():
+                          raise RuntimeError(f"recovery_temp_write_missing:{temp_path}")
+
                       os.replace(temp_path, target)
                       temp_path = None
-                      print(f"RECOVERY COMPLETE dataset={instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
+
+                      if not target.is_file():
+                          raise RuntimeError(f"recovery_write_missing:{target}")
+
+                      print(
+                          f"RECOVERY COMPLETE dataset={instrument} {timeframe} "
+                          f"bars={len(candles)} sha256={digest}",
+                          flush=True,
+                      )
                       recovered = True
                       break
                   except Exception as exc:
                       if temp_path is not None:
                           temp_path.unlink(missing_ok=True)
-                      print(f"RECOVERY FAILED attempt={attempt}/3 dataset={instrument} {timeframe} error={type(exc).__name__}: {exc}", flush=True)
+                      print(
+                          f"RECOVERY FAILED attempt={attempt}/3 "
+                          f"dataset={instrument} {timeframe} "
+                          f"error={type(exc).__name__}: {exc}",
+                          flush=True,
+                      )
               if not recovered:
                   raise SystemExit(f"recovery_exhausted:{instrument}:{timeframe}")
           PY
