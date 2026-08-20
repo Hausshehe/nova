@@ -72,3 +72,10 @@ def test_final_recovery_workflow_serializes_campaign_runs() -> None:
     assert "concurrency:" in content
     assert "group: nova-broader-campaign-recovery" in content
     assert "cancel-in-progress: false" in content
+
+
+def test_frozen_universe_verifier_uses_bar_contract() -> None:
+    content = (ROOT / "trading_research" / "verify_broader_universe.py").read_text(encoding="utf-8")
+    assert "_deduplicate_and_validate" not in content
+    assert "bar.timestamp" in content
+    assert "duplicate_timestamps" in content
