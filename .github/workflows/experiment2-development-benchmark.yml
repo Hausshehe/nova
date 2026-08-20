@@ -24,14 +24,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install benchmark dependencies
-        run: |
-          python -m pip install --disable-pip-version-check pytest scikit-learn requests yfinance pandas
+        run: python -m pip install --disable-pip-version-check pytest scikit-learn requests yfinance pandas
 
       - name: Run Experiment 2 unit tests
         run: python -m pytest -q tests/test_experiment2.py
 
-      - name: Compile benchmark module
-        run: python -m py_compile trading_research/experiment2_development_benchmark.py
+      - name: Compile Experiment 2 modules
+        run: |
+          python -m py_compile trading_research/experiment2_development_benchmark.py
+          python -m py_compile trading_research/experiment2_recover_missing_4h.py
 
       - name: Download reusable source artifacts
         uses: actions/download-artifact@v4
@@ -43,10 +44,11 @@ jobs:
           path: data/research/universe_v2
           merge-multiple: true
 
-      - name: Restore historical data acquisition module
+      - name: Restore verified historical acquisition module
         run: |
-          git fetch --no-tags --depth=1 origin 25dff152e4f65d64c7b999fefda8384970c5657c
-          git checkout 25dff152e4f65d64c7b999fefda8384970c5657c -- trading_research/dukascopy_history.py
+          git fetch --no-tags --depth=1 origin 823545c7c4e1f6f2e84c7d1ec1e45e7f8af4d3f0
+          git checkout 823545c7c4e1f6f2e84c7d1ec1e45e7f8af4d3f0 -- trading_research/dukascopy_history.py
+          test -s trading_research/dukascopy_history.py
           python -m py_compile trading_research/dukascopy_history.py
           python - <<'PY'
           from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES
@@ -81,7 +83,14 @@ jobs:
           missing_years = expected_years - set(frame.index.year)
           if missing_years:
               raise SystemExit(f'yahoo_wti_missing_years:{sorted(missing_years)}')
-          out = pd.DataFrame({'timestamp': frame.index.astype(str), 'open': frame['Open'].astype(float), 'high': frame['High'].astype(float), 'low': frame['Low'].astype(float), 'close': frame['Close'].astype(float), 'volume': frame['Volume'].fillna(0).astype(float)})
+          out = pd.DataFrame({
+              'timestamp': frame.index.astype(str),
+              'open': frame['Open'].astype(float),
+              'high': frame['High'].astype(float),
+              'low': frame['Low'].astype(float),
+              'close': frame['Close'].astype(float),
+              'volume': frame['Volume'].fillna(0).astype(float),
+          })
           for row in out.itertuples(index=False):
               if not (row.low <= row.open <= row.high and row.low <= row.close <= row.high):
                   raise SystemExit(f'yahoo_wti_invalid_ohlc:{row.timestamp}')
@@ -89,157 +98,8 @@ jobs:
           print(f'YAHOO WTI 1D COMPLETE bars={len(out)} first={out.timestamp.iloc[0]} last={out.timestamp.iloc[-1]}')
           PY
 
-      - name: Recover NAS100 4H with documented early-history source splice
-        run: |
-          set -euo pipefail
-          git clone --depth=1 --filter=blob:none --sparse https://github.com/FutureSharks/financial-data.git /tmp/financial-data
-          cd /tmp/financial-data
-          git fetch --no-tags origin 7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d
-          git checkout 7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d
-          git sparse-checkout set \
-            pyfinancialdata/data/currencies/oanda/NAS100_USD/2010 \
-            pyfinancialdata/data/currencies/oanda/NAS100_USD/2011
-          cd /home/runner/work/nova/nova
-          python - <<'PY'
-          from pathlib import Path
-          import json
-          import pandas as pd
-
-          source_root = Path('/tmp/financial-data/pyfinancialdata/data/currencies/oanda/NAS100_USD')
-          early_files = sorted(source_root.joinpath('2010').glob('*.csv')) + sorted(source_root.joinpath('2011').glob('*.csv'))
-          if len(early_files) != 24:
-              raise SystemExit(f'oanda_nas100_month_file_count:{len(early_files)}')
-
-          frames = []
-          for path in early_files:
-              frame = pd.read_csv(path, parse_dates=['time'])
-              required = {'time', 'close', 'high', 'low', 'open', 'volume'}
-              if set(frame.columns) != required:
-                  raise SystemExit(f'oanda_nas100_schema:{path}:{sorted(frame.columns)}')
-              frames.append(frame)
-
-          minute = pd.concat(frames, ignore_index=True)
-          minute['time'] = pd.to_datetime(minute['time'], utc=True)
-          minute = minute[(minute['time'] >= '2010-01-01') & (minute['time'] < '2011-09-01')]
-          minute = minute.drop_duplicates(subset=['time'], keep='first').sort_values('time')
-          if minute.empty:
-              raise SystemExit('oanda_nas100_early_empty')
-          for row in minute.itertuples(index=False):
-              if not (row.low <= row.open <= row.high and row.low <= row.close <= row.high):
-                  raise SystemExit(f'oanda_nas100_invalid_ohlc:{row.time}')
-
-          minute = minute.set_index('time')
-          grouped = minute.resample('4h', origin='epoch', label='left', closed='left').agg(
-              open=('open', 'first'),
-              high=('high', 'max'),
-              low=('low', 'min'),
-              close=('close', 'last'),
-              volume=('volume', 'sum'),
-              observations=('close', 'size'),
-          ).dropna(subset=['open', 'high', 'low', 'close'])
-          grouped = grouped[grouped['observations'] > 0].drop(columns=['observations'])
-          grouped = grouped.sort_index()
-          grouped = grouped[(grouped.index >= '2010-01-01') & (grouped.index < '2011-09-01')]
-          out = grouped.reset_index()
-          out.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-          out['timestamp'] = out['timestamp'].dt.strftime('%Y-%m-%dT%H:%M:%S+00:00')
-
-          target = Path('data/research/universe_v2/NAS100_4H.csv')
-          target.parent.mkdir(parents=True, exist_ok=True)
-          out.to_csv(target, index=False)
-
-          meta = {
-              'instrument': 'NAS100',
-              'timeframe': '4H',
-              'early_source': 'FutureSharks/financial-data OANDA NAS100_USD minute archive',
-              'early_source_commit': '7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d',
-              'early_source_url': 'https://github.com/FutureSharks/financial-data/tree/7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d/pyfinancialdata/data/currencies/oanda/NAS100_USD',
-              'early_period': '[2010-01-01, 2011-09-01)',
-              'later_source': 'Dukascopy native 4H',
-              'later_period': '[2011-09-01, 2026-01-01)',
-              'aggregation': 'UTC 4H from minute OHLCV for early period',
-              'rows_early': int(len(out)),
-          }
-          Path('data/research/universe_v2/NAS100_4H.provenance.json').write_text(json.dumps(meta, indent=2) + '\n', encoding='utf-8')
-          print(f'OANDA NAS100 EARLY COMPLETE bars={len(out)} first={out.timestamp.iloc[0]} last={out.timestamp.iloc[-1]}')
-          PY
-
-      - name: Recover remaining missing 4H datasets with Dukascopy
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          from tempfile import NamedTemporaryFile
-          import pandas as pd
-          from trading_research.dukascopy_history import DukascopyClient, write_csv
-
-          root = Path('data/research/universe_v2')
-          targets = [('NAS100', '4H'), ('NZDUSD', '4H'), ('US500', '4H')]
-          for instrument, timeframe in targets:
-              target = root / f'{instrument}_{timeframe}.csv'
-              print(f'RECOVER {instrument} {timeframe}', flush=True)
-              candles = DukascopyClient().historical_prices(
-                  instrument=instrument,
-                  timeframe=timeframe,
-                  start_utc='2011-09-01T00:00:00+00:00' if instrument == 'NAS100' else '2010-01-01T00:00:00+00:00',
-                  end_utc='2025-12-31T23:59:59+00:00',
-                  progress=lambda message: print(message, flush=True),
-              )
-              if len(candles) < 100:
-                  raise SystemExit(f'insufficient_bars:{instrument}:{timeframe}:{len(candles)}')
-              years = {int(c.timestamp_utc[:4]) for c in candles}
-              required_years = set(range(2011, 2026)) if instrument == 'NAS100' else set(range(2010, 2026))
-              if not required_years.issubset(years):
-                  raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{sorted(required_years-years)}')
-
-              if instrument == 'NAS100':
-                  early = pd.read_csv(root / 'NAS100_4H.csv')
-                  early['timestamp'] = pd.to_datetime(early['timestamp'], utc=True)
-                  late = pd.DataFrame([
-                      {
-                          'timestamp': c.timestamp_utc,
-                          'open': c.open,
-                          'high': c.high,
-                          'low': c.low,
-                          'close': c.close,
-                          'volume': c.volume,
-                      }
-                      for c in candles
-                  ])
-                  late['timestamp'] = pd.to_datetime(late['timestamp'], utc=True)
-                  combined = pd.concat([early, late], ignore_index=True)
-                  combined = combined[(combined['timestamp'] >= '2010-01-01') & (combined['timestamp'] < '2026-01-01')]
-                  combined = combined.sort_values('timestamp').drop_duplicates(subset=['timestamp'], keep='first')
-                  for row in combined.itertuples(index=False):
-                      if not (row.low <= row.open <= row.high and row.low <= row.close <= row.high):
-                          raise SystemExit(f'nas100_splice_invalid_ohlc:{row.timestamp}')
-                  temp_path = None
-                  try:
-                      with NamedTemporaryFile(prefix=f'.{target.name}.', suffix='.tmp', dir=root, delete=False) as temp:
-                          temp_path = Path(temp.name)
-                      combined.assign(timestamp=combined['timestamp'].dt.strftime('%Y-%m-%dT%H:%M:%S+00:00')).to_csv(temp_path, index=False, columns=['timestamp','open','high','low','close','volume'])
-                      import hashlib
-                      digest = hashlib.sha256(temp_path.read_bytes()).hexdigest()
-                      os.replace(temp_path, target)
-                      temp_path = None
-                  finally:
-                      if temp_path is not None:
-                          temp_path.unlink(missing_ok=True)
-                  print(f'RECOVERY COMPLETE {instrument} {timeframe} bars={len(combined)} sha256={digest}', flush=True)
-                  continue
-
-              temp_path = None
-              try:
-                  with NamedTemporaryFile(prefix=f'.{target.name}.', suffix='.tmp', dir=root, delete=False) as temp:
-                      temp_path = Path(temp.name)
-                  digest = write_csv(candles, temp_path)
-                  os.replace(temp_path, target)
-                  temp_path = None
-              finally:
-                  if temp_path is not None:
-                      temp_path.unlink(missing_ok=True)
-              print(f'RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}', flush=True)
-          PY
+      - name: Recover three missing 4H datasets with deterministic source splices
+        run: python -m trading_research.experiment2_recover_missing_4h
 
       - name: Validate exact 26-dataset development universe
         run: |
@@ -267,7 +127,8 @@ jobs:
       - name: Assert development evidence only
         run: |
           python - <<'PY'
-          import csv, json
+          import csv
+          import json
           from pathlib import Path
 
           root = Path('data/research/experiment2_development')
