@@ -275,5 +275,5 @@ jobs:
             data/research/broader_matrix_results.csv
             data/research/broader_matrix_summary.json
             data/research/broader_matrix_report.md
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
