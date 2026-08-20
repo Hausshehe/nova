@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from trading_research.contracts import Hypothesis
+from trading_research.evidence_identity import sha256_file
 from trading_research.memory import ExperienceStore
 from trading_research.research_memory_gate import evaluate_research_memory
 
@@ -31,6 +32,7 @@ def _record(dataset: Path, decision: str = "REJECT") -> dict:
             "rationale": "test",
         },
         "dataset": str(dataset),
+        "dataset_sha256": sha256_file(dataset),
         "final_decision": decision,
     }
 
@@ -87,10 +89,11 @@ def test_same_hypothesis_new_dataset_is_independent_validation(tmp_path: Path) -
     assert decision.matching_evidence == 0
 
 
-def test_unavailable_prior_dataset_does_not_fake_a_match(tmp_path: Path) -> None:
+def test_deleted_prior_file_still_blocks_same_evidence(tmp_path: Path) -> None:
+    first = tmp_path / "original.csv"
     current = tmp_path / "current.csv"
-    current.write_text("sample-current", encoding="utf-8")
-    missing = tmp_path / "no-longer-present.csv"
+    first.write_text("sample-a", encoding="utf-8")
+    current.write_text("sample-a", encoding="utf-8")
     store = ExperienceStore(":memory:")
     store.record_experiment(
         experiment_id="exp-1",
@@ -99,9 +102,10 @@ def test_unavailable_prior_dataset_does_not_fake_a_match(tmp_path: Path) -> None
         symbol="EURUSD",
         timeframe="1D",
         final_decision="REJECT",
-        record=_record(missing),
+        record=_record(first),
     )
+    first.unlink()
 
     decision = evaluate_research_memory(store, _hypothesis(), dataset=current)
-    assert decision.disposition == "INDEPENDENT_VALIDATION"
-    assert decision.matching_evidence == 0
+    assert decision.disposition == "DUPLICATE_EVIDENCE"
+    assert decision.matching_evidence == 1
