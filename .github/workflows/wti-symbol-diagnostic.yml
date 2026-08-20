@@ -1,0 +1,60 @@
+name: WTI Historical Symbol Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check requests
+      - name: Compare 2010 WTI sources
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from trading_research.dukascopy_history import (
+              DATAFEED_BASE_URL,
+              _decode_candle_file,
+              _native_url,
+              _deduplicate_and_validate,
+              _request_bytes,
+          )
+          import requests
+
+          target = "2010-10-01T00:00:00+00:00"
+          symbols = {"LIGHTCMDUSD": "LIGHT", "WTICMDUSD": "WTI_LEGACY"}
+          session = requests.Session()
+          base_time = datetime(2010, 1, 1, tzinfo=timezone.utc)
+
+          for symbol, label in symbols.items():
+              url = f"{DATAFEED_BASE_URL}/{symbol}/2010/BID_candles_day_1.bi5"
+              print(f"SOURCE START {label} url={url}", flush=True)
+              payload = _request_bytes(session, url)
+              if payload is None:
+                  print(f"SOURCE MISSING {label}", flush=True)
+                  continue
+              candles = _decode_candle_file(payload, base_time)
+              target_rows = [c for c in candles if c.timestamp_utc == target]
+              print(f"SOURCE DECODED {label} bars={len(candles)} target_rows={len(target_rows)}", flush=True)
+              if not target_rows:
+                  continue
+              row = target_rows[0]
+              print(
+                  f"TARGET {label} timestamp={row.timestamp_utc} "
+                  f"open={row.open} high={row.high} low={row.low} close={row.close}",
+                  flush=True,
+              )
+              try:
+                  _deduplicate_and_validate([row])
+              except Exception as exc:
+                  print(f"TARGET VALIDATION FAIL {label}: {type(exc).__name__}:{exc}", flush=True)
+              else:
+                  print(f"TARGET VALIDATION PASS {label}", flush=True)
+          PY
