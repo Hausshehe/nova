@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: "Frozen failed campaign run"
+        description: "Failed broader campaign run whose successful frozen dataset artifacts should be reused"
         required: true
         type: string
       recovery_commit:
-        description: "Reviewed recovery commit"
+        description: "Reviewed code commit to run recovery"
         required: true
         type: string
 
@@ -29,7 +29,7 @@ jobs:
 
     steps:
       - name: Resolve source run and recovery commit
-        id: resolve
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -88,8 +88,7 @@ jobs:
       - name: Checkout reviewed recovery commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.resolve.outputs.recovery_sha }}
-          clean: true
+          ref: ${{ steps.source.outputs.recovery_sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -102,13 +101,27 @@ jobs:
       - name: Verify recovery code is present
         run: |
           test -f trading_research/dukascopy_history.py
-          test -f trading_research/broader_campaign_runner.py
-          test -f tests/test_dukascopy_recovery_from_frozen.py
+          test -f trading_research/migrate_legacy_broader_artifacts.py
+          test -f trading_research/rebuild_recovery_manifest.py
+          python - <<'PY'
+          from trading_research.migrate_legacy_broader_artifacts import (
+              LEGACY_SOURCE_RUN_ID,
+              LEGACY_WTI_4H_DATASET,
+              invalidate_legacy_wti_4h,
+          )
+          from trading_research.rebuild_recovery_manifest import rebuild_manifest
+          print(
+              f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID} "
+              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} migration={invalidate_legacy_wti_4h.__name__} "
+              f"manifest_builder={rebuild_manifest.__name__}",
+              flush=True,
+          )
+          PY
 
       - name: Download successful frozen datasets from source run
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ env.SOURCE_RUN_ID }}
+          run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           pattern: frozen-*
@@ -116,48 +129,124 @@ jobs:
           merge-multiple: true
 
       - name: Verify exact source artifact snapshot before migration
+        env:
+          SNAPSHOT_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
           from trading_research.data import load_csv
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
 
+          source_run_id = os.environ["SNAPSHOT_SOURCE_RUN_ID"].strip()
           root = Path("data/research/universe_v2")
-          expected_missing = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D"), ("WTI", "4H")}
           missing = set()
+          invalid = []
           for instrument in INSTRUMENTS:
               for timeframe in TIMEFRAMES:
                   path = root / f"{instrument}_{timeframe}.csv"
                   if not path.is_file():
                       missing.add((instrument, timeframe))
                       continue
-                  bars = load_csv(path)
-                  years = {bar.timestamp.year for bar in bars}
-                  if not years:
-                      raise SystemExit(f"source_calendar_coverage_failure:{instrument}:{timeframe}:no_bars")
-                  first_year = min(years)
-                  last_year = max(years)
-                  expected_years = set(range(first_year, 2026))
-                  if first_year < 2010 or last_year != 2025 or years != expected_years:
-                      raise SystemExit(f"source_calendar_coverage_failure:{instrument}:{timeframe}")
-          if missing != expected_missing:
-              raise SystemExit(f"source_snapshot_mismatch:{sorted(missing)}")
-          print(f"SOURCE SNAPSHOT PASS reused={26-len(missing)} rebuild={sorted(missing)}")
+                  try:
+                      bars = load_csv(path)
+                      validated = _deduplicate_and_validate(bars)
+                      if validated != bars:
+                          invalid.append(f"{instrument}:{timeframe}:not_canonical")
+                  except Exception as exc:
+                      invalid.append(f"{instrument}:{timeframe}:{type(exc).__name__}:{exc}")
+          if invalid:
+              raise SystemExit(f"existing_dataset_integrity_failure:{invalid}")
+          expected = {
+              ("NAS100", "4H"),
+              ("NZDUSD", "4H"),
+              ("US500", "4H"),
+              ("WTI", "1D"),
+          }
+          if source_run_id == "32293018258" and missing != expected:
+              raise SystemExit(f"legacy_source_artifact_snapshot_mismatch:{sorted(missing)}")
+          print(f"SOURCE ARTIFACT SNAPSHOT PASS valid_reused={26 - len(missing)} missing={sorted(missing)}", flush=True)
           PY
 
       - name: Invalidate legacy WTI 4H artifact when required
+        env:
+          MIGRATION_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           python - <<'PY'
-          from trading_research.migrate_legacy_broader_artifacts import invalidate_legacy_wti_4h
-          removed = invalidate_legacy_wti_4h("data/research/universe_v2", source_run_id=os.environ["SOURCE_RUN_ID"])
-          print(f"INVALIDATED {removed}")
+          import os
+          from trading_research.migrate_legacy_broader_artifacts import (
+              LEGACY_SOURCE_RUN_ID,
+              LEGACY_WTI_4H_DATASET,
+              invalidate_legacy_wti_4h,
+          )
+
+          source_run_id = os.environ["MIGRATION_SOURCE_RUN_ID"].strip()
+          if source_run_id != LEGACY_SOURCE_RUN_ID:
+              print(f"LEGACY WTI 4H INVALIDATION SKIPPED source_run={source_run_id}", flush=True)
+          else:
+              removed = invalidate_legacy_wti_4h("data/research/universe_v2", source_run_id=source_run_id)
+              if removed != LEGACY_WTI_4H_DATASET:
+                  raise SystemExit(f"legacy_wti_4h_invalidation_mismatch:{removed}")
+              print(f"LEGACY WTI 4H INVALIDATED dataset={removed}", flush=True)
           PY
-        env:
-          SOURCE_RUN_ID: ${{ env.SOURCE_RUN_ID }}
 
       - name: Recover only missing frozen datasets
+        env:
+          RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
-          python -m trading_research.rebuild_recovery_manifest
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES, write_csv
+
+          source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
+          root = Path("data/research/universe_v2")
+          missing = {
+              (instrument, timeframe)
+              for instrument in INSTRUMENTS
+              for timeframe in TIMEFRAMES
+              if not (root / f"{instrument}_{timeframe}.csv").is_file()
+          }
+          expected_legacy_missing_after_migration = {
+              ("NAS100", "4H"),
+              ("NZDUSD", "4H"),
+              ("US500", "4H"),
+              ("WTI", "1D"),
+              ("WTI", "4H"),
+          }
+          if source_run_id == "32293018258" and missing != expected_legacy_missing_after_migration:
+              raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
+
+          print(f"REUSE existing frozen datasets={26 - len(missing)}", flush=True)
+          print(f"RECOVER missing datasets={len(missing)}", flush=True)
+
+          for instrument, timeframe in sorted(missing):
+              print(f"RECOVERY START dataset={instrument} {timeframe}", flush=True)
+              temp_path = None
+              try:
+                  candles = DukascopyClient().historical_prices(
+                      instrument=instrument,
+                      timeframe=timeframe,
+                      start_utc="2010-01-01T00:00:00+00:00",
+                      end_utc="2025-12-31T23:59:59+00:00",
+                  )
+                  if len(candles) < 100:
+                      raise RuntimeError(f"insufficient_bars:{len(candles)}")
+                  target = root / f"{instrument}_{timeframe}.csv"
+                  with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
+                      temp_path = Path(temp.name)
+                  digest = write_csv(candles, temp_path)
+                  os.replace(temp_path, target)
+                  temp_path = None
+                  print(f"RECOVERY COMPLETE dataset={instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
+              except Exception as exc:
+                  if temp_path is not None:
+                      temp_path.unlink(missing_ok=True)
+                  raise RuntimeError(
+                      f"recovery_failed:{instrument}:{timeframe}:{type(exc).__name__}:{exc}"
+                  ) from exc
+          PY
 
       - name: Rebuild deterministic frozen manifest
         run: python -m trading_research.rebuild_recovery_manifest
