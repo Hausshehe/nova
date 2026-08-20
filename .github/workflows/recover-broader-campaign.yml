@@ -87,6 +87,14 @@ jobs:
         with:
           ref: ${{ steps.source.outputs.recovery_sha }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt pytest
+
       - name: Verify recovery code is present
         run: |
           test -f trading_research/dukascopy_history.py
@@ -107,14 +115,6 @@ jobs:
               flush=True,
           )
           PY
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install research dependencies
-        run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt pytest
 
       - name: Download successful frozen datasets from source run
         uses: actions/download-artifact@v4
