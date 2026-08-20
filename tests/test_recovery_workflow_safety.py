@@ -72,3 +72,11 @@ def test_final_recovery_workflow_serializes_campaign_runs() -> None:
     assert "concurrency:" in content
     assert "group: nova-broader-campaign-recovery" in content
     assert "cancel-in-progress: false" in content
+
+
+def test_recovery_universe_compatibility_exports_match_canonical_constants() -> None:
+    from trading_research.data import INSTRUMENTS as exported_instruments, TIMEFRAMES as exported_timeframes
+    from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+
+    assert exported_instruments == INSTRUMENTS
+    assert exported_timeframes == TIMEFRAMES
