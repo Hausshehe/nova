@@ -102,9 +102,32 @@ class ExperienceStore:
     ) -> None:
         payload = json.dumps(record, ensure_ascii=False, sort_keys=True)
         with self._connect() as db:
+            existing = db.execute(
+                """
+                SELECT created_at_utc, hypothesis_name, symbol, timeframe,
+                       final_decision, record_json
+                FROM experiments
+                WHERE experiment_id = ?
+                """,
+                (experiment_id,),
+            ).fetchone()
+
+            if existing is not None:
+                same_record = (
+                    existing["created_at_utc"] == created_at_utc
+                    and existing["hypothesis_name"] == hypothesis_name
+                    and existing["symbol"] == symbol
+                    and existing["timeframe"] == timeframe
+                    and existing["final_decision"] == final_decision
+                    and existing["record_json"] == payload
+                )
+                if same_record:
+                    return
+                raise ValueError(f"experiment_id_conflict:{experiment_id}")
+
             db.execute(
                 """
-                INSERT OR REPLACE INTO experiments
+                INSERT INTO experiments
                 (experiment_id, created_at_utc, hypothesis_name, symbol, timeframe,
                  final_decision, record_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
