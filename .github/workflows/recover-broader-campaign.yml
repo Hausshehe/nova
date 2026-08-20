@@ -209,6 +209,7 @@ jobs:
               ("NZDUSD", "4H"),
               ("US500", "4H"),
               ("WTI", "1D"),
+              ("WTI", "4H"),
           }
           if source_run_id == "32293018258" and missing != expected_legacy_missing_after_migration:
               raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
