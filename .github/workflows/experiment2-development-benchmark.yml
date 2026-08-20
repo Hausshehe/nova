@@ -46,8 +46,8 @@ jobs:
 
       - name: Restore verified historical acquisition module
         run: |
-          git fetch --no-tags --depth=1 origin 823545c7c4e1f6f2e84c7d1ec1e45e7f8af4d3f0
-          git checkout 823545c7c4e1f6f2e84c7d1ec1e45e7f8af4d3f0 -- trading_research/dukascopy_history.py
+          git fetch --no-tags --depth=1 origin 823545c49d560837bc53ade89213bdeed203b9bf
+          git checkout 823545c49d560837bc53ade89213bdeed203b9bf -- trading_research/dukascopy_history.py
           test -s trading_research/dukascopy_history.py
           python -m py_compile trading_research/dukascopy_history.py
           python - <<'PY'
