@@ -13,21 +13,14 @@ import csv
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from statistics import mean, median
-from typing import Sequence
+from statistics import mean
 
 from .data import load_csv
 from .dukascopy_history import INSTRUMENTS, TIMEFRAMES
 from .experiment2 import build_basic_features, standardize_fit_transform
-from .predictive_benchmark import (
-    brier_score,
-    directional_accuracy,
-    fit_probability_model,
-    log_loss,
-    predict_rows,
-)
+from .predictive_benchmark import brier_score, directional_accuracy, fit_probability_model, log_loss, predict_rows
 
-# Pre-declared development contract. These are not tuned after observing data.
+# Pre-declared development contract. These values are not tuned after observing data.
 DEV_FOLDS = ((0.40, 0.60), (0.50, 0.70), (0.60, 0.80))
 ROUND_TRIP_COST = 0.0004  # 1 bp fee + 1 bp slippage per side.
 TRADE_THRESHOLD = 0.55
@@ -64,32 +57,30 @@ def _net_trade_return(prediction: int, target_return: float) -> float:
     return _directional_return(prediction, target_return) - ROUND_TRIP_COST
 
 
-def _metrics(predictions, baseline_predictions: dict[str, list[int]], rows, indices):
-    model_preds = [1 if p.probability_up >= TRADE_THRESHOLD else 0 for p in predictions]
-    # Accuracy is evaluated at the model's fixed 0.5 direction threshold;
-    # trading uses the separate pre-declared 0.55 abstention threshold.
-    model_accuracy = directional_accuracy(predictions)
+def _metrics(predictions, baseline_predictions, rows, indices):
+    model_direction = [1 if p.probability_up >= 0.5 else 0 for p in predictions]
+    model_trade = [
+        1 if p.probability_up >= TRADE_THRESHOLD else -1 if p.probability_up <= 1.0 - TRADE_THRESHOLD else 0
+        for p in predictions
+    ]
     targets = [1 if rows[i].target_return > 0 else 0 for i in indices]
+    model_accuracy = mean(int(p == t) for p, t in zip(model_direction, targets))
     majority_accuracy = mean(int(p == t) for p, t in zip(baseline_predictions['majority'], targets))
     last_accuracy = mean(int(p == t) for p, t in zip(baseline_predictions['last_return'], targets))
     trend_accuracy = mean(int(p == t) for p, t in zip(baseline_predictions['trend'], targets))
 
-    def trade_stats(preds: Sequence[int]):
-        traded = [
-            _net_trade_return(p, rows[i].target_return)
-            for p, i in zip(preds, indices)
-            if p is not None
-        ]
-        return sum(traded), len(traded), (mean(1.0 if x > -ROUND_TRIP_COST else 0.0 for x in traded) if traded else 0.0)
-
-    model_trades = [
-        p for p in model_preds
-        if p is not None
-    ]
-    model_net = sum(_net_trade_return(p, rows[i].target_return) for p, i in zip(model_preds, indices))
-
-    def baseline_net(preds):
+    def net_return(preds):
         return sum(_net_trade_return(p, rows[i].target_return) for p, i in zip(preds, indices))
+
+    traded_pairs = [(side, i) for side, i in zip(model_trade, indices) if side != 0]
+    model_net = sum(
+        _net_trade_return(1 if side == 1 else 0, rows[i].target_return)
+        for side, i in traded_pairs
+    )
+    model_hit_rate = mean(
+        1.0 if _directional_return(1 if side == 1 else 0, rows[i].target_return) > ROUND_TRIP_COST else 0.0
+        for side, i in traded_pairs
+    ) if traded_pairs else 0.0
 
     return {
         'model_accuracy': model_accuracy,
@@ -99,15 +90,12 @@ def _metrics(predictions, baseline_predictions: dict[str, list[int]], rows, indi
         'model_brier': brier_score(predictions),
         'model_log_loss': log_loss(predictions),
         'model_net_return': model_net,
-        'majority_net_return': baseline_net(baseline_predictions['majority']),
-        'last_return_net_return': baseline_net(baseline_predictions['last_return']),
-        'trend_net_return': baseline_net(baseline_predictions['trend']),
-        'model_trades': len(model_trades),
-        'model_trade_hit_rate': mean(
-            1.0 if _directional_return(p, rows[i].target_return) > ROUND_TRIP_COST else 0.0
-            for p, i in zip(model_preds, indices)
-        ),
-        'model_abstention_rate': 1.0 - (len(model_trades) / len(indices)),
+        'majority_net_return': net_return(baseline_predictions['majority']),
+        'last_return_net_return': net_return(baseline_predictions['last_return']),
+        'trend_net_return': net_return(baseline_predictions['trend']),
+        'model_trades': len(traded_pairs),
+        'model_trade_hit_rate': model_hit_rate,
+        'model_abstention_rate': 1.0 - (len(traded_pairs) / len(indices)),
     }
 
 
@@ -127,39 +115,33 @@ def evaluate_context(instrument: str, timeframe: str, path: Path) -> list[FoldRe
         if len(validation_idx) < 20:
             raise ValueError(f'validation_too_small:{instrument}:{timeframe}:{len(validation_idx)}')
 
-        # Fit normalization on train only. The current model itself is fixed;
-        # the transformed values are used to avoid scale sensitivity.
         train_x = [rows[i].values for i in train_idx]
         validation_x = [rows[i].values for i in validation_idx]
         train_scaled = standardize_fit_transform(train_x, train_x)
         validation_scaled = standardize_fit_transform(train_x, validation_x)
 
-        # Build lightweight row proxies so the existing model primitive can be
-        # reused without modifying its API or touching the final test period.
         class Proxy:
             def __init__(self, row, values):
                 self.timestamp = row.timestamp
                 self.values = tuple(values)
                 self.target_return = row.target_return
 
-        scaled_rows = [Proxy(row, values) for row, values in zip(rows, train_scaled)]
-        model = fit_probability_model(scaled_rows, tuple(range(len(train_scaled))))
-        validation_rows = [Proxy(rows[i], values) for i, values in zip(validation_idx, validation_scaled)]
-        predictions = predict_rows(model, validation_rows, tuple(range(len(validation_rows))))
-        # Re-map prediction indices to the original validation rows.
+        scaled_train_rows = [Proxy(rows[i], values) for i, values in zip(train_idx, train_scaled)]
+        model = fit_probability_model(scaled_train_rows, tuple(range(len(scaled_train_rows))))
+        scaled_validation_rows = [Proxy(rows[i], values) for i, values in zip(validation_idx, validation_scaled)]
+        local_predictions = predict_rows(model, scaled_validation_rows, tuple(range(len(scaled_validation_rows))))
         predictions = [
-            type(p)(index=validation_idx[p.index], timestamp=p.timestamp,
-                    probability_up=p.probability_up,
-                    target_up=p.target_up,
-                    target_return=p.target_return)
-            for p in predictions
+            type(p)(
+                index=validation_idx[p.index],
+                timestamp=p.timestamp,
+                probability_up=p.probability_up,
+                target_up=p.target_up,
+                target_return=p.target_return,
+            )
+            for p in local_predictions
         ]
 
-        baseline_predictions = {
-            'majority': [],
-            'last_return': [],
-            'trend': [],
-        }
+        baseline_predictions = {'majority': [], 'last_return': [], 'trend': []}
         train_targets = [1 if rows[i].target_return > 0 else 0 for i in train_idx]
         majority = 1 if mean(train_targets) >= 0.5 else 0
         for i in validation_idx:
@@ -167,14 +149,13 @@ def evaluate_context(instrument: str, timeframe: str, path: Path) -> list[FoldRe
             baseline_predictions['last_return'].append(1 if rows[i].values[0] > 0 else 0)
             baseline_predictions['trend'].append(1 if rows[i].values[2] > 0 else 0)
 
-        metrics = _metrics(predictions, baseline_predictions, rows, validation_idx)
         results.append(FoldResult(
             instrument=instrument,
             timeframe=timeframe,
             fold=fold_no,
             train_rows=len(train_idx),
             validation_rows=len(validation_idx),
-            **metrics,
+            **_metrics(predictions, baseline_predictions, rows, validation_idx),
         ))
     return results
 
@@ -192,20 +173,14 @@ def run(root: Path, output_dir: Path) -> None:
             continue
         all_results.extend(evaluate_context(instrument, timeframe, path))
 
-    if not all_results:
-        raise SystemExit('no_development_results')
+    if len({(r.instrument, r.timeframe) for r in all_results}) != len(expected):
+        raise SystemExit(f'development_universe_incomplete:{len({(r.instrument, r.timeframe) for r in all_results})}/{len(expected)}:{skipped}')
 
     csv_path = output_dir / 'experiment2_development_results.csv'
     with csv_path.open('w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(asdict(all_results[0]).keys()))
         writer.writeheader()
-        for result in all_results:
-            writer.writerow(asdict(result))
-
-    model_accuracy = mean(r.model_accuracy for r in all_results)
-    majority_accuracy = mean(r.majority_accuracy for r in all_results)
-    model_net = mean(r.model_net_return for r in all_results)
-    best_baseline_net = mean(max(r.majority_net_return, r.last_return_net_return, r.trend_net_return) for r in all_results)
+        writer.writerows(asdict(result) for result in all_results)
 
     summary = {
         'status': 'DEVELOPMENT_ONLY',
@@ -217,31 +192,27 @@ def run(root: Path, output_dir: Path) -> None:
         'round_trip_cost': ROUND_TRIP_COST,
         'trade_threshold': TRADE_THRESHOLD,
         'model': 'LogisticRegression(C=1.0, penalty=l2, solver=liblinear)',
-        'mean_model_accuracy': model_accuracy,
-        'mean_majority_accuracy': majority_accuracy,
-        'mean_model_net_return': model_net,
-        'mean_best_baseline_net_return': best_baseline_net,
+        'mean_model_accuracy': mean(r.model_accuracy for r in all_results),
+        'mean_majority_accuracy': mean(r.majority_accuracy for r in all_results),
+        'mean_model_net_return': mean(r.model_net_return for r in all_results),
+        'mean_best_baseline_net_return': mean(max(r.majority_net_return, r.last_return_net_return, r.trend_net_return) for r in all_results),
         'skipped': skipped,
     }
     (output_dir / 'experiment2_development_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
-
-    report = [
-        '# Experiment 2 Development Benchmark',
-        '',
-        'This is a pre-test development evaluation. The final chronological 20% was not scored.',
-        '',
-        f'- Contexts evaluated: {summary["contexts_evaluated"]}/{summary["contexts_expected"]}',
-        f'- Expanding folds: {len(DEV_FOLDS)}',
-        f'- Round-trip cost: {ROUND_TRIP_COST:.4%}',
-        f'- Fixed trading threshold: {TRADE_THRESHOLD:.2f}',
-        f'- Mean model accuracy: {model_accuracy:.4f}',
-        f'- Mean majority accuracy: {majority_accuracy:.4f}',
-        f'- Mean model net return per bar: {model_net:.6f}',
-        f'- Mean best-baseline net return per bar: {best_baseline_net:.6f}',
-        '',
-        'No final-test classification is made by this benchmark. Candidate promotion requires the protocol gates to be reviewed before any final-test run.',
-    ]
-    (output_dir / 'experiment2_development_report.md').write_text('\n'.join(report) + '\n', encoding='utf-8')
+    (output_dir / 'experiment2_development_report.md').write_text(
+        '# Experiment 2 Development Benchmark\n\n'
+        'This is a pre-test development evaluation. The final chronological 20% was not scored.\n\n'
+        f'- Contexts evaluated: {summary["contexts_evaluated"]}/{summary["contexts_expected"]}\n'
+        f'- Expanding folds: {len(DEV_FOLDS)}\n'
+        f'- Round-trip cost: {ROUND_TRIP_COST:.4%}\n'
+        f'- Fixed trading threshold: {TRADE_THRESHOLD:.2f}\n'
+        f'- Mean model accuracy: {summary["mean_model_accuracy"]:.4f}\n'
+        f'- Mean majority accuracy: {summary["mean_majority_accuracy"]:.4f}\n'
+        f'- Mean model net return per bar: {summary["mean_model_net_return"]:.6f}\n'
+        f'- Mean best-baseline net return per bar: {summary["mean_best_baseline_net_return"]:.6f}\n\n'
+        'No final-test classification is made by this benchmark. Candidate promotion requires the protocol gates to be reviewed before any final-test run.\n',
+        encoding='utf-8',
+    )
     print(json.dumps(summary, indent=2))
 
 
