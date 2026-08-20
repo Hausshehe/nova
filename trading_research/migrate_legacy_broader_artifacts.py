@@ -15,6 +15,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 LEGACY_SOURCE_RUN_ID = "32293018258"
+LEGACY_WTI_4H_DATASET = "WTI_4H.csv"
 
 # Exact successful artifact snapshot from the known cancelled source run.
 LEGACY_DAILY_DATASETS = (
@@ -109,3 +110,13 @@ def migrate_legacy_artifacts(root: str | Path, *, source_run_id: str) -> tuple[l
         removed_four_hour.append(name)
 
     return repaired_daily, removed_four_hour
+
+
+def invalidate_legacy_wti_4h(root: str | Path, *, source_run_id: str) -> str:
+    if source_run_id != LEGACY_SOURCE_RUN_ID:
+        raise ValueError(f"legacy_wti_4h_source_run_mismatch:{source_run_id}")
+    target = Path(root) / LEGACY_WTI_4H_DATASET
+    if not target.is_file():
+        raise FileNotFoundError(f"legacy_wti_4h_missing:{target}")
+    target.unlink()
+    return LEGACY_WTI_4H_DATASET
