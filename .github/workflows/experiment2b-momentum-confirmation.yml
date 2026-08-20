@@ -1,0 +1,56 @@
+name: Experiment 2B Momentum Confirmation
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: nova-experiment2b-momentum-confirmation
+  cancel-in-progress: false
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout frozen confirmation commit
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check requests pytest
+
+      - name: Run Experiment 2B confirmation
+        run: python -m trading_research.experiment2b_momentum_confirmation
+
+      - name: Assert frozen confirmation evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary = json.loads(Path("data/research/experiment2b_momentum_confirmation/momentum_confirmation_summary.json").read_text(encoding="utf-8"))
+          assert summary["data_start_utc"] == "2026-01-01T00:00:00+00:00"
+          assert summary["data_end_utc"] == "2026-08-20T23:59:59+00:00"
+          assert summary["contexts"] == 26
+          assert summary["rules_frozen"] == "20-SMA >= 50-SMA; long/flat; 1 bps fee + 1 bps slippage per side"
+          print(f"EXPERIMENT 2B COMPLETE classification={summary['classification']}")
+          PY
+
+      - name: Upload confirmation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-experiment2b-momentum-confirmation
+          path: |
+            data/research/experiment2b_momentum_confirmation/momentum_confirmation_results.csv
+            data/research/experiment2b_momentum_confirmation/momentum_confirmation_summary.json
+            data/research/experiment2b_momentum_confirmation/momentum_confirmation_report.md
+          if-no-files-found: warn
+          retention-days: 14
