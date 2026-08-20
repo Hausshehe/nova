@@ -1,0 +1,50 @@
+name: Recovery Import Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_commit:
+        required: true
+        type: string
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact recovery commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.recovery_commit }}
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check pytest requests
+
+      - name: Diagnose recovery imports
+        run: |
+          python - <<'PY'
+          import importlib
+          import traceback
+
+          modules = (
+              "trading_research.migrate_legacy_broader_artifacts",
+              "trading_research.rebuild_recovery_manifest",
+          )
+          for name in modules:
+              print(f"IMPORT START {name}", flush=True)
+              try:
+                  module = importlib.import_module(name)
+                  print(f"IMPORT OK {name} attrs={sorted(a for a in dir(module) if not a.startswith('__'))}", flush=True)
+              except BaseException as exc:
+                  print(f"IMPORT FAILED {name}: {type(exc).__name__}: {exc}", flush=True)
+                  traceback.print_exc()
+                  raise
+          print("RECOVERY IMPORT DIAGNOSTIC PASS", flush=True)
+          PY
