@@ -66,8 +66,8 @@ def test_native_urls_are_stable():
 def test_native_candle_decoder():
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
     payload = _compressed_rows([
-        (0, 100, 110, 90, 105, 2.5),
-        (3600, 105, 120, 100, 115, 3.0),
+        (0, 100, 105, 90, 110, 2.5),
+        (3600, 105, 115, 100, 120, 3.0),
     ])
     candles = _decode_candle_file(payload, base)
     assert candles == [
@@ -129,13 +129,21 @@ def test_request_bytes_stops_after_transient_http_retry_budget(monkeypatch):
 
 def test_invalid_ohlc_reports_exact_candle():
     candles = [
-        Candle("2024-01-01T00:00:00+00:00", 100, 110, 90, 105, 1),
-        Candle("2024-01-02T00:00:00+00:00", 120, 110, 100, 105, 1),
+        Candle("2024-01-01T00:00:00+00:00", 120, 110, 100, 105, 1),
     ]
     with pytest.raises(
         ValueError,
-        match=r"candle_ohlc_invalid:.*2024-01-02T00:00:00\+00:00.*open=120(?:\.0)?:high=110(?:\.0)?",
+        match=r"candle_ohlc_invalid:.*2024-01-01T00:00:00\+00:00.*open=120(?:\.0)?:high=110(?:\.0)?",
     ):
+        _deduplicate_and_validate(candles)
+
+
+def test_duplicate_timestamp_conflicts_fail_closed():
+    candles = [
+        Candle("2024-01-01T00:00:00+00:00", 100, 110, 90, 105, 1),
+        Candle("2024-01-01T00:00:00+00:00", 100, 111, 90, 105, 1),
+    ]
+    with pytest.raises(ValueError, match="duplicate_timestamp_conflict"):
         _deduplicate_and_validate(candles)
 
 
