@@ -12,6 +12,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: nova-broader-campaign-recovery
+  cancel-in-progress: false
+
 jobs:
   recover:
     runs-on: ubuntu-latest
