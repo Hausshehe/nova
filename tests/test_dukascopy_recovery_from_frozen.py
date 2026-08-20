@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import lzma
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,7 +36,7 @@ def _compressed(rows: list[tuple[int, int, int, int, int, float]]) -> bytes:
 
 def test_wti_directory_resolution_is_explicit() -> None:
     assert _feed_symbols_for_period("WTI", 2013) == (WTI_LEGACY_DATAFEED,)
-    assert _feed_symbols_for_period("WTI", 2014) == (WTI_LEGACY_DATAFEED, "LIGHTCMDUSD")
+    assert _feed_symbols_for_period("WTI", WTI_DUAL_DIRECTORY_YEAR) == (WTI_LEGACY_DATAFEED, "LIGHTCMDUSD")
     assert _feed_symbols_for_period("WTI", 2015) == ("LIGHTCMDUSD",)
     assert _feed_symbols_for_period("EURUSD", 2014) == ("EURUSD",)
     assert _native_url("WTI", "1D", 2013, feed_symbol=WTI_LEGACY_DATAFEED) == (
@@ -98,11 +99,27 @@ def test_recovery_manifest_is_complete_and_hashed(tmp_path: Path) -> None:
     assert (tmp_path / "manifest.json").is_file()
 
 
+def test_recovery_manifest_rejects_invalid_ohlc_before_write(tmp_path: Path) -> None:
+    for instrument in INSTRUMENTS:
+        for timeframe in TIMEFRAMES:
+            _write_dataset(tmp_path / f"{instrument}_{timeframe}.csv")
+    broken = tmp_path / "WTI_1D.csv"
+    rows = list(csv.reader(broken.open("r", encoding="utf-8")))
+    rows[1][2] = "0"  # high < open: invalid OHLC
+    with broken.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle).writerows(rows)
+    with pytest.raises(ValueError, match="candle_ohlc_invalid"):
+        rebuild_manifest(tmp_path)
+    assert not (tmp_path / "manifest.json").exists()
+
+
 def test_recovery_manifest_fails_before_partial_write(tmp_path: Path) -> None:
     for instrument in INSTRUMENTS:
         for timeframe in TIMEFRAMES:
             _write_dataset(tmp_path / f"{instrument}_{timeframe}.csv")
+    existing_manifest = tmp_path / "manifest.json"
+    existing_manifest.write_text(json.dumps({"sentinel": True}), encoding="utf-8")
     (tmp_path / "WTI_4H.csv").unlink()
     with pytest.raises(ValueError, match="dataset_missing:WTI_4H.csv"):
         rebuild_manifest(tmp_path)
-    assert not (tmp_path / "manifest.json").exists()
+    assert json.loads(existing_manifest.read_text(encoding="utf-8")) == {"sentinel": True}
