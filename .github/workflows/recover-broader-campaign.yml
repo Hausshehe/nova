@@ -91,15 +91,19 @@ jobs:
         run: |
           test -f trading_research/dukascopy_history.py
           test -f trading_research/migrate_legacy_broader_artifacts.py
+          test -f trading_research/rebuild_recovery_manifest.py
           python - <<'PY'
           from trading_research.migrate_legacy_broader_artifacts import (
               LEGACY_SOURCE_RUN_ID,
               LEGACY_WTI_4H_DATASET,
               invalidate_legacy_wti_4h,
           )
+          from trading_research.rebuild_recovery_manifest import rebuild_manifest
           print(
               f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID} "
-              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} migration={invalidate_legacy_wti_4h.__name__}",
+              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} "
+              f"migration={invalidate_legacy_wti_4h.__name__} "
+              f"manifest_builder={rebuild_manifest.__name__}",
               flush=True,
           )
           PY
@@ -202,6 +206,9 @@ jobs:
               if not recovered:
                   raise SystemExit(f"recovery_exhausted:{instrument}:{timeframe}")
           PY
+
+      - name: Rebuild deterministic frozen manifest
+        run: python -m trading_research.rebuild_recovery_manifest
 
       - name: Verify frozen universe
         run: python -m trading_research.verify_broader_universe
