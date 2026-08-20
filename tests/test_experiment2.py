@@ -9,9 +9,18 @@ from trading_research.experiment2 import (
     make_walk_forward_windows,
     standardize_fit_transform,
 )
+from trading_research.predictive_benchmark import (
+    brier_score,
+    directional_accuracy,
+    fit_probability_model,
+    log_loss,
+    make_final_holdout,
+    positive_rate,
+    predict_rows,
+)
 
 
-def _bars(n: int = 40) -> list[Bar]:
+def _bars(n: int = 80) -> list[Bar]:
     start = datetime(2020, 1, 1, tzinfo=timezone.utc)
     return [
         Bar(
@@ -21,6 +30,22 @@ def _bars(n: int = 40) -> list[Bar]:
             low=99.0 + i,
             close=100.5 + i,
             volume=1000.0,
+        )
+        for i in range(n)
+    ]
+
+
+def _mixed_bars(n: int = 100) -> list[Bar]:
+    start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    closes = [100.0 + (1.0 if i % 2 == 0 else -1.0) * (1.0 + (i % 5) * 0.1) for i in range(n)]
+    return [
+        Bar(
+            timestamp=start + timedelta(days=i),
+            open=closes[i],
+            high=closes[i] + 1.0,
+            low=closes[i] - 1.0,
+            close=closes[i],
+            volume=1000.0 + i,
         )
         for i in range(n)
     ]
@@ -50,7 +75,6 @@ def test_future_change_does_not_alter_current_features() -> None:
         volume=changed[20].volume,
     )
     changed_features = build_basic_features(changed, prediction_horizon=1, short_window=5, long_window=20)
-    # The row at bar 19 must not use bar 20 in its feature vector.
     assert baseline[0].values == changed_features[0].values
 
 
@@ -76,3 +100,30 @@ def test_standardization_uses_train_statistics_only() -> None:
 
 def test_class_balance() -> None:
     assert class_balance([-0.1, 0.0, 0.2, 0.3]) == (2, 2)
+
+
+def test_final_holdout_is_chronological_and_disjoint() -> None:
+    split = make_final_holdout(100, 0.20)
+    assert split.development[-1] < split.final_test[0]
+    assert set(split.development).isdisjoint(split.final_test)
+    assert len(split.final_test) == 20
+
+
+def test_probability_model_predicts_only_requested_rows() -> None:
+    rows = build_basic_features(_mixed_bars(), prediction_horizon=1, short_window=5, long_window=20)
+    train = tuple(range(0, 40))
+    test = tuple(range(40, 55))
+    model = fit_probability_model(rows, train)
+    predictions = predict_rows(model, rows, test)
+    assert [p.index for p in predictions] == list(test)
+    assert all(0.0 <= p.probability_up <= 1.0 for p in predictions)
+
+
+def test_prediction_metrics_have_valid_ranges() -> None:
+    rows = build_basic_features(_mixed_bars(), prediction_horizon=1, short_window=5, long_window=20)
+    model = fit_probability_model(rows, tuple(range(0, 40)))
+    predictions = predict_rows(model, rows, tuple(range(40, 60)))
+    assert 0.0 <= brier_score(predictions) <= 1.0
+    assert log_loss(predictions) >= 0.0
+    assert 0.0 <= directional_accuracy(predictions) <= 1.0
+    assert 0.0 <= positive_rate(predictions) <= 1.0
