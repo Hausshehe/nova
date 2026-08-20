@@ -24,6 +24,7 @@ def test_recovery_validator_accepts_normalized_bar_objects() -> None:
         ),
     ]
 
+    assert bars[0].timestamp_utc == "2024-01-01T00:00:00+00:00"
     validated = _deduplicate_and_validate(bars)
 
     assert validated == bars
