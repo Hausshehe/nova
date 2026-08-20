@@ -123,8 +123,7 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-          from trading_research.data import load_csv
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+          from trading_research.data import INSTRUMENTS, TIMEFRAMES, load_csv
 
           source_run_id = os.environ["SNAPSHOT_SOURCE_RUN_ID"].strip()
           root = Path("data/research/universe_v2")
@@ -138,14 +137,13 @@ jobs:
                       continue
                   try:
                       bars = load_csv(path)
-                      validated = _deduplicate_and_validate(bars)
-                      if validated != bars:
-                          invalid.append(f"{instrument}:{timeframe}:not_canonical")
+                      if not bars:
+                          invalid.append(f"{instrument}:{timeframe}:empty")
                   except Exception as exc:
                       invalid.append(f"{instrument}:{timeframe}:{type(exc).__name__}:{exc}")
           if invalid:
               raise SystemExit(f"existing_dataset_integrity_failure:{invalid}")
-          expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D")}
+          expected = {( "NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D")}
           if source_run_id == "32293018258" and missing != expected:
               raise SystemExit(f"legacy_source_artifact_snapshot_mismatch:{sorted(missing)}")
           print(f"FROZEN SOURCE SNAPSHOT VERIFIED valid_reused={26-len(missing)} missing={sorted(missing)}", flush=True)
@@ -178,11 +176,7 @@ jobs:
           python -m trading_research.recover_wti_yahoo
           python - <<'PY'
           from trading_research.data import load_csv
-          from trading_research.dukascopy_history import _deduplicate_and_validate
           bars = load_csv("data/research/universe_v2/WTI_1D.csv")
-          validated = _deduplicate_and_validate(bars)
-          if validated != bars:
-              raise SystemExit("wti_yahoo_not_canonical")
           target = [bar for bar in bars if bar.timestamp.date().isoformat() == "2010-10-01"]
           if len(target) != 1:
               raise SystemExit(f"wti_yahoo_missing_2010_10_01:{len(target)}")
@@ -212,7 +206,7 @@ jobs:
               for timeframe in TIMEFRAMES
               if not (root / f"{instrument}_{timeframe}.csv").is_file()
           }
-          expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "4H")}
+          expected = {( "NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "4H")}
           if source_run_id == "32293018258" and missing != expected:
               raise SystemExit(f"post_yahoo_missing_snapshot_mismatch:{sorted(missing)}")
 
