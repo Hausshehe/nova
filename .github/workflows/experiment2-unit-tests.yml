@@ -1,0 +1,24 @@
+name: Experiment 2 Unit Tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Experiment 2 branch
+        uses: actions/checkout@v4
+        with:
+          ref: experiment-2-adaptive-predictive-research
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Experiment 2 unit tests
+        run: python -m pytest -q tests/test_experiment2.py
