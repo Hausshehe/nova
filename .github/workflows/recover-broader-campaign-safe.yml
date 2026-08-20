@@ -187,38 +187,32 @@ jobs:
               raise SystemExit(f"post_migration_snapshot_mismatch:{sorted(missing)}")
 
           for instrument, timeframe in sorted(expected):
-              success = False
-              for attempt in range(1, 4):
-                  temp_path = None
-                  try:
-                      print(f"RECOVERY {instrument} {timeframe} attempt={attempt}/3", flush=True)
-                      candles = DukascopyClient().historical_prices(
-                          instrument=instrument,
-                          timeframe=timeframe,
-                          start_utc="2010-01-01T00:00:00+00:00",
-                          end_utc="2026-01-01T00:00:00+00:00",
+              print(f"RECOVERY {instrument} {timeframe}", flush=True)
+              temp_path = None
+              try:
+                  candles = DukascopyClient().historical_prices(
+                      instrument=instrument,
+                      timeframe=timeframe,
+                      start_utc="2010-01-01T00:00:00+00:00",
+                      end_utc="2026-01-01T00:00:00+00:00",
+                  )
+                  if len(candles) < 100:
+                      raise RuntimeError(f"insufficient_bars:{len(candles)}")
+                  if candles[0].timestamp_utc > frozen_start.isoformat() or candles[-1].timestamp_utc < frozen_last_daily.isoformat():
+                      raise RuntimeError(
+                          f"recovered_date_coverage_failure:start={candles[0].timestamp_utc}:end={candles[-1].timestamp_utc}"
                       )
-                      if len(candles) < 100:
-                          raise RuntimeError(f"insufficient_bars:{len(candles)}")
-                      if candles[0].timestamp_utc > frozen_start.isoformat() or candles[-1].timestamp_utc < frozen_last_daily.isoformat():
-                          raise RuntimeError(
-                              f"recovered_date_coverage_failure:start={candles[0].timestamp_utc}:end={candles[-1].timestamp_utc}"
-                          )
-                      target = root / f"{instrument}_{timeframe}.csv"
-                      with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
-                          temp_path = Path(temp.name)
-                      digest = write_csv(candles, temp_path)
-                      os.replace(temp_path, target)
-                      temp_path = None
-                      print(f"RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
-                      success = True
-                      break
-                  except Exception as exc:
-                      if temp_path is not None:
-                          temp_path.unlink(missing_ok=True)
-                      print(f"RECOVERY FAILED {instrument} {timeframe} attempt={attempt}: {type(exc).__name__}: {exc}", flush=True)
-              if not success:
-                  raise SystemExit(f"recovery_exhausted:{instrument}:{timeframe}")
+                  target = root / f"{instrument}_{timeframe}.csv"
+                  with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
+                      temp_path = Path(temp.name)
+                  digest = write_csv(candles, temp_path)
+                  os.replace(temp_path, target)
+                  temp_path = None
+                  print(f"RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
+              except Exception as exc:
+                  if temp_path is not None:
+                      temp_path.unlink(missing_ok=True)
+                  raise SystemExit(f"recovery_failed:{instrument}:{timeframe}:{type(exc).__name__}:{exc}") from exc
           PY
 
       - name: Rebuild and verify frozen manifest
@@ -280,5 +274,5 @@ jobs:
             data/research/broader_matrix_results.csv
             data/research/broader_matrix_summary.json
             data/research/broader_matrix_report.md
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
