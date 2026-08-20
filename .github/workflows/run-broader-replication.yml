@@ -1,0 +1,146 @@
+name: Run Broader Trading Research Replication (INDEPENDENT WTI DAILY)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replicate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout research code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-trading-research.txt
+          python -m pip install --disable-pip-version-check yfinance
+
+      - name: Download reusable source artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 32293018258
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Build independent WTI daily dataset from Yahoo Finance
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import yfinance as yf
+
+          target = Path('data/research/universe_v2/WTI_1D.csv')
+          target.parent.mkdir(parents=True, exist_ok=True)
+          frame = yf.download(
+              'CL=F',
+              start='2010-01-01',
+              end='2026-01-01',
+              interval='1d',
+              auto_adjust=False,
+              progress=False,
+              threads=False,
+          )
+          if frame is None or frame.empty:
+              raise SystemExit('yahoo_wti_daily_empty')
+          if isinstance(frame.columns, pd.MultiIndex):
+              frame.columns = frame.columns.get_level_values(0)
+          required = ['Open','High','Low','Close','Volume']
+          missing = [c for c in required if c not in frame.columns]
+          if missing:
+              raise SystemExit(f'yahoo_wti_columns_missing:{missing}')
+          frame = frame[required].dropna()
+          frame.index = pd.to_datetime(frame.index, utc=True).normalize()
+          frame = frame[~frame.index.duplicated(keep='last')].sort_index()
+          years = set(frame.index.year)
+          expected = set(range(2010, 2026))
+          if expected - years:
+              raise SystemExit(f'yahoo_wti_missing_years:{sorted(expected-years)}')
+          out = pd.DataFrame({
+              'timestamp': frame.index.astype(str),
+              'open': frame['Open'].astype(float),
+              'high': frame['High'].astype(float),
+              'low': frame['Low'].astype(float),
+              'close': frame['Close'].astype(float),
+              'volume': frame['Volume'].fillna(0).astype(float),
+          })
+          for row in out.itertuples(index=False):
+              if not (row.low <= row.open <= row.high and row.low <= row.close <= row.high):
+                  raise SystemExit(f'yahoo_wti_invalid_ohlc:{row.timestamp}')
+          out.to_csv(target, index=False)
+          print(f'YAHOO WTI 1D COMPLETE bars={len(out)} first={out.timestamp.iloc[0]} last={out.timestamp.iloc[-1]}')
+          print(f'2010-10-01={out.loc[out.timestamp.str.startswith("2010-10-01")].to_dict("records")}')
+          PY
+
+      - name: Validate exact 26-dataset universe
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+          root = Path('data/research/universe_v2')
+          expected = {(i,t) for i in INSTRUMENTS for t in TIMEFRAMES}
+          missing = {(i,t) for i,t in expected if not (root / f'{i}_{t}.csv').is_file()}
+          if missing:
+              raise SystemExit(f'missing_datasets:{sorted(missing)}')
+          for instrument, timeframe in sorted(expected):
+              bars = load_csv(root / f'{instrument}_{timeframe}.csv')
+              years = {bar.timestamp.year for bar in bars}
+              if min(years) < 2010 or max(years) != 2025:
+                  raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{min(years)}-{max(years)}')
+          print('DATASET SNAPSHOT PASS: 26/26')
+          PY
+
+      - name: Rebuild and verify manifest
+        run: |
+          python -m trading_research.rebuild_recovery_manifest
+          python -m trading_research.verify_broader_universe
+
+      - name: Run same 104-context research matrix
+        run: python -m trading_research.broader_campaign_runner
+
+      - name: Assert complete matrix evidence
+        run: |
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          results = Path('data/research/broader_matrix_results.csv')
+          summary = Path('data/research/broader_matrix_summary.json')
+          if not results.is_file() or not summary.is_file():
+              raise SystemExit('matrix_evidence_missing')
+          with results.open('r', encoding='utf-8', newline='') as f:
+              rows = list(csv.DictReader(f))
+          if len(rows) != 104:
+              raise SystemExit(f'matrix_row_count_mismatch:{len(rows)}')
+          payload = json.loads(summary.read_text(encoding='utf-8'))
+          if payload.get('contexts') != 104 or payload.get('datasets') != 26:
+              raise SystemExit(f'matrix_summary_mismatch:{payload}')
+          print('REPLICATION MATRIX COMPLETE: 104 contexts / 26 datasets')
+
+      - name: Upload replication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-broader-replication-independent-wti
+          path: |
+            data/research/universe_v2/manifest.json
+            data/research/broader_matrix_results.csv
+            data/research/broader_matrix_summary.json
+            data/research/broader_matrix_report.md
+          if-no-files-found: error
+          retention-days: 14
