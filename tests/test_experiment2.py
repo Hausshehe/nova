@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from trading_research.data import Bar
 from trading_research.experiment2 import (
     build_basic_features,
@@ -68,8 +70,8 @@ def test_walk_forward_windows_are_ordered_and_chronological() -> None:
 def test_standardization_uses_train_statistics_only() -> None:
     train = [[0.0], [1.0], [2.0]]
     transformed = standardize_fit_transform(train, [[1.0], [2.0], [100.0]])
+    assert transformed[0][0] == pytest.approx(0.0)
     assert transformed[0][0] < transformed[1][0] < transformed[2][0]
-    assert abs(transformed[0][0] + transformed[1][0]) < 1.0
 
 
 def test_class_balance() -> None:
