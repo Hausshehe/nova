@@ -164,3 +164,11 @@ def chronological_split(
         validation=tuple(bars[train_end:validation_end]),
         test=tuple(bars[validation_end:]),
     )
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose the canonical research-universe constants for legacy workflow imports."""
+    if name in {"INSTRUMENTS", "TIMEFRAMES"}:
+        from .dukascopy_history import INSTRUMENTS, TIMEFRAMES
+        return {"INSTRUMENTS": INSTRUMENTS, "TIMEFRAMES": TIMEFRAMES}[name]
+    raise AttributeError(name)
