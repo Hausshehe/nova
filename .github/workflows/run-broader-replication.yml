@@ -2,6 +2,15 @@ name: Run Broader Trading Research Replication (INDEPENDENT WTI DAILY)
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful frozen-dataset source workflow run ID"
+        required: true
+        type: string
+      research_commit:
+        description: "Reviewed research commit to replicate"
+        required: true
+        type: string
 
 concurrency:
   group: nova-broader-campaign-recovery
@@ -16,10 +25,53 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout research code
+      - name: Resolve and verify source inputs
+        id: source
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          RESEARCH_COMMIT: ${{ inputs.research_commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["SOURCE_RUN_ID"].strip()
+          commit = os.environ["RESEARCH_COMMIT"].strip()
+          if not run_id or not commit:
+              raise SystemExit("source_run_id_and_research_commit_required")
+
+          def get_json(url: str) -> dict:
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+          run = get_json(f"https://api.github.com/repos/{repo}/actions/runs/{run_id}")
+          if run.get("repository", {}).get("full_name") != repo:
+              raise SystemExit("source_run_repository_mismatch")
+          if run.get("status") != "completed" or run.get("conclusion") != "success":
+              raise SystemExit(f"source_run_not_successful:{run.get('status')}:{run.get('conclusion')}")
+          commit_payload = get_json(f"https://api.github.com/repos/{repo}/commits/{commit}")
+          if commit_payload.get("sha") != commit:
+              raise SystemExit("research_commit_not_found_or_mismatched")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"research_sha={commit}\n")
+          print(f"SOURCE VERIFIED run={run_id} head_sha={run.get('head_sha')} research_commit={commit}", flush=True)
+          PY
+
+      - name: Checkout reviewed research commit
         uses: actions/checkout@v4
         with:
-          ref: 25dff152e4f65d64c7b999fefda8384970c5657c
+          ref: ${{ steps.source.outputs.research_sha }}
           clean: true
 
       - name: Set up Python
@@ -35,7 +87,7 @@ jobs:
       - name: Download reusable source artifacts
         uses: actions/download-artifact@v4
         with:
-          run-id: 32293018258
+          run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           pattern: frozen-*
@@ -48,18 +100,9 @@ jobs:
           from pathlib import Path
           import pandas as pd
           import yfinance as yf
-
           target = Path('data/research/universe_v2/WTI_1D.csv')
           target.parent.mkdir(parents=True, exist_ok=True)
-          frame = yf.download(
-              'CL=F',
-              start='2010-01-01',
-              end='2026-01-01',
-              interval='1d',
-              auto_adjust=False,
-              progress=False,
-              threads=False,
-          )
+          frame = yf.download('CL=F', start='2010-01-01', end='2026-01-01', interval='1d', auto_adjust=False, progress=False, threads=False)
           if frame is None or frame.empty:
               raise SystemExit('yahoo_wti_daily_empty')
           if isinstance(frame.columns, pd.MultiIndex):
@@ -71,8 +114,8 @@ jobs:
           frame = frame[required].dropna()
           frame.index = pd.to_datetime(frame.index, utc=True).normalize()
           frame = frame[~frame.index.duplicated(keep='last')].sort_index()
-          years = set(frame.index.year)
           expected = set(range(2010, 2026))
+          years = set(frame.index.year)
           if expected - years:
               raise SystemExit(f'yahoo_wti_missing_years:{sorted(expected-years)}')
           out = pd.DataFrame({
@@ -88,7 +131,6 @@ jobs:
                   raise SystemExit(f'yahoo_wti_invalid_ohlc:{row.timestamp}')
           out.to_csv(target, index=False)
           print(f'YAHOO WTI 1D COMPLETE bars={len(out)} first={out.timestamp.iloc[0]} last={out.timestamp.iloc[-1]}')
-          print(f'2010-10-01={out.loc[out.timestamp.str.startswith("2010-10-01")].to_dict("records")}')
           PY
 
       - name: Recover three missing reusable 4H datasets
@@ -98,19 +140,13 @@ jobs:
           from pathlib import Path
           from tempfile import NamedTemporaryFile
           from trading_research.dukascopy_history import DukascopyClient, write_csv
-
           root = Path('data/research/universe_v2')
           targets = [('NAS100', '4H'), ('NZDUSD', '4H'), ('US500', '4H')]
           for instrument, timeframe in targets:
               target = root / f'{instrument}_{timeframe}.csv'
-              print(f'RECOVER {instrument} {timeframe}', flush=True)
               candles = DukascopyClient().historical_prices(
-                  instrument=instrument,
-                  timeframe=timeframe,
-                  start_utc='2010-01-01T00:00:00+00:00',
-                  end_utc='2026-01-01T00:00:00+00:00',
-                  progress=lambda message: print(message, flush=True),
-              )
+                  instrument=instrument, timeframe=timeframe,
+                  start_utc='2010-01-01T00:00:00+00:00', end_utc='2026-01-01T00:00:00+00:00')
               if len(candles) < 100:
                   raise SystemExit(f'insufficient_bars:{instrument}:{timeframe}:{len(candles)}')
               years = {int(c.timestamp_utc[:4]) for c in candles}
@@ -126,7 +162,7 @@ jobs:
               finally:
                   if temp_path is not None:
                       temp_path.unlink(missing_ok=True)
-              print(f'RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}', flush=True)
+              print(f'RECOVERY COMPLETE dataset={instrument} {timeframe} bars={len(candles)} sha256={digest}', flush=True)
           PY
 
       - name: Validate exact 26-dataset universe
@@ -173,6 +209,7 @@ jobs:
           if payload.get('contexts') != 104 or payload.get('datasets') != 26:
               raise SystemExit(f'matrix_summary_mismatch:{payload}')
           print('REPLICATION MATRIX COMPLETE: 104 contexts / 26 datasets')
+          PY
 
       - name: Upload replication evidence
         if: always()
