@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
+import hashlib
 import lzma
 import struct
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,8 @@ import pytest
 from trading_research.dukascopy_history import (
     CANDLE_STRUCT,
     DATAFEED_BASE_URL,
+    INSTRUMENTS,
+    TIMEFRAMES,
     WTI_DUAL_DIRECTORY_YEAR,
     WTI_LEGACY_DATAFEED,
     _decode_candle_file,
@@ -22,6 +26,7 @@ from trading_research.migrate_legacy_broader_artifacts import (
     LEGACY_WTI_4H_DATASET,
     invalidate_legacy_wti_4h,
 )
+from trading_research.rebuild_recovery_manifest import rebuild_manifest
 
 
 def _compressed(rows: list[tuple[int, int, int, int, int, float]]) -> bytes:
@@ -72,3 +77,40 @@ def test_invalidate_legacy_wti_4h_exact_source(tmp_path: Path) -> None:
     removed = invalidate_legacy_wti_4h(tmp_path, source_run_id=LEGACY_SOURCE_RUN_ID)
     assert removed == LEGACY_WTI_4H_DATASET
     assert not target.exists()
+
+
+def _write_dataset(path: Path) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+        start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        for index in range(100):
+            ts = start + timedelta(hours=index)
+            writer.writerow([ts.isoformat(), "1", "2", "1", "2", "1"])
+
+
+def test_rebuild_recovery_manifest_creates_exact_26_entries(tmp_path: Path) -> None:
+    for instrument in INSTRUMENTS:
+        for timeframe in TIMEFRAMES:
+            _write_dataset(tmp_path / f"{instrument}_{timeframe}.csv")
+
+    manifests = rebuild_manifest(tmp_path)
+
+    assert len(manifests) == 26
+    manifest_path = tmp_path / "manifest.json"
+    assert manifest_path.is_file()
+    sample = tmp_path / "EURUSD_1D.csv"
+    expected_hash = hashlib.sha256(sample.read_bytes()).hexdigest()
+    assert any(item.instrument == "EURUSD" and item.timeframe == "1D" and item.sha256 == expected_hash for item in manifests)
+
+
+def test_rebuild_recovery_manifest_does_not_write_partial_manifest(tmp_path: Path) -> None:
+    for instrument in INSTRUMENTS:
+        for timeframe in TIMEFRAMES:
+            _write_dataset(tmp_path / f"{instrument}_{timeframe}.csv")
+    (tmp_path / "WTI_4H.csv").unlink()
+
+    with pytest.raises(ValueError, match="dataset_missing:WTI_4H.csv"):
+        rebuild_manifest(tmp_path)
+
+    assert not (tmp_path / "manifest.json").exists()
