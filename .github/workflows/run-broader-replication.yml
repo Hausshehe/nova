@@ -132,8 +132,8 @@ jobs:
           from trading_research.data import load_csv
           from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
           root = Path('data/research/universe_v2')
-          expected = {(i,t) for i,t in INSTRUMENTS for t in TIMEFRAMES}
-          missing = {(i,t) for i,t in expected if not (root / f'{i}_{t}.csv').is_file()}
+          expected = {(instrument, timeframe) for instrument in INSTRUMENTS for timeframe in TIMEFRAMES}
+          missing = {(instrument, timeframe) for instrument, timeframe in expected if not (root / f'{instrument}_{timeframe}.csv').is_file()}
           if missing:
               raise SystemExit(f'missing_datasets:{sorted(missing)}')
           for instrument, timeframe in sorted(expected):
