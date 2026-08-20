@@ -26,6 +26,9 @@ INSTRUMENT_DATAFEED = {
     "US30": "USA30IDXUSD",
     "WTI": "LIGHTCMDUSD",
 }
+WTI_LEGACY_DATAFEED = "WTICMDUSD"
+WTI_DUAL_DIRECTORY_YEAR = 2014
+WTI_LEGACY_END_YEAR = 2013
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
 MAX_TRANSIENT_HTTP_RETRIES = 5
@@ -71,14 +74,32 @@ def _feed_symbol(instrument: str) -> str:
     return INSTRUMENT_DATAFEED.get(instrument, instrument)
 
 
+def _feed_symbols_for_period(instrument: str, year: int) -> tuple[str, ...]:
+    """Return authoritative Dukascopy WTI directories for a historical year."""
+    if instrument != "WTI":
+        return (_feed_symbol(instrument),)
+    if year <= WTI_LEGACY_END_YEAR:
+        return (WTI_LEGACY_DATAFEED,)
+    if year == WTI_DUAL_DIRECTORY_YEAR:
+        return (WTI_LEGACY_DATAFEED, _feed_symbol(instrument))
+    return (_feed_symbol(instrument),)
+
+
 def _month_zero_based(month: int) -> str:
     if not 1 <= month <= 12:
         raise ValueError("month_out_of_range")
     return f"{month - 1:02d}"
 
 
-def _native_url(instrument: str, timeframe: str, year: int, month: int | None = None) -> str:
-    symbol = _feed_symbol(instrument)
+def _native_url(
+    instrument: str,
+    timeframe: str,
+    year: int,
+    month: int | None = None,
+    *,
+    feed_symbol: str | None = None,
+) -> str:
+    symbol = feed_symbol or _feed_symbol(instrument)
     if timeframe == "1D":
         return f"{DATAFEED_BASE_URL}/{symbol}/{year}/BID_candles_day_1.bi5"
     if timeframe == "1H":
@@ -143,7 +164,7 @@ def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:
         raise ValueError(f"candle_file_bad_record_length:{len(raw)}")
     candles: list[Candle] = []
     for offset in range(0, len(raw), CANDLE_RECORD_SIZE):
-        seconds_from_base, open_raw, high_raw, low_raw, close_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
+        seconds_from_base, open_raw, close_raw, low_raw, high_raw, volume = CANDLE_STRUCT.unpack_from(raw, offset)
         timestamp = base_time + timedelta(seconds=int(seconds_from_base))
         candles.append(
             Candle(
@@ -162,19 +183,22 @@ def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:
 def _deduplicate_and_validate(candles: list[Candle]) -> list[Candle]:
     by_timestamp: dict[str, Candle] = {}
     for candle in candles:
+        previous = by_timestamp.get(candle.timestamp_utc)
+        if previous is not None and previous != candle:
+            raise ValueError(f"duplicate_timestamp_conflict:{candle.timestamp_utc}")
         by_timestamp[candle.timestamp_utc] = candle
     ordered = [by_timestamp[key] for key in sorted(by_timestamp)]
+    for candle in ordered:
+        if not (candle.low <= candle.open <= candle.high and candle.low <= candle.close <= candle.high):
+            raise ValueError(
+                "candle_ohlc_invalid:"
+                f"timestamp={candle.timestamp_utc}:"
+                f"open={candle.open}:high={candle.high}:"
+                f"low={candle.low}:close={candle.close}"
+            )
     for previous, current in zip(ordered, ordered[1:]):
         if current.timestamp_utc <= previous.timestamp_utc:
             raise ValueError("candle_timestamps_not_strictly_increasing")
-        if not (current.low <= current.open <= current.high and current.low <= current.close <= current.high):
-            raise ValueError(
-                "candle_ohlc_invalid:"
-                f"timestamp={current.timestamp_utc}:"
-                f"open={current.open}:high={current.high}:"
-                f"low={current.low}:close={current.close}:"
-                f"previous_timestamp={previous.timestamp_utc}"
-            )
     return ordered
 
 
@@ -227,21 +251,23 @@ class DukascopyClient:
         if timeframe == "1D":
             candles: list[Candle] = []
             for year in range(start.year, end.year + 1):
-                url = _native_url(instrument, "1D", year)
-                payload = _request_bytes(self.session, url)
-                if not payload:
-                    continue
-                candles.extend(_decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc)))
+                for symbol in _feed_symbols_for_period(instrument, year):
+                    url = _native_url(instrument, "1D", year, feed_symbol=symbol)
+                    payload = _request_bytes(self.session, url)
+                    if not payload:
+                        continue
+                    candles.extend(_decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc)))
             return [c for c in _deduplicate_and_validate(candles) if start <= _parse_time(c.timestamp_utc) < end]
         if timeframe == "4H":
             hourly: list[Candle] = []
             month = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
             last_month = datetime(end.year, end.month, 1, tzinfo=timezone.utc)
             while month <= last_month:
-                url = _native_url(instrument, "1H", month.year, month.month)
-                payload = _request_bytes(self.session, url)
-                if payload:
-                    hourly.extend(_decode_candle_file(payload, month))
+                for symbol in _feed_symbols_for_period(instrument, month.year):
+                    url = _native_url(instrument, "1H", month.year, month.month, feed_symbol=symbol)
+                    payload = _request_bytes(self.session, url)
+                    if payload:
+                        hourly.extend(_decode_candle_file(payload, month))
                 if month.month == 12:
                     month = datetime(month.year + 1, 1, 1, tzinfo=timezone.utc)
                 else:
