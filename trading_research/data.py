@@ -1,8 +1,8 @@
 """Dependency-free market data primitives for the research gate.
 
 The first research harness deliberately avoids pandas/MT5 dependencies so that
-we can prove data validation and chronological splitting independently of the
-trading terminal environment.
+we can prove data validation and chronological splitting independently from
+the trading terminal environment.
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ class Bar:
     low: float
     close: float
     volume: float
+
+    @property
+    def timestamp_utc(self) -> str:
+        """Canonical ISO-8601 UTC timestamp used by the recovery validator."""
+        return self.timestamp.astimezone(timezone.utc).isoformat()
 
     def validate(self) -> None:
         values = (self.open, self.high, self.low, self.close, self.volume)
