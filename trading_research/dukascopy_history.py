@@ -223,11 +223,65 @@ def _aggregate_4h(hourly: list[Candle]) -> list[Candle]:
     return _deduplicate_and_validate(result)
 
 
+def _aggregate_1d(hourly: list[Candle]) -> list[Candle]:
+    """Build UTC daily candles from complete 24-hour native hourly candles.
+
+    This is a same-source fallback for years whose native daily file is absent.
+    It deliberately requires a complete UTC day so missing hourly data cannot
+    silently manufacture a partial daily candle.
+    """
+    buckets: dict[datetime, list[Candle]] = {}
+    for candle in hourly:
+        ts = _parse_time(candle.timestamp_utc)
+        bucket = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        buckets.setdefault(bucket, []).append(candle)
+    result: list[Candle] = []
+    for bucket in sorted(buckets):
+        rows = sorted(buckets[bucket], key=lambda row: row.timestamp_utc)
+        expected = [bucket + timedelta(hours=i) for i in range(24)]
+        actual = [_parse_time(row.timestamp_utc) for row in rows]
+        if actual != expected:
+            continue
+        result.append(
+            Candle(
+                timestamp_utc=bucket.isoformat(),
+                open=rows[0].open,
+                high=max(row.high for row in rows),
+                low=min(row.low for row in rows),
+                close=rows[-1].close,
+                volume=sum(row.volume for row in rows),
+            )
+        )
+    return _deduplicate_and_validate(result)
+
+
 class DukascopyClient:
     """Native candle feed client; no instrument-list API dependency."""
 
     def __init__(self, *, session: requests.Session | None = None):
         self.session = session or requests.Session()
+
+    def _historical_1h(self, *, instrument: str, start: datetime, end: datetime, progress: Callable[[str], None] | None = None) -> list[Candle]:
+        hourly: list[Candle] = []
+        month = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
+        last_month = datetime(end.year, end.month, 1, tzinfo=timezone.utc)
+        while month <= last_month:
+            url = _native_url(instrument, "1H", month.year, month.month)
+            if progress:
+                progress(f"request {instrument} 1H {month.year}-{month.month:02d}")
+            payload = _request_bytes(self.session, url, progress=progress)
+            if payload:
+                decoded = _decode_candle_file(payload, month)
+                hourly.extend(decoded)
+                if progress:
+                    progress(f"received {instrument} 1H {month.year}-{month.month:02d}: bars={len(decoded)}")
+            elif progress:
+                progress(f"empty {instrument} 1H {month.year}-{month.month:02d}")
+            if month.month == 12:
+                month = datetime(month.year + 1, 1, 1, tzinfo=timezone.utc)
+            else:
+                month = datetime(month.year, month.month + 1, 1, tzinfo=timezone.utc)
+        return _deduplicate_and_validate(hourly)
 
     def historical_prices(
         self,
@@ -251,39 +305,33 @@ class DukascopyClient:
                 if progress:
                     progress(f"request {instrument} 1D {year}")
                 payload = _request_bytes(self.session, url, progress=progress)
-                if not payload:
+                if payload:
+                    decoded = _decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc))
+                    candles.extend(decoded)
                     if progress:
-                        progress(f"empty {instrument} 1D {year}")
+                        progress(f"received {instrument} 1D {year}: bars={len(decoded)}")
                     continue
-                decoded = _decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc))
-                candles.extend(decoded)
                 if progress:
-                    progress(f"received {instrument} 1D {year}: bars={len(decoded)}")
+                    progress(f"missing {instrument} 1D {year}; fallback to native 1H aggregation")
+                fallback_start = max(start, datetime(year, 1, 1, tzinfo=timezone.utc))
+                fallback_end = min(end, datetime(year + 1, 1, 1, tzinfo=timezone.utc))
+                hourly = self._historical_1h(
+                    instrument=instrument,
+                    start=fallback_start,
+                    end=fallback_end,
+                    progress=progress,
+                )
+                fallback = _aggregate_1d(hourly)
+                candles.extend(fallback)
+                if progress:
+                    progress(f"fallback {instrument} 1D {year}: bars={len(fallback)}")
             result = [c for c in _deduplicate_and_validate(candles) if start <= _parse_time(c.timestamp_utc) < end]
             if progress:
                 progress(f"validated {instrument} 1D: bars={len(result)}")
             return result
         if timeframe == "4H":
-            hourly: list[Candle] = []
-            month = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
-            last_month = datetime(end.year, end.month, 1, tzinfo=timezone.utc)
-            while month <= last_month:
-                url = _native_url(instrument, "1H", month.year, month.month)
-                if progress:
-                    progress(f"request {instrument} 1H {month.year}-{month.month:02d}")
-                payload = _request_bytes(self.session, url, progress=progress)
-                if payload:
-                    decoded = _decode_candle_file(payload, month)
-                    hourly.extend(decoded)
-                    if progress:
-                        progress(f"received {instrument} 1H {month.year}-{month.month:02d}: bars={len(decoded)}")
-                elif progress:
-                    progress(f"empty {instrument} 1H {month.year}-{month.month:02d}")
-                if month.month == 12:
-                    month = datetime(month.year + 1, 1, 1, tzinfo=timezone.utc)
-                else:
-                    month = datetime(month.year, month.month + 1, 1, tzinfo=timezone.utc)
-            four_hour = _aggregate_4h(_deduplicate_and_validate(hourly))
+            hourly = self._historical_1h(instrument=instrument, start=start, end=end, progress=progress)
+            four_hour = _aggregate_4h(hourly)
             result = [c for c in four_hour if start <= _parse_time(c.timestamp_utc) < end]
             if progress:
                 progress(f"validated {instrument} 4H: bars={len(result)}")
