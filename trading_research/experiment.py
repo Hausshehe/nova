@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Callable, Sequence
 
 from .backtest import BacktestResult, run_long_flat
@@ -54,6 +56,26 @@ class ExperimentRecord:
             segment["decision"]["decision"] = segment["decision"]["decision"].value
         payload["final_decision"] = self.final_decision.value
         return payload
+
+
+def _experiment_id(record: ExperimentRecord) -> str:
+    payload = record.to_dict()
+    payload.pop("created_at_utc", None)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "exp-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_experience(memory: ExperienceStore, record: ExperimentRecord) -> None:
+    payload = record.to_dict()
+    memory.record_experiment(
+        experiment_id=_experiment_id(record),
+        created_at_utc=record.created_at_utc,
+        hypothesis_name=record.hypothesis.name,
+        symbol=record.hypothesis.symbol,
+        timeframe=record.hypothesis.timeframe,
+        final_decision=record.final_decision.value,
+        record=payload,
+    )
 
 
 def _metrics(result: BacktestResult) -> BacktestMetrics:
@@ -152,9 +174,8 @@ def run_experiment(
 ) -> ExperimentRecord:
     """Run one bounded, reproducible hypothesis experiment.
 
-    When a memory store is supplied, the resulting research state is synced to
-    the strategy registry. Registry updates never grant or revoke execution
-    authority for already-approved strategies.
+    When a memory store is supplied, complete evidence is persisted before its
+    research-state summary is synchronized to the strategy registry.
     """
     if fee_bps < 0 or slippage_bps < 0:
         raise ValueError("fee_bps and slippage_bps cannot be negative")
@@ -210,6 +231,7 @@ def run_experiment(
     )
 
     if memory_store is not None:
+        _record_experience(memory_store, record)
         _sync_strategy_registry(
             hypothesis=hypothesis,
             final_decision=final_decision,
