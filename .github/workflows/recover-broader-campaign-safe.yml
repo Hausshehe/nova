@@ -122,11 +122,14 @@ jobs:
       - name: Validate reusable artifacts and source snapshot
         run: |
           python - <<'PY'
+          from datetime import datetime, timezone
           from pathlib import Path
           from trading_research.data import load_csv
           from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
 
           root = Path("data/research/universe_v2")
+          frozen_start = datetime(2010, 1, 1, tzinfo=timezone.utc)
+          frozen_end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
           missing = set()
           for instrument in INSTRUMENTS:
               for timeframe in TIMEFRAMES:
@@ -137,6 +140,11 @@ jobs:
                   bars = load_csv(path)
                   if _deduplicate_and_validate(bars) != bars:
                       raise SystemExit(f"noncanonical_dataset:{instrument}:{timeframe}")
+                  if bars[0].timestamp < frozen_start or bars[-1].timestamp >= frozen_end:
+                      raise SystemExit(
+                          f"source_date_window_failure:{instrument}:{timeframe}:"
+                          f"start={bars[0].timestamp.isoformat()}:end={bars[-1].timestamp.isoformat()}"
+                      )
           expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D")}
           if missing != expected:
               raise SystemExit(f"source_snapshot_mismatch:{sorted(missing)}")
@@ -158,11 +166,14 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          from datetime import datetime, timezone
           from pathlib import Path
           from tempfile import NamedTemporaryFile
           from trading_research.dukascopy_history import DukascopyClient, write_csv
 
           root = Path("data/research/universe_v2")
+          frozen_start = datetime(2010, 1, 1, tzinfo=timezone.utc)
+          frozen_end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
           expected = {
               ("NAS100", "4H"),
               ("NZDUSD", "4H"),
@@ -193,6 +204,10 @@ jobs:
                       )
                       if len(candles) < 100:
                           raise RuntimeError(f"insufficient_bars:{len(candles)}")
+                      if candles[0].timestamp_utc < frozen_start.isoformat() or candles[-1].timestamp_utc >= frozen_end.isoformat():
+                          raise RuntimeError(
+                              f"recovered_date_window_failure:start={candles[0].timestamp_utc}:end={candles[-1].timestamp_utc}"
+                          )
                       target = root / f"{instrument}_{timeframe}.csv"
                       with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
                           temp_path = Path(temp.name)
@@ -214,6 +229,28 @@ jobs:
         run: |
           python -m trading_research.rebuild_recovery_manifest
           python -m trading_research.verify_broader_universe
+
+      - name: Verify final frozen date coverage
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+
+          root = Path("data/research/universe_v2")
+          start = datetime(2010, 1, 1, tzinfo=timezone.utc)
+          end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+          for instrument in INSTRUMENTS:
+              for timeframe in TIMEFRAMES:
+                  bars = load_csv(root / f"{instrument}_{timeframe}.csv")
+                  if bars[0].timestamp < start or bars[-1].timestamp >= end:
+                      raise SystemExit(
+                          f"final_date_window_failure:{instrument}:{timeframe}:"
+                          f"start={bars[0].timestamp.isoformat()}:end={bars[-1].timestamp.isoformat()}"
+                      )
+          print("FINAL DATE WINDOW PASS: all 26 datasets cover the frozen 2010-2025 window.", flush=True)
+          PY
 
       - name: Run frozen 104-context matrix
         run: python -m trading_research.broader_campaign_runner
