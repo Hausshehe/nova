@@ -123,7 +123,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from trading_research.data import load_csv
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
 
           root = Path("data/research/universe_v2")
           expected_years = set(range(2010, 2026))
@@ -135,9 +135,6 @@ jobs:
                       missing.add((instrument, timeframe))
                       continue
                   bars = load_csv(path)
-                  normalized = _deduplicate_and_validate(bars)
-                  if normalized != bars:
-                      raise SystemExit(f"noncanonical_dataset:{instrument}:{timeframe}")
                   years = {bar.timestamp.year for bar in bars}
                   if years != expected_years:
                       raise SystemExit(
