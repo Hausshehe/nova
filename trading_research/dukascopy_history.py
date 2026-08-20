@@ -188,17 +188,17 @@ def _deduplicate_and_validate(candles: list[Candle]) -> list[Candle]:
             raise ValueError(f"duplicate_timestamp_conflict:{candle.timestamp_utc}")
         by_timestamp[candle.timestamp_utc] = candle
     ordered = [by_timestamp[key] for key in sorted(by_timestamp)]
+    for candle in ordered:
+        if not (candle.low <= candle.open <= candle.high and candle.low <= candle.close <= candle.high):
+            raise ValueError(
+                "candle_ohlc_invalid:"
+                f"timestamp={candle.timestamp_utc}:"
+                f"open={candle.open}:high={candle.high}:"
+                f"low={candle.low}:close={candle.close}"
+            )
     for previous, current in zip(ordered, ordered[1:]):
         if current.timestamp_utc <= previous.timestamp_utc:
             raise ValueError("candle_timestamps_not_strictly_increasing")
-        if not (current.low <= current.open <= current.high and current.low <= current.close <= current.high):
-            raise ValueError(
-                "candle_ohlc_invalid:"
-                f"timestamp={current.timestamp_utc}:"
-                f"open={current.open}:high={current.high}:"
-                f"low={current.low}:close={current.close}:"
-                f"previous_timestamp={previous.timestamp_utc}"
-            )
     return ordered
 
 
