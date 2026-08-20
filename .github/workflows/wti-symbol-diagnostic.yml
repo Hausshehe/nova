@@ -2,13 +2,20 @@ name: WTI Historical Symbol Diagnostic
 
 on:
   workflow_dispatch:
+    inputs:
+      recovery_commit:
+        description: "Exact reviewed recovery commit to inspect"
+        required: true
+        type: string
 
 jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout reviewed recovery commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.recovery_commit }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -22,7 +29,6 @@ jobs:
           from trading_research.dukascopy_history import (
               DATAFEED_BASE_URL,
               _decode_candle_file,
-              _native_url,
               _deduplicate_and_validate,
               _request_bytes,
           )
