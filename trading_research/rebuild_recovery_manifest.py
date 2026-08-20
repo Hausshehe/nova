@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import tempfile
 from pathlib import Path
 
 from .data import load_csv
-from .dukascopy_history import DatasetManifest, INSTRUMENTS, TIMEFRAMES, save_manifest
+from .dukascopy_history import (
+    DatasetManifest,
+    INSTRUMENTS,
+    TIMEFRAMES,
+    _deduplicate_and_validate,
+)
 
 
 def rebuild_manifest(data_dir: str | Path) -> list[DatasetManifest]:
@@ -21,6 +29,14 @@ def rebuild_manifest(data_dir: str | Path) -> list[DatasetManifest]:
         bars = load_csv(path)
         if len(bars) < 100:
             raise ValueError(f"insufficient_bars:{instrument}:{timeframe}:{len(bars)}")
+
+        # Certify only data that already satisfies the acquisition validator.
+        validated = _deduplicate_and_validate(bars)
+        if len(validated) != len(bars):
+            raise ValueError(f"dataset_normalization_changed_rows:{instrument}:{timeframe}")
+        if validated != bars:
+            raise ValueError(f"dataset_not_in_canonical_order:{instrument}:{timeframe}")
+
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         manifests.append(
             DatasetManifest(
@@ -34,7 +50,20 @@ def rebuild_manifest(data_dir: str | Path) -> list[DatasetManifest]:
             )
         )
 
-    save_manifest(manifests, root / "manifest.json")
+    payload = [manifest.__dict__ for manifest in manifests]
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / "manifest.json"
+    fd, temp_name = tempfile.mkstemp(prefix=".manifest.", suffix=".tmp", dir=root)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, manifest_path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
     return manifests
 
 
