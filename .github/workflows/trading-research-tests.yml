@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - trading-research-lab
   pull_request:
     branches:
+      - main
       - trading-research-lab
 
 jobs:
