@@ -30,15 +30,9 @@ def verify_universe(data_dir: str | Path) -> list[tuple[str, str]]:
         bars = load_csv(path)
         if len(bars) < 100:
             raise ValueError(f"insufficient_bars:{instrument}:{timeframe}:{len(bars)}")
-
-        # load_csv already validates OHLCV values and chronological ordering.
-        # The verifier's canonical invariant is therefore strict timestamp
-        # uniqueness; do not pass Bar objects into the Dukascopy Candle-only
-        # validator, whose contract expects timestamp_utc.
         timestamps = [bar.timestamp for bar in bars]
         if len(timestamps) != len(set(timestamps)):
             raise ValueError(f"dataset_not_canonical:{instrument}:{timeframe}:duplicate_timestamps")
-
         verified.append((instrument, timeframe))
     return verified
 
