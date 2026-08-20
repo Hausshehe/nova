@@ -131,17 +131,28 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
 
           source_run_id = os.environ["SNAPSHOT_SOURCE_RUN_ID"].strip()
           root = Path("data/research/universe_v2")
-          missing = {
-              (instrument, timeframe)
-              for instrument in INSTRUMENTS
-              for timeframe in TIMEFRAMES
-              if not (root / f"{instrument}_{timeframe}.csv").is_file()
-          }
+          missing = set()
+          invalid = []
+          for instrument in INSTRUMENTS:
+              for timeframe in TIMEFRAMES:
+                  path = root / f"{instrument}_{timeframe}.csv"
+                  if not path.is_file():
+                      missing.add((instrument, timeframe))
+                      continue
+                  try:
+                      bars = load_csv(path)
+                      validated = _deduplicate_and_validate(bars)
+                      if validated != bars:
+                          invalid.append(f"{instrument}:{timeframe}:not_canonical")
+                  except Exception as exc:
+                      invalid.append(f"{instrument}:{timeframe}:{type(exc).__name__}:{exc}")
+          if invalid:
+              raise SystemExit(f"existing_dataset_integrity_failure:{invalid}")
           expected = {
               ("NAS100", "4H"),
               ("NZDUSD", "4H"),
@@ -150,7 +161,7 @@ jobs:
           }
           if source_run_id == "32293018258" and missing != expected:
               raise SystemExit(f"legacy_source_artifact_snapshot_mismatch:{sorted(missing)}")
-          print(f"SOURCE ARTIFACT SNAPSHOT PASS reused={26 - len(missing)} missing={sorted(missing)}", flush=True)
+          print(f"SOURCE ARTIFACT SNAPSHOT PASS valid_reused={26 - len(missing)} missing={sorted(missing)}", flush=True)
           PY
 
       - name: Invalidate legacy WTI 4H artifact when required
@@ -182,6 +193,7 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
+          from tempfile import NamedTemporaryFile
           from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES, write_csv
 
           source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
@@ -197,7 +209,6 @@ jobs:
               ("NZDUSD", "4H"),
               ("US500", "4H"),
               ("WTI", "1D"),
-              ("WTI", "4H"),
           }
           if source_run_id == "32293018258" and missing != expected_legacy_missing_after_migration:
               raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
@@ -209,6 +220,7 @@ jobs:
               recovered = False
               for attempt in range(1, 4):
                   print(f"RECOVERY attempt={attempt}/3 dataset={instrument} {timeframe}", flush=True)
+                  temp_path = None
                   try:
                       candles = DukascopyClient().historical_prices(
                           instrument=instrument,
@@ -219,11 +231,17 @@ jobs:
                       if len(candles) < 100:
                           raise RuntimeError(f"insufficient_bars:{len(candles)}")
                       target = root / f"{instrument}_{timeframe}.csv"
-                      digest = write_csv(candles, target)
+                      with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
+                          temp_path = Path(temp.name)
+                      digest = write_csv(candles, temp_path)
+                      os.replace(temp_path, target)
+                      temp_path = None
                       print(f"RECOVERY COMPLETE dataset={instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
                       recovered = True
                       break
                   except Exception as exc:
+                      if temp_path is not None:
+                          temp_path.unlink(missing_ok=True)
                       print(f"RECOVERY FAILED attempt={attempt}/3 dataset={instrument} {timeframe} error={type(exc).__name__}: {exc}", flush=True)
               if not recovered:
                   raise SystemExit(f"recovery_exhausted:{instrument}:{timeframe}")
