@@ -1,0 +1,265 @@
+name: Recover Broader Trading Research Campaign (Yahoo WTI Final)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Failed broader campaign run whose successful frozen dataset artifacts should be reused"
+        required: true
+        type: string
+      recovery_commit:
+        description: "Reviewed code commit to run recovery"
+        required: true
+        type: string
+
+concurrency:
+  group: nova-broader-campaign-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RECOVERY_COMMIT: ${{ inputs.recovery_commit }}
+
+    steps:
+      - name: Resolve source run and recovery commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["SOURCE_RUN_ID"].strip()
+          recovery_commit = os.environ["RECOVERY_COMMIT"].strip()
+          if not run_id or not recovery_commit:
+              raise SystemExit("source_run_id_and_recovery_commit_required")
+
+          def github_get(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          run = github_get(f"https://api.github.com/repos/{repo}/actions/runs/{run_id}")
+          if run.get("repository", {}).get("full_name") != repo:
+              raise SystemExit("source_run_repository_mismatch")
+          if run.get("status") != "completed":
+              raise SystemExit(f"source_run_not_completed:{run.get('status')}")
+          if run.get("conclusion") not in {"failure", "cancelled"}:
+              raise SystemExit(f"source_run_unexpected_conclusion:{run.get('conclusion')}")
+          if run_id == "32293018258" and run.get("head_sha") != "d79afc0e463be97a419e20bde348650cdb55c945":
+              raise SystemExit(f"frozen_source_head_mismatch:{run.get('head_sha')}")
+
+          recovery = github_get(f"https://api.github.com/repos/{repo}/commits/{recovery_commit}")
+          if recovery.get("sha") != recovery_commit:
+              raise SystemExit("recovery_commit_not_found_or_mismatched")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"recovery_sha={recovery_commit}\n")
+          print(
+              f"SOURCE RUN VERIFIED id={run_id} conclusion={run.get('conclusion')} "
+              f"run_head_sha={run.get('head_sha')} recovery_commit={recovery_commit}",
+              flush=True,
+          )
+          PY
+
+      - name: Checkout reviewed recovery commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.recovery_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check pytest requests
+
+      - name: Verify recovery code is present
+        run: |
+          test -f trading_research/dukascopy_history.py
+          test -f trading_research/yahoo_history.py
+          test -f trading_research/recover_wti_yahoo.py
+          test -f trading_research/rebuild_recovery_manifest.py
+          python - <<'PY'
+          from trading_research.yahoo_history import YAHOO_WTI_SOURCE
+          print(f"RECOVERY CODE VERIFIED yahoo_wti_source={YAHOO_WTI_SOURCE}", flush=True)
+          PY
+
+      - name: Run targeted recovery tests
+        run: python -m pytest -q tests/test_yahoo_wti_history.py tests/test_recovery_workflow_safety.py
+
+      - name: Download successful frozen datasets from source run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Verify exact source artifact snapshot before migration
+        env:
+          SNAPSHOT_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+
+          source_run_id = os.environ["SNAPSHOT_SOURCE_RUN_ID"].strip()
+          root = Path("data/research/universe_v2")
+          missing = set()
+          invalid = []
+          for instrument in INSTRUMENTS:
+              for timeframe in TIMEFRAMES:
+                  path = root / f"{instrument}_{timeframe}.csv"
+                  if not path.is_file():
+                      missing.add((instrument, timeframe))
+                      continue
+                  try:
+                      bars = load_csv(path)
+                      validated = _deduplicate_and_validate(bars)
+                      if validated != bars:
+                          invalid.append(f"{instrument}:{timeframe}:not_canonical")
+                  except Exception as exc:
+                      invalid.append(f"{instrument}:{timeframe}:{type(exc).__name__}:{exc}")
+          if invalid:
+              raise SystemExit(f"existing_dataset_integrity_failure:{invalid}")
+          expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D")}
+          if source_run_id == "32293018258" and missing != expected:
+              raise SystemExit(f"legacy_source_artifact_snapshot_mismatch:{sorted(missing)}")
+          print(f"FROZEN SOURCE SNAPSHOT VERIFIED valid_reused={26-len(missing)} missing={sorted(missing)}", flush=True)
+          PY
+
+      - name: Invalidate legacy WTI 4H artifact when required
+        env:
+          MIGRATION_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from trading_research.migrate_legacy_broader_artifacts import (
+              LEGACY_SOURCE_RUN_ID,
+              LEGACY_WTI_4H_DATASET,
+              invalidate_legacy_wti_4h,
+          )
+          source_run_id = os.environ["MIGRATION_SOURCE_RUN_ID"].strip()
+          if source_run_id != LEGACY_SOURCE_RUN_ID:
+              print(f"LEGACY WTI 4H INVALIDATION SKIPPED source_run={source_run_id}", flush=True)
+          else:
+              removed = invalidate_legacy_wti_4h("data/research/universe_v2", source_run_id=source_run_id)
+              if removed != LEGACY_WTI_4H_DATASET:
+                  raise SystemExit(f"legacy_wti_4h_invalidation_mismatch:{removed}")
+              print(f"LEGACY WTI 4H INVALIDATED dataset={removed}", flush=True)
+          PY
+
+      - name: Recover WTI 1D from frozen Yahoo source
+        run: |
+          test ! -f data/research/universe_v2/WTI_1D.csv
+          python -m trading_research.recover_wti_yahoo
+          python - <<'PY'
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import _deduplicate_and_validate
+          bars = load_csv("data/research/universe_v2/WTI_1D.csv")
+          validated = _deduplicate_and_validate(bars)
+          if validated != bars:
+              raise SystemExit("wti_yahoo_not_canonical")
+          target = [bar for bar in bars if bar.timestamp.date().isoformat() == "2010-10-01"]
+          if len(target) != 1:
+              raise SystemExit(f"wti_yahoo_missing_2010_10_01:{len(target)}")
+          row = target[0]
+          print(
+              f"WTI YAHOO VERIFIED 2010-10-01 open={row.open} high={row.high} "
+              f"low={row.low} close={row.close} volume={row.volume}",
+              flush=True,
+          )
+          PY
+
+      - name: Recover remaining missing frozen datasets
+        env:
+          RECOVERY_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES, write_csv
+
+          source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
+          root = Path("data/research/universe_v2")
+          missing = {
+              (instrument, timeframe)
+              for instrument in INSTRUMENTS
+              for timeframe in TIMEFRAMES
+              if not (root / f"{instrument}_{timeframe}.csv").is_file()
+          }
+          expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "4H")}
+          if source_run_id == "32293018258" and missing != expected:
+              raise SystemExit(f"post_yahoo_missing_snapshot_mismatch:{sorted(missing)}")
+
+          print(f"RECOVER remaining missing datasets={len(missing)}", flush=True)
+          for instrument, timeframe in sorted(missing):
+              print(f"RECOVERY START dataset={instrument} {timeframe}", flush=True)
+              temp_path = None
+              try:
+                  candles = DukascopyClient().historical_prices(
+                      instrument=instrument,
+                      timeframe=timeframe,
+                      start_utc="2010-01-01T00:00:00+00:00",
+                      end_utc="2025-12-31T23:59:59+00:00",
+                  )
+                  if len(candles) < 100:
+                      raise RuntimeError(f"insufficient_bars:{len(candles)}")
+                  target = root / f"{instrument}_{timeframe}.csv"
+                  with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
+                      temp_path = Path(temp.name)
+                  digest = write_csv(candles, temp_path)
+                  os.replace(temp_path, target)
+                  temp_path = None
+                  print(f"RECOVERY COMPLETE dataset={instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
+              except Exception as exc:
+                  if temp_path is not None:
+                      temp_path.unlink(missing_ok=True)
+                  raise RuntimeError(f"recovery_failed:{instrument}:{timeframe}:{type(exc).__name__}:{exc}") from exc
+          PY
+
+      - name: Rebuild deterministic frozen manifest
+        run: python -m trading_research.rebuild_recovery_manifest
+
+      - name: Verify frozen 26-dataset universe
+        run: python -m trading_research.verify_broader_universe
+
+      - name: Run frozen 104-context matrix
+        run: python -m trading_research.broader_campaign_runner
+
+      - name: Upload recovered campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-broader-campaign-yahoo-final-evidence
+          path: |
+            data/research/universe_v2/manifest.json
+            data/research/broader_matrix_results.csv
+            data/research/broader_matrix_summary.json
+            data/research/broader_matrix_report.md
+          if-no-files-found: warn
+          retention-days: 14
