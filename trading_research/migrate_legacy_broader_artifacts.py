@@ -15,6 +15,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 LEGACY_SOURCE_RUN_ID = "32293018258"
+LEGACY_WTI_4H_DATASET = "WTI_4H.csv"
 
 # Exact successful artifact snapshot from the known cancelled source run.
 LEGACY_DAILY_DATASETS = (
@@ -39,7 +40,7 @@ LEGACY_FOUR_HOUR_DATASETS = (
     "USDCAD_4H.csv",
     "USDCHF_4H.csv",
     "USDJPY_4H.csv",
-    "WTI_4H.csv",
+    LEGACY_WTI_4H_DATASET,
     "XAGUSD_4H.csv",
     "XAUUSD_4H.csv",
 )
@@ -77,6 +78,24 @@ def repair_legacy_daily_artifact(path: str | Path) -> None:
         if not (low <= open_ <= high and low <= close <= high):
             raise ValueError(f"legacy_repair_invalid_ohlc:{target}:{row['timestamp']}")
     _atomic_write(target, rows)
+
+
+def invalidate_legacy_wti_4h(
+    root: str | Path, *, source_run_id: str
+) -> str:
+    """Remove the known stale WTI 4H artifact from the legacy source snapshot.
+
+    The legacy source run is the only source permitted for this destructive
+    invalidation. The artifact is deliberately removed rather than repaired because
+    the recovery workflow must rebuild WTI 4H from corrected raw hourly data.
+    """
+    if source_run_id != LEGACY_SOURCE_RUN_ID:
+        raise ValueError(f"legacy_wti_4h_source_run_mismatch:{source_run_id}")
+    target = Path(root) / LEGACY_WTI_4H_DATASET
+    if not target.is_file():
+        raise ValueError(f"legacy_wti_4h_missing:{target}")
+    target.unlink()
+    return LEGACY_WTI_4H_DATASET
 
 
 def migrate_legacy_artifacts(root: str | Path, *, source_run_id: str) -> tuple[list[str], list[str]]:
