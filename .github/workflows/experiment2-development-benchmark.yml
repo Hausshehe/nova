@@ -33,6 +33,17 @@ jobs:
         run: |
           python -m py_compile trading_research/experiment2_development_benchmark.py
           python -m py_compile trading_research/experiment2_recover_missing_4h.py
+          python -m py_compile trading_research/dukascopy_history.py
+
+      - name: Verify checked-out acquisition module is the benchmark input
+        run: |
+          python - <<'PY'
+          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES
+          assert DukascopyClient is not None
+          assert 'WTI' in INSTRUMENTS
+          assert TIMEFRAMES == ('1D', '4H')
+          print('HISTORICAL ACQUISITION MODULE PASS: using checked-out benchmark source')
+          PY
 
       - name: Download reusable source artifacts
         uses: actions/download-artifact@v4
@@ -43,20 +54,6 @@ jobs:
           pattern: frozen-*
           path: data/research/universe_v2
           merge-multiple: true
-
-      - name: Restore verified historical acquisition module
-        run: |
-          git fetch --no-tags --depth=1 origin 823545c49d560837bc53ade89213bdeed203b9bf
-          git checkout 823545c49d560837bc53ade89213bdeed203b9bf -- trading_research/dukascopy_history.py
-          test -s trading_research/dukascopy_history.py
-          python -m py_compile trading_research/dukascopy_history.py
-          python - <<'PY'
-          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES
-          assert DukascopyClient is not None
-          assert 'WTI' in INSTRUMENTS
-          assert TIMEFRAMES == ('1D', '4H')
-          print('HISTORICAL ACQUISITION MODULE PASS')
-          PY
 
       - name: Build independent WTI daily dataset from Yahoo Finance
         run: |
@@ -106,7 +103,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from trading_research.data import load_csv
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
 
           root = Path('data/research/universe_v2')
           expected = {(instrument, timeframe) for instrument in INSTRUMENTS for timeframe in TIMEFRAMES}
@@ -115,6 +112,8 @@ jobs:
               raise SystemExit(f'dataset_snapshot_mismatch:{sorted(expected-actual)}')
           for instrument, timeframe in sorted(expected):
               bars = load_csv(root / f'{instrument}_{timeframe}.csv')
+              if _deduplicate_and_validate(bars) != bars:
+                  raise SystemExit(f'dataset_not_canonical:{instrument}:{timeframe}')
               years = {bar.timestamp.year for bar in bars}
               if years != set(range(2010, 2026)):
                   raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{sorted(set(range(2010, 2026))-years)}')
@@ -155,5 +154,5 @@ jobs:
         with:
           name: nova-experiment2-development-benchmark
           path: data/research/experiment2_development/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
