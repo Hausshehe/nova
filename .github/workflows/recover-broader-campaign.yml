@@ -55,7 +55,6 @@ jobs:
                   return json.load(response)
 
           run = github_get(f"https://api.github.com/repos/{repo}/actions/runs/{run_id}")
-
           if run.get("repository", {}).get("full_name") != repo:
               raise SystemExit("source_run_repository_mismatch")
           if run.get("status") != "completed":
@@ -109,8 +108,7 @@ jobs:
           from trading_research.rebuild_recovery_manifest import rebuild_manifest
           print(
               f"RECOVERY CODE VERIFIED legacy_source_run={LEGACY_SOURCE_RUN_ID} "
-              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} "
-              f"migration={invalidate_legacy_wti_4h.__name__} "
+              f"legacy_wti_4h={LEGACY_WTI_4H_DATASET} migration={invalidate_legacy_wti_4h.__name__} "
               f"manifest_builder={rebuild_manifest.__name__}",
               flush=True,
           )
@@ -125,6 +123,36 @@ jobs:
           pattern: frozen-*
           path: data/research/universe_v2
           merge-multiple: true
+
+      - name: Verify exact source artifact snapshot before migration
+        env:
+          SNAPSHOT_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+
+          source_run_id = os.environ["SNAPSHOT_SOURCE_RUN_ID"].strip()
+          root = Path("data/research/universe_v2")
+          missing = {
+              (instrument, timeframe)
+              for instrument in INSTRUMENTS
+              for timeframe in TIMEFRAMES
+              if not (root / f"{instrument}_{timeframe}.csv").is_file()
+          }
+          expected = {
+              ("NAS100", "4H"),
+              ("NZDUSD", "4H"),
+              ("US500", "4H"),
+              ("WTI", "1D"),
+              ("USDJPY", "1D"),
+          }
+          if source_run_id == "32293018258" and missing != expected:
+              raise SystemExit(f"legacy_source_artifact_snapshot_mismatch:{sorted(missing)}")
+          print(f"SOURCE ARTIFACT SNAPSHOT PASS reused={26 - len(missing)} missing={sorted(missing)}", flush=True)
+          PY
 
       - name: Invalidate legacy WTI 4H artifact when required
         env:
@@ -142,10 +170,7 @@ jobs:
           if source_run_id != LEGACY_SOURCE_RUN_ID:
               print(f"LEGACY WTI 4H INVALIDATION SKIPPED source_run={source_run_id}", flush=True)
           else:
-              removed = invalidate_legacy_wti_4h(
-                  "data/research/universe_v2",
-                  source_run_id=source_run_id,
-              )
+              removed = invalidate_legacy_wti_4h("data/research/universe_v2", source_run_id=source_run_id)
               if removed != LEGACY_WTI_4H_DATASET:
                   raise SystemExit(f"legacy_wti_4h_invalidation_mismatch:{removed}")
               print(f"LEGACY WTI 4H INVALIDATED dataset={removed}", flush=True)
@@ -162,28 +187,27 @@ jobs:
 
           source_run_id = os.environ["RECOVERY_SOURCE_RUN_ID"].strip()
           root = Path("data/research/universe_v2")
-          root.mkdir(parents=True, exist_ok=True)
-          missing = [
+          missing = {
               (instrument, timeframe)
               for instrument in INSTRUMENTS
               for timeframe in TIMEFRAMES
               if not (root / f"{instrument}_{timeframe}.csv").is_file()
-          ]
-
-          expected_legacy_missing = {
+          }
+          expected_legacy_missing_after_migration = {
               ("NAS100", "4H"),
               ("NZDUSD", "4H"),
               ("US500", "4H"),
               ("WTI", "1D"),
               ("WTI", "4H"),
+              ("USDJPY", "1D"),
           }
-          if source_run_id == "32293018258" and set(missing) != expected_legacy_missing:
+          if source_run_id == "32293018258" and missing != expected_legacy_missing_after_migration:
               raise SystemExit(f"legacy_missing_snapshot_mismatch:{sorted(missing)}")
 
-          print(f"REUSE existing frozen datasets={len(INSTRUMENTS) * len(TIMEFRAMES) - len(missing)}", flush=True)
+          print(f"REUSE existing frozen datasets={26 - len(missing)}", flush=True)
           print(f"RECOVER missing datasets={len(missing)}", flush=True)
 
-          for instrument, timeframe in missing:
+          for instrument, timeframe in sorted(missing):
               recovered = False
               for attempt in range(1, 4):
                   print(f"RECOVERY attempt={attempt}/3 dataset={instrument} {timeframe}", flush=True)
