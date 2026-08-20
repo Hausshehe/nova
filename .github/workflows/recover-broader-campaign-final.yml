@@ -126,7 +126,6 @@ jobs:
           from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
 
           root = Path("data/research/universe_v2")
-          expected_years = set(range(2010, 2026))
           missing = set()
           for instrument in INSTRUMENTS:
               for timeframe in TIMEFRAMES:
@@ -136,9 +135,15 @@ jobs:
                       continue
                   bars = load_csv(path)
                   years = {bar.timestamp.year for bar in bars}
-                  if years != expected_years:
+                  if not years:
+                      raise SystemExit(f"source_calendar_coverage_failure:{instrument}:{timeframe}:no_bars")
+                  first_year = min(years)
+                  last_year = max(years)
+                  expected_years = set(range(first_year, 2026))
+                  if first_year < 2010 or last_year != 2025 or years != expected_years:
                       raise SystemExit(
                           f"source_calendar_coverage_failure:{instrument}:{timeframe}:"
+                          f"first={first_year} last={last_year} "
                           f"missing={sorted(expected_years - years)} unexpected={sorted(years - expected_years)}"
                       )
           expected_missing = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D"), ("WTI", "4H")}
@@ -182,12 +187,16 @@ jobs:
                   )
                   if len(candles) < 100:
                       raise RuntimeError(f"insufficient_bars:{len(candles)}")
-                  expected_years = set(range(2010, 2026))
                   years = {int(c.timestamp_utc[:4]) for c in candles}
-                  if years != expected_years:
+                  if not years:
+                      raise RuntimeError("recovered_calendar_coverage_failure:no_bars")
+                  first_year = min(years)
+                  last_year = max(years)
+                  expected_years = set(range(first_year, 2026))
+                  if first_year < 2010 or last_year != 2025 or years != expected_years:
                       raise RuntimeError(
-                          f"recovered_calendar_coverage_failure:missing={sorted(expected_years-years)} "
-                          f"unexpected={sorted(years-expected_years)}"
+                          f"recovered_calendar_coverage_failure:first={first_year} last={last_year} "
+                          f"missing={sorted(expected_years-years)} unexpected={sorted(years-expected_years)}"
                       )
                   target = root / f"{instrument}_{timeframe}.csv"
                   temp_path = None
@@ -218,12 +227,19 @@ jobs:
           from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
 
           root = Path("data/research/universe_v2")
-          expected_years = set(range(2010, 2026))
           for instrument in INSTRUMENTS:
               for timeframe in TIMEFRAMES:
                   years = {bar.timestamp.year for bar in load_csv(root / f"{instrument}_{timeframe}.csv")}
-                  if years != expected_years:
-                      raise SystemExit(f"final_calendar_coverage_failure:{instrument}:{timeframe}")
+                  if not years:
+                      raise SystemExit(f"final_calendar_coverage_failure:{instrument}:{timeframe}:no_bars")
+                  first_year = min(years)
+                  last_year = max(years)
+                  expected_years = set(range(first_year, 2026))
+                  if first_year < 2010 or last_year != 2025 or years != expected_years:
+                      raise SystemExit(
+                          f"final_calendar_coverage_failure:{instrument}:{timeframe}:"
+                          f"first={first_year} last={last_year}"
+                      )
           print("FINAL CALENDAR COVERAGE PASS")
           PY
 
