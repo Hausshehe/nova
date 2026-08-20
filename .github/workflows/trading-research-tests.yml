@@ -10,6 +10,7 @@ on:
       - trading-research-hypothesis-disposition
       - trading-research-memory-hardening
       - trading-research-memory-gate
+      - fix-dukascopy-recovery-from-frozen
   pull_request:
     branches:
       - trading-research-lab
