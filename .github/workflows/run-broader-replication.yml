@@ -15,7 +15,7 @@ jobs:
       - name: Checkout research code
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: 25dff152e4f65d64c7b999fefda8384970c5657c
           clean: true
 
       - name: Set up Python
