@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .data import load_csv
-from .dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+from .dukascopy_history import INSTRUMENTS, TIMEFRAMES
 
 
 def verify_universe(data_dir: str | Path) -> list[tuple[str, str]]:
@@ -30,9 +30,15 @@ def verify_universe(data_dir: str | Path) -> list[tuple[str, str]]:
         bars = load_csv(path)
         if len(bars) < 100:
             raise ValueError(f"insufficient_bars:{instrument}:{timeframe}:{len(bars)}")
-        validated = _deduplicate_and_validate(bars)
-        if validated != bars:
-            raise ValueError(f"dataset_not_canonical:{instrument}:{timeframe}")
+
+        # load_csv already validates OHLCV values and chronological ordering.
+        # The verifier's canonical invariant is therefore strict timestamp
+        # uniqueness; do not pass Bar objects into the Dukascopy Candle-only
+        # validator, whose contract expects timestamp_utc.
+        timestamps = [bar.timestamp for bar in bars]
+        if len(timestamps) != len(set(timestamps)):
+            raise ValueError(f"dataset_not_canonical:{instrument}:{timeframe}:duplicate_timestamps")
+
         verified.append((instrument, timeframe))
     return verified
 
