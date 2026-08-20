@@ -1,0 +1,77 @@
+name: WTI Yahoo Source Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_commit:
+        description: "Exact reviewed recovery commit to test the frozen Yahoo WTI source against"
+        required: true
+        type: string
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed recovery commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.recovery_commit }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check requests
+      - name: Fetch and validate Yahoo WTI 1D source
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import requests
+
+          symbol = "CL=F"
+          start = datetime(2010, 1, 1, tzinfo=timezone.utc)
+          end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+          period1 = int(start.timestamp())
+          period2 = int((end.replace(year=2026, month=1, day=1)).timestamp())
+          url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+          response = requests.get(
+              url,
+              params={
+                  "period1": period1,
+                  "period2": period2,
+                  "interval": "1d",
+                  "events": "div,splits",
+                  "includeAdjustedClose": "true",
+              },
+              headers={"User-Agent": "Mozilla/5.0 (Nova-TradingResearch/1.0)"},
+              timeout=60,
+          )
+          response.raise_for_status()
+          payload = response.json()["chart"]["result"][0]
+          timestamps = payload["timestamp"]
+          quote = payload["indicators"]["quote"][0]
+          rows = []
+          for i, ts in enumerate(timestamps):
+              values = {key: quote[key][i] for key in ("open", "high", "low", "close", "volume")}
+              if any(values[key] is None for key in ("open", "high", "low", "close")):
+                  continue
+              row_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+              rows.append((row_time, values))
+          invalid = []
+          for row_time, values in rows:
+              if not (values["low"] <= values["open"] <= values["high"] and values["low"] <= values["close"] <= values["high"]):
+                  invalid.append((row_time.isoformat(), values))
+          target = [values for row_time, values in rows if row_time.date().isoformat() == "2010-10-01"]
+          print(f"YAHOO SOURCE symbol={symbol} bars={len(rows)}")
+          print(f"YAHOO RANGE first={rows[0][0].isoformat()} last={rows[-1][0].isoformat()}")
+          print(f"YAHOO OCT01 target={target}")
+          print(f"YAHOO INVALID_OHLC count={len(invalid)}")
+          if invalid:
+              print(f"YAHOO FIRST_INVALID {invalid[0]}")
+              raise SystemExit("yahoo_wti_invalid_ohlc")
+          if not target:
+              raise SystemExit("yahoo_wti_missing_2010_10_01")
+          if len(rows) < 3000:
+              raise SystemExit(f"yahoo_wti_insufficient_bars:{len(rows)}")
+          print("YAHOO WTI SOURCE PASS")
+          PY
