@@ -52,6 +52,14 @@ def test_campaign_recovery_entrypoints_share_one_serialized_lock() -> None:
         assert "cancel-in-progress: false" in content, f"{name} can cancel a valid campaign run"
 
 
+def test_independent_replication_never_uses_stale_hardcoded_sources() -> None:
+    content = _read("run-broader-replication.yml")
+    assert "ref: 25dff152e4f65d64c7b999fefda8384970c5657c" not in content
+    assert "run-id: 32293018258" not in content
+    assert "source_run_id:" in content
+    assert "research_commit:" in content
+
+
 def test_research_ci_does_not_stack_obsolete_runs() -> None:
     content = _read("trading-research-tests.yml")
     assert "concurrency:" in content
