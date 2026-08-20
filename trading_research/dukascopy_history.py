@@ -26,6 +26,9 @@ INSTRUMENT_DATAFEED = {
     "US30": "USA30IDXUSD",
     "WTI": "LIGHTCMDUSD",
 }
+WTI_LEGACY_DATAFEED = "WTICMDUSD"
+WTI_DUAL_DIRECTORY_YEAR = 2014
+WTI_LEGACY_END_YEAR = 2013
 TIMEFRAMES = ("1D", "4H")
 MAX_429_RETRIES = 5
 MAX_5XX_RETRIES = 7
@@ -69,14 +72,32 @@ def _feed_symbol(instrument: str) -> str:
     return INSTRUMENT_DATAFEED.get(instrument, instrument)
 
 
+def _feed_symbols_for_period(instrument: str, year: int) -> tuple[str, ...]:
+    """Return the historical Dukascopy directories used for an instrument/year."""
+    if instrument != "WTI":
+        return (_feed_symbol(instrument),)
+    if year <= WTI_LEGACY_END_YEAR:
+        return (WTI_LEGACY_DATAFEED,)
+    if year == WTI_DUAL_DIRECTORY_YEAR:
+        return (WTI_LEGACY_DATAFEED, _feed_symbol(instrument))
+    return (_feed_symbol(instrument),)
+
+
 def _month_zero_based(month: int) -> str:
     if not 1 <= month <= 12:
         raise ValueError("month_out_of_range")
     return f"{month - 1:02d}"
 
 
-def _native_url(instrument: str, timeframe: str, year: int, month: int | None = None) -> str:
-    symbol = _feed_symbol(instrument)
+def _native_url(
+    instrument: str,
+    timeframe: str,
+    year: int,
+    month: int | None = None,
+    *,
+    feed_symbol: str | None = None,
+) -> str:
+    symbol = feed_symbol or _feed_symbol(instrument)
     if timeframe == "1D":
         return f"{DATAFEED_BASE_URL}/{symbol}/{year}/BID_candles_day_1.bi5"
     if timeframe == "1H":
@@ -178,9 +199,16 @@ def _decode_candle_file(payload: bytes, base_time: datetime) -> list[Candle]:
     return candles
 
 
-def _deduplicate_and_validate(candles: list[Candle]) -> list[Candle]:
+def _deduplicate_and_validate(
+    candles: list[Candle],
+    *,
+    reject_duplicate_conflicts: bool = False,
+) -> list[Candle]:
     by_timestamp: dict[str, Candle] = {}
     for candle in candles:
+        previous = by_timestamp.get(candle.timestamp_utc)
+        if reject_duplicate_conflicts and previous is not None and previous != candle:
+            raise ValueError(f"duplicate_timestamp_conflict:{candle.timestamp_utc}")
         by_timestamp[candle.timestamp_utc] = candle
     ordered = [by_timestamp[key] for key in sorted(by_timestamp)]
     for index, candle in enumerate(ordered):
@@ -244,22 +272,27 @@ class DukascopyClient:
             raise ValueError("end_must_be_after_start")
         if instrument not in INSTRUMENTS:
             raise ValueError(f"unsupported_instrument:{instrument}")
+        reject_conflicts = instrument == "WTI"
         if timeframe == "1D":
             candles: list[Candle] = []
             for year in range(start.year, end.year + 1):
-                url = _native_url(instrument, "1D", year)
-                if progress:
-                    progress(f"request {instrument} 1D {year}")
-                payload = _request_bytes(self.session, url, progress=progress)
-                if not payload:
+                for symbol in _feed_symbols_for_period(instrument, year):
+                    url = _native_url(instrument, "1D", year, feed_symbol=symbol)
                     if progress:
-                        progress(f"empty {instrument} 1D {year}")
-                    continue
-                decoded = _decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc))
-                candles.extend(decoded)
-                if progress:
-                    progress(f"received {instrument} 1D {year}: bars={len(decoded)}")
-            result = [c for c in _deduplicate_and_validate(candles) if start <= _parse_time(c.timestamp_utc) < end]
+                        progress(f"request {instrument} 1D {year} symbol={symbol}")
+                    payload = _request_bytes(self.session, url, progress=progress)
+                    if not payload:
+                        if progress:
+                            progress(f"empty {instrument} 1D {year} symbol={symbol}")
+                        continue
+                    decoded = _decode_candle_file(payload, datetime(year, 1, 1, tzinfo=timezone.utc))
+                    candles.extend(decoded)
+                    if progress:
+                        progress(f"received {instrument} 1D {year} symbol={symbol}: bars={len(decoded)}")
+            result = [
+                c for c in _deduplicate_and_validate(candles, reject_duplicate_conflicts=reject_conflicts)
+                if start <= _parse_time(c.timestamp_utc) < end
+            ]
             if progress:
                 progress(f"validated {instrument} 1D: bars={len(result)}")
             return result
@@ -268,22 +301,24 @@ class DukascopyClient:
             month = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
             last_month = datetime(end.year, end.month, 1, tzinfo=timezone.utc)
             while month <= last_month:
-                url = _native_url(instrument, "1H", month.year, month.month)
-                if progress:
-                    progress(f"request {instrument} 1H {month.year}-{month.month:02d}")
-                payload = _request_bytes(self.session, url, progress=progress)
-                if payload:
-                    decoded = _decode_candle_file(payload, month)
-                    hourly.extend(decoded)
+                for symbol in _feed_symbols_for_period(instrument, month.year):
+                    url = _native_url(instrument, "1H", month.year, month.month, feed_symbol=symbol)
                     if progress:
-                        progress(f"received {instrument} 1H {month.year}-{month.month:02d}: bars={len(decoded)}")
-                elif progress:
-                    progress(f"empty {instrument} 1H {month.year}-{month.month:02d}")
+                        progress(f"request {instrument} 1H {month.year}-{month.month:02d} symbol={symbol}")
+                    payload = _request_bytes(self.session, url, progress=progress)
+                    if payload:
+                        decoded = _decode_candle_file(payload, month)
+                        hourly.extend(decoded)
+                        if progress:
+                            progress(f"received {instrument} 1H {month.year}-{month.month:02d} symbol={symbol}: bars={len(decoded)}")
+                    elif progress:
+                        progress(f"empty {instrument} 1H {month.year}-{month.month:02d} symbol={symbol}")
                 if month.month == 12:
                     month = datetime(month.year + 1, 1, 1, tzinfo=timezone.utc)
                 else:
                     month = datetime(month.year, month.month + 1, 1, tzinfo=timezone.utc)
-            four_hour = _aggregate_4h(_deduplicate_and_validate(hourly))
+            normalized_hourly = _deduplicate_and_validate(hourly, reject_duplicate_conflicts=reject_conflicts)
+            four_hour = _aggregate_4h(normalized_hourly)
             result = [c for c in four_hour if start <= _parse_time(c.timestamp_utc) < end]
             if progress:
                 progress(f"validated {instrument} 4H: bars={len(result)}")
