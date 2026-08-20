@@ -1,0 +1,266 @@
+name: Recover Broader Trading Research Campaign (FINAL)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Frozen failed campaign run"
+        required: true
+        type: string
+      recovery_commit:
+        description: "Reviewed recovery commit"
+        required: true
+        type: string
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RECOVERY_COMMIT: ${{ inputs.recovery_commit }}
+      FROZEN_SOURCE_COMMIT: d79afc0e463be97a419e20bde348650cdb55c945
+      REVIEWED_RECOVERY_COMMIT: 25dff152e4f65d64c7b999fefda8384970c5657c
+
+    steps:
+      - name: Verify provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          source_run_id = os.environ["SOURCE_RUN_ID"].strip()
+          frozen = os.environ["FROZEN_SOURCE_COMMIT"]
+          reviewed = os.environ["REVIEWED_RECOVERY_COMMIT"]
+          recovery = os.environ["RECOVERY_COMMIT"].strip()
+
+          if source_run_id != "32293018258":
+              raise SystemExit(f"unexpected_source_run:{source_run_id}")
+          if recovery != reviewed:
+              raise SystemExit(f"unapproved_recovery_commit:{recovery}")
+
+          def get_json(url: str):
+              req = urllib.request.Request(url, headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              })
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+          run = get_json(f"https://api.github.com/repos/{repo}/actions/runs/{source_run_id}")
+          if run.get("repository", {}).get("full_name") != repo:
+              raise SystemExit("source_run_repository_mismatch")
+          if run.get("status") != "completed" or run.get("conclusion") not in {"failure", "cancelled"}:
+              raise SystemExit(f"source_run_not_recoverable:{run.get('status')}:{run.get('conclusion')}")
+          if run.get("head_sha") != frozen:
+              raise SystemExit(f"frozen_source_head_mismatch:{run.get('head_sha')}")
+
+          comparison = get_json(f"https://api.github.com/repos/{repo}/compare/{frozen}...{recovery}")
+          if comparison.get("status") != "ahead" or comparison.get("behind_by") != 0:
+              raise SystemExit(
+                  f"recovery_not_clean_descendant:status={comparison.get('status')} "
+                  f"ahead={comparison.get('ahead_by')} behind={comparison.get('behind_by')}"
+              )
+          allowed = {
+              ".github/workflows/trading-research-tests.yml",
+              "tests/test_dukascopy_recovery_from_frozen.py",
+              "trading_research/dukascopy_history.py",
+              "trading_research/migrate_legacy_broader_artifacts.py",
+              "trading_research/rebuild_recovery_manifest.py",
+          }
+          changed = {item["filename"] for item in comparison.get("files", [])}
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f"recovery_contains_unapproved_files:{sorted(unexpected)}")
+          print(f"PROVENANCE PASS ahead={comparison.get('ahead_by')} files={sorted(changed)}")
+          PY
+
+      - name: Checkout reviewed recovery commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RECOVERY_COMMIT }}
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt pytest
+
+      - name: Run focused recovery tests
+        run: python -m pytest -q tests/test_dukascopy_recovery_from_frozen.py
+
+      - name: Download reusable source artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Invalidate stale legacy WTI 4H before validation
+        run: |
+          python - <<'PY'
+          from trading_research.migrate_legacy_broader_artifacts import invalidate_legacy_wti_4h
+          removed = invalidate_legacy_wti_4h("data/research/universe_v2", source_run_id="32293018258")
+          print(f"INVALIDATED {removed}")
+          PY
+
+      - name: Validate reusable source datasets and exact snapshot
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+
+          root = Path("data/research/universe_v2")
+          expected_years = set(range(2010, 2026))
+          missing = set()
+          for instrument in INSTRUMENTS:
+              for timeframe in TIMEFRAMES:
+                  path = root / f"{instrument}_{timeframe}.csv"
+                  if not path.is_file():
+                      missing.add((instrument, timeframe))
+                      continue
+                  bars = load_csv(path)
+                  normalized = _deduplicate_and_validate(bars)
+                  if normalized != bars:
+                      raise SystemExit(f"noncanonical_dataset:{instrument}:{timeframe}")
+                  years = {bar.timestamp.year for bar in bars}
+                  if years != expected_years:
+                      raise SystemExit(
+                          f"source_calendar_coverage_failure:{instrument}:{timeframe}:"
+                          f"missing={sorted(expected_years - years)} unexpected={sorted(years - expected_years)}"
+                      )
+          expected_missing = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D"), ("WTI", "4H")}
+          if missing != expected_missing:
+              raise SystemExit(f"source_snapshot_mismatch:{sorted(missing)}")
+          print(f"SOURCE SNAPSHOT PASS reused={26-len(missing)} rebuild={sorted(missing)}")
+          PY
+
+      - name: Recover five datasets atomically
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, write_csv
+
+          root = Path("data/research/universe_v2")
+          expected = {("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D"), ("WTI", "4H")}
+          present = {
+              (instrument, timeframe)
+              for instrument in ("EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","USDCHF","NZDUSD","US500","NAS100","US30","XAUUSD","XAGUSD","WTI")
+              for timeframe in ("1D", "4H")
+              if (root / f"{instrument}_{timeframe}.csv").is_file()
+          }
+          all_expected = {
+              (instrument, timeframe)
+              for instrument in ("EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","USDCHF","NZDUSD","US500","NAS100","US30","XAUUSD","XAGUSD","WTI")
+              for timeframe in ("1D", "4H")
+          }
+          if all_expected - present != expected:
+              raise SystemExit(f"post_migration_snapshot_mismatch:{sorted(all_expected - present)}")
+
+          for instrument, timeframe in sorted(expected):
+              print(f"RECOVERY {instrument} {timeframe}", flush=True)
+              try:
+                  candles = DukascopyClient().historical_prices(
+                      instrument=instrument,
+                      timeframe=timeframe,
+                      start_utc="2010-01-01T00:00:00+00:00",
+                      end_utc="2026-01-01T00:00:00+00:00",
+                  )
+                  if len(candles) < 100:
+                      raise RuntimeError(f"insufficient_bars:{len(candles)}")
+                  expected_years = set(range(2010, 2026))
+                  years = {int(c.timestamp_utc[:4]) for c in candles}
+                  if years != expected_years:
+                      raise RuntimeError(
+                          f"recovered_calendar_coverage_failure:missing={sorted(expected_years-years)} "
+                          f"unexpected={sorted(years-expected_years)}"
+                      )
+                  target = root / f"{instrument}_{timeframe}.csv"
+                  temp_path = None
+                  try:
+                      with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
+                          temp_path = Path(temp.name)
+                      digest = write_csv(candles, temp_path)
+                      os.replace(temp_path, target)
+                      temp_path = None
+                  finally:
+                      if temp_path is not None:
+                          temp_path.unlink(missing_ok=True)
+                  print(f"RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}", flush=True)
+              except Exception as exc:
+                  raise SystemExit(f"recovery_failed:{instrument}:{timeframe}:{type(exc).__name__}:{exc}") from exc
+          PY
+
+      - name: Rebuild and verify manifest/universe
+        run: |
+          python -m trading_research.rebuild_recovery_manifest
+          python -m trading_research.verify_broader_universe
+
+      - name: Verify final 2010-2025 calendar coverage
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
+
+          root = Path("data/research/universe_v2")
+          expected_years = set(range(2010, 2026))
+          for instrument in INSTRUMENTS:
+              for timeframe in TIMEFRAMES:
+                  years = {bar.timestamp.year for bar in load_csv(root / f"{instrument}_{timeframe}.csv")}
+                  if years != expected_years:
+                      raise SystemExit(f"final_calendar_coverage_failure:{instrument}:{timeframe}")
+          print("FINAL CALENDAR COVERAGE PASS")
+          PY
+
+      - name: Run frozen 104-context matrix
+        run: python -m trading_research.broader_campaign_runner
+
+      - name: Assert complete matrix evidence
+        run: |
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          results = Path("data/research/broader_matrix_results.csv")
+          summary = Path("data/research/broader_matrix_summary.json")
+          if not results.is_file() or not summary.is_file():
+              raise SystemExit("matrix_evidence_missing")
+          with results.open("r", encoding="utf-8", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+          if len(rows) != 104:
+              raise SystemExit(f"matrix_row_count_mismatch:{len(rows)}")
+          payload = json.loads(summary.read_text(encoding="utf-8"))
+          if payload.get("contexts") != 104 or payload.get("datasets") != 26:
+              raise SystemExit(f"matrix_summary_mismatch:{payload}")
+          print("MATRIX COMPLETE: 104 contexts / 26 datasets. STOP.")
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-broader-campaign-final-evidence
+          path: |
+            data/research/universe_v2/manifest.json
+            data/research/broader_matrix_results.csv
+            data/research/broader_matrix_summary.json
+            data/research/broader_matrix_report.md
+          if-no-files-found: error
+          retention-days: 14
