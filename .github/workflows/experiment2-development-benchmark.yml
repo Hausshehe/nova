@@ -43,6 +43,19 @@ jobs:
           path: data/research/universe_v2
           merge-multiple: true
 
+      - name: Restore historical data acquisition module
+        run: |
+          git fetch --no-tags --depth=1 origin 25dff152e4f65d64c7b999fefda8384970c5657c
+          git checkout 25dff152e4f65d64c7b999fefda8384970c5657c -- trading_research/dukascopy_history.py
+          python -m py_compile trading_research/dukascopy_history.py
+          python - <<'PY'
+          from trading_research.dukascopy_history import DukascopyClient, INSTRUMENTS, TIMEFRAMES
+          assert DukascopyClient is not None
+          assert 'WTI' in INSTRUMENTS
+          assert TIMEFRAMES == ('1D', '4H')
+          print('HISTORICAL ACQUISITION MODULE PASS')
+          PY
+
       - name: Build independent WTI daily dataset from Yahoo Finance
         run: |
           python - <<'PY'
