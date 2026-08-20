@@ -101,7 +101,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import json
-          import subprocess
           import pandas as pd
 
           source_root = Path('/tmp/financial-data/pyfinancialdata/data/currencies/oanda/NAS100_USD')
@@ -168,6 +167,7 @@ jobs:
           import os
           from pathlib import Path
           from tempfile import NamedTemporaryFile
+          import pandas as pd
           from trading_research.dukascopy_history import DukascopyClient, write_csv
 
           root = Path('data/research/universe_v2')
@@ -190,7 +190,6 @@ jobs:
                   raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{sorted(required_years-years)}')
 
               if instrument == 'NAS100':
-                  # Replace the temporary late-period file with a splice of early OANDA + late Dukascopy.
                   early = pd.read_csv(root / 'NAS100_4H.csv')
                   early['timestamp'] = pd.to_datetime(early['timestamp'], utc=True)
                   late = pd.DataFrame([
@@ -208,8 +207,6 @@ jobs:
                   combined = pd.concat([early, late], ignore_index=True)
                   combined = combined[(combined['timestamp'] >= '2010-01-01') & (combined['timestamp'] < '2026-01-01')]
                   combined = combined.sort_values('timestamp').drop_duplicates(subset=['timestamp'], keep='first')
-                  if combined['timestamp'].duplicated().any():
-                      raise SystemExit('nas100_duplicate_timestamp_after_splice')
                   for row in combined.itertuples(index=False):
                       if not (row.low <= row.open <= row.high and row.low <= row.close <= row.high):
                           raise SystemExit(f'nas100_splice_invalid_ohlc:{row.timestamp}')
