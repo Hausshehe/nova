@@ -1,0 +1,68 @@
+name: WTI Raw BI5 Record Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_commit:
+        description: "Exact reviewed recovery commit to inspect"
+        required: true
+        type: string
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed recovery commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.recovery_commit }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check requests
+      - name: Inspect raw October 2010 WTI records
+        run: |
+          python - <<'PY'
+          import lzma
+          import struct
+          from datetime import datetime, timezone
+          import requests
+
+          from trading_research.dukascopy_history import DATAFEED_BASE_URL, CANDLE_RECORD_SIZE, CANDLE_STRUCT
+
+          headers = {
+              "User-Agent": "Nova-TradingResearch/1.0",
+              "Referer": "https://freeserv.dukascopy.com/",
+              "Accept": "*/*",
+          }
+          symbols = {"LIGHTCMDUSD": "LIGHT", "WTICMDUSD": "WTI_LEGACY"}
+          target_day_index = (datetime(2010, 10, 1, tzinfo=timezone.utc) - datetime(2010, 1, 1, tzinfo=timezone.utc)).days
+          base = datetime(2010, 1, 1, tzinfo=timezone.utc)
+          session = requests.Session()
+
+          for symbol, label in symbols.items():
+              url = f"{DATAFEED_BASE_URL}/{symbol}/2010/BID_candles_day_1.bi5"
+              print(f"RAW SOURCE {label} url={url}", flush=True)
+              response = session.get(url, timeout=(20, 90), headers=headers)
+              response.raise_for_status()
+              raw = lzma.decompress(response.content)
+              print(f"RAW SIZE {label} bytes={len(raw)} records={len(raw) / CANDLE_RECORD_SIZE}", flush=True)
+              start = max(0, target_day_index - 1)
+              end = min(len(raw) // CANDLE_RECORD_SIZE, target_day_index + 2)
+              for index in range(start, end):
+                  offset = index * CANDLE_RECORD_SIZE
+                  record = raw[offset : offset + CANDLE_RECORD_SIZE]
+                  values = CANDLE_STRUCT.unpack(record)
+                  seconds, open_raw, close_raw, low_raw, high_raw, volume = values
+                  ts = base.timestamp() + seconds
+                  timestamp = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                  print(
+                      f"RAW RECORD {label} index={index} offset={offset} "
+                      f"hex={record.hex()} "
+                      f"fields={values} timestamp={timestamp} "
+                      f"ohlc=open:{open_raw} close:{close_raw} low:{low_raw} high:{high_raw} volume:{volume}",
+                      flush=True,
+                  )
+          PY
