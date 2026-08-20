@@ -6,8 +6,6 @@ backtesting, gates, memory, and strategy lifecycle remain outside the model.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from typing import Callable
 
@@ -28,27 +26,6 @@ class ResearchCycleResult:
 
 
 SignalCompiler = Callable[[Hypothesis], Signal]
-
-
-def _experiment_id(record: ExperimentRecord) -> str:
-    """Return an identity for research content, not its execution timestamp."""
-    payload = record.to_dict()
-    payload.pop("created_at_utc", None)
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return "exp-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-
-
-def _record_experience(memory: ExperienceStore, record: ExperimentRecord) -> None:
-    payload = record.to_dict()
-    memory.record_experiment(
-        experiment_id=_experiment_id(record),
-        created_at_utc=record.created_at_utc,
-        hypothesis_name=record.hypothesis.name,
-        symbol=record.hypothesis.symbol,
-        timeframe=record.hypothesis.timeframe,
-        final_decision=record.final_decision.value,
-        record=payload,
-    )
 
 
 class AutonomousResearchSession:
@@ -96,7 +73,6 @@ class AutonomousResearchSession:
                 strategy_version=self.strategy_version,
                 memory_store=self.memory,
             )
-            _record_experience(self.memory, record)
             return ResearchCycleResult(
                 status=record.final_decision.value,
                 message="Hypothesis was validated, tested, gated, and recorded.",
