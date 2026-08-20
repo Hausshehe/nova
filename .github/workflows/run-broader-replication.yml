@@ -87,6 +87,44 @@ jobs:
           print(f'2010-10-01={out.loc[out.timestamp.str.startswith("2010-10-01")].to_dict("records")}')
           PY
 
+      - name: Recover three missing reusable 4H datasets
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, write_csv
+
+          root = Path('data/research/universe_v2')
+          targets = [('NAS100', '4H'), ('NZDUSD', '4H'), ('US500', '4H')]
+          for instrument, timeframe in targets:
+              target = root / f'{instrument}_{timeframe}.csv'
+              print(f'RECOVER {instrument} {timeframe}', flush=True)
+              candles = DukascopyClient().historical_prices(
+                  instrument=instrument,
+                  timeframe=timeframe,
+                  start_utc='2010-01-01T00:00:00+00:00',
+                  end_utc='2026-01-01T00:00:00+00:00',
+                  progress=lambda message: print(message, flush=True),
+              )
+              if len(candles) < 100:
+                  raise SystemExit(f'insufficient_bars:{instrument}:{timeframe}:{len(candles)}')
+              years = {int(c.timestamp_utc[:4]) for c in candles}
+              if min(years) < 2010 or max(years) != 2025:
+                  raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{min(years)}-{max(years)}')
+              temp_path = None
+              try:
+                  with NamedTemporaryFile(prefix=f'.{target.name}.', suffix='.tmp', dir=root, delete=False) as temp:
+                      temp_path = Path(temp.name)
+                  digest = write_csv(candles, temp_path)
+                  os.replace(temp_path, target)
+                  temp_path = None
+              finally:
+                  if temp_path is not None:
+                      temp_path.unlink(missing_ok=True)
+              print(f'RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}', flush=True)
+          PY
+
       - name: Validate exact 26-dataset universe
         run: |
           python - <<'PY'
@@ -94,7 +132,7 @@ jobs:
           from trading_research.data import load_csv
           from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES
           root = Path('data/research/universe_v2')
-          expected = {(i,t) for i in INSTRUMENTS for t in TIMEFRAMES}
+          expected = {(i,t) for i,t in INSTRUMENTS for t in TIMEFRAMES}
           missing = {(i,t) for i,t in expected if not (root / f'{i}_{t}.csv').is_file()}
           if missing:
               raise SystemExit(f'missing_datasets:{sorted(missing)}')
