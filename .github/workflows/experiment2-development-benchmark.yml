@@ -94,6 +94,8 @@ jobs:
           set -euo pipefail
           git clone --depth=1 --filter=blob:none --sparse https://github.com/FutureSharks/financial-data.git /tmp/financial-data
           cd /tmp/financial-data
+          git fetch --no-tags origin 7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d
+          git checkout 7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d
           git sparse-checkout set \
             pyfinancialdata/data/currencies/oanda/NAS100_USD/2010 \
             pyfinancialdata/data/currencies/oanda/NAS100_USD/2011
@@ -150,7 +152,8 @@ jobs:
               'instrument': 'NAS100',
               'timeframe': '4H',
               'early_source': 'FutureSharks/financial-data OANDA NAS100_USD minute archive',
-              'early_source_url': 'https://github.com/FutureSharks/financial-data',
+              'early_source_commit': '7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d',
+              'early_source_url': 'https://github.com/FutureSharks/financial-data/tree/7ba1d404aa8b0e1c0f71321acebadcbfb9bcca8d/pyfinancialdata/data/currencies/oanda/NAS100_USD',
               'early_period': '[2010-01-01, 2011-09-01)',
               'later_source': 'Dukascopy native 4H',
               'later_period': '[2011-09-01, 2026-01-01)',
