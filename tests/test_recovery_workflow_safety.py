@@ -52,6 +52,13 @@ def test_campaign_recovery_entrypoints_share_one_serialized_lock() -> None:
         assert "cancel-in-progress: false" in content, f"{name} can cancel a valid campaign run"
 
 
+def test_research_ci_does_not_stack_obsolete_runs() -> None:
+    content = _read("trading-research-tests.yml")
+    assert "concurrency:" in content
+    assert "trading-research-tests-${{ github.workflow }}-${{ github.ref }}" in content
+    assert "cancel-in-progress: true" in content
+
+
 def test_final_recovery_workflow_serializes_campaign_runs() -> None:
     content = _read("recover-broader-campaign-final.yml")
     assert "concurrency:" in content
