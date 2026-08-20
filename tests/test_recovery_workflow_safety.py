@@ -11,6 +11,7 @@ RECOVERY_WORKFLOWS = {
     "recover-broader-campaign.yml",
     "recover-broader-campaign-safe.yml",
     "recover-broader-campaign-final.yml",
+    "run-broader-replication.yml",
 }
 
 
@@ -40,6 +41,15 @@ def test_recovery_workflows_upload_partial_failure_evidence_without_secondary_fa
     for name in RECOVERY_WORKFLOWS:
         content = _read(name)
         assert "if-no-files-found: warn" in content, f"{name} can hide the real failure behind artifact-upload failure"
+
+
+def test_campaign_recovery_entrypoints_share_one_serialized_lock() -> None:
+    expected = "group: nova-broader-campaign-recovery"
+    for name in RECOVERY_WORKFLOWS:
+        content = _read(name)
+        assert "concurrency:" in content, f"{name} can race a sibling campaign workflow"
+        assert expected in content, f"{name} is outside the shared campaign lock"
+        assert "cancel-in-progress: false" in content, f"{name} can cancel a valid campaign run"
 
 
 def test_final_recovery_workflow_serializes_campaign_runs() -> None:
