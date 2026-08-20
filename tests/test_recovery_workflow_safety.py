@@ -40,3 +40,10 @@ def test_recovery_workflows_upload_partial_failure_evidence_without_secondary_fa
     for name in RECOVERY_WORKFLOWS:
         content = _read(name)
         assert "if-no-files-found: warn" in content, f"{name} can hide the real failure behind artifact-upload failure"
+
+
+def test_final_recovery_workflow_serializes_campaign_runs() -> None:
+    content = _read("recover-broader-campaign-final.yml")
+    assert "concurrency:" in content
+    assert "group: nova-broader-campaign-recovery" in content
+    assert "cancel-in-progress: false" in content
