@@ -20,5 +20,8 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+
       - name: Run Experiment 2 unit tests
         run: python -m pytest -q tests/test_experiment2.py
