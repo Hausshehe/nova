@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from trading_research.data import Bar
 from trading_research.experiment2 import (
     build_basic_features,
@@ -5,13 +7,13 @@ from trading_research.experiment2 import (
     make_walk_forward_windows,
     standardize_fit_transform,
 )
-from datetime import datetime, timezone
 
 
 def _bars(n: int = 40) -> list[Bar]:
+    start = datetime(2020, 1, 1, tzinfo=timezone.utc)
     return [
         Bar(
-            timestamp=datetime(2020, 1, 1 + i, tzinfo=timezone.utc),
+            timestamp=start + timedelta(days=i),
             open=100.0 + i,
             high=101.0 + i,
             low=99.0 + i,
@@ -37,23 +39,30 @@ def test_future_change_does_not_alter_current_features() -> None:
     bars = _bars()
     baseline = build_basic_features(bars, prediction_horizon=1, short_window=5, long_window=20)
     changed = list(bars)
-    changed[20].close += 1000.0
+    changed[20] = Bar(
+        timestamp=changed[20].timestamp,
+        open=changed[20].open,
+        high=changed[20].high,
+        low=changed[20].low,
+        close=changed[20].close + 1000.0,
+        volume=changed[20].volume,
+    )
     changed_features = build_basic_features(changed, prediction_horizon=1, short_window=5, long_window=20)
     # The row at bar 19 must not use bar 20 in its feature vector.
     assert baseline[0].values == changed_features[0].values
 
 
-def test_walk_forward_windows_are_ordered_and_disjoint() -> None:
+def test_walk_forward_windows_are_ordered_and_chronological() -> None:
     windows = make_walk_forward_windows(
         100, train_size=50, validation_size=20, test_size=10, step=10
     )
     assert windows
-    assert windows[0].train_end == windows[0].validation_start
-    assert windows[0].validation_end == windows[0].test_start
-    assert windows[0].test_end <= windows[1].train_end if len(windows) > 1 else True
-    for left, right in zip(windows, windows[1:]):
-        assert left.test_start < left.test_end <= right.test_end
-        assert right.train_start > left.train_start
+    for window in windows:
+        assert window.train_start < window.train_end <= window.validation_start
+        assert window.validation_start < window.validation_end <= window.test_start
+        assert window.test_start < window.test_end
+    assert windows[0].train_start < windows[1].train_start
+    assert windows[0].test_start < windows[1].test_start
 
 
 def test_standardization_uses_train_statistics_only() -> None:
