@@ -87,20 +87,31 @@ jobs:
           from trading_research.dukascopy_history import INSTRUMENTS, DukascopyClient, write_csv
 
           root = Path('data/research/universe_v2')
-          required_years = set(range(2010, 2026))
+          default_required_years = set(range(2010, 2026))
+          approved_required_years = {'US30': set(range(2013, 2026))}
+
           for instrument in INSTRUMENTS:
               target = root / f'{instrument}_1D.csv'
               if instrument == 'WTI':
                   print('1D SOURCE OVERRIDE WTI=Yahoo independent source', flush=True)
                   continue
+
+              required_years = approved_required_years.get(instrument, default_required_years)
               recover = not target.is_file()
               if not recover:
                   bars = load_csv(target)
                   years = {bar.timestamp.year for bar in bars}
                   recover = not required_years.issubset(years)
                   if not recover:
-                      print(f'1D COVERAGE PASS {instrument} years={min(years)}-{max(years)}', flush=True)
+                      if instrument == 'US30':
+                          print('1D APPROVED SOURCE COVERAGE US30 years=2013-2025 (pre-2013 unavailable)', flush=True)
+                      else:
+                          print(f'1D COVERAGE PASS {instrument} years={min(years)}-{max(years)}', flush=True)
                       continue
+
+              if instrument == 'US30':
+                  raise SystemExit('US30_1D_APPROVED_FROZEN_SOURCE_MISSING')
+
               print(f'RECOVER 1D {instrument}', flush=True)
               candles = DukascopyClient().historical_prices(
                   instrument=instrument,
@@ -139,7 +150,12 @@ jobs:
           for instrument, timeframe in sorted(expected):
               bars = load_csv(root / f'{instrument}_{timeframe}.csv')
               years = {bar.timestamp.year for bar in bars}
-              first_expected_year = 2011 if instrument == 'NAS100' and timeframe == '4H' else 2010
+              if instrument == 'US30' and timeframe == '1D':
+                  first_expected_year = 2013
+              elif instrument == 'NAS100' and timeframe == '4H':
+                  first_expected_year = 2011
+              else:
+                  first_expected_year = 2010
               required_years = set(range(first_expected_year, 2026))
               if not required_years.issubset(years):
                   raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{sorted(required_years-years)}')
