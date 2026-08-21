@@ -1,0 +1,41 @@
+name: Context Intelligence Replication 2026
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replicate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+        with:
+          ref: context-intelligence-feasibility
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check requests pytest
+
+      - name: Validate replication code
+        run: python -m py_compile trading_research/context_intelligence_replication_2026.py
+
+      - name: Run one-shot XAGUSD 2026 replication
+        run: python -m trading_research.context_intelligence_replication_2026
+
+      - name: Upload replication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-context-intelligence-replication-2026
+          path: data/research/context_replication_2026/replication_summary.json
+          if-no-files-found: error
+          retention-days: 30
