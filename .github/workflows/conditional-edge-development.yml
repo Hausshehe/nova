@@ -2,9 +2,6 @@ name: Conditional Edge Development Benchmark
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - experiment-conditional-edge-development
 
 jobs:
   benchmark:
