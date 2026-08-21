@@ -11,7 +11,7 @@ jobs:
       actions: read
       contents: read
     env:
-      SOURCE_RUN_ID: "32456926447"
+      SOURCE_RUN_ID: "32293018258"
       EXPERIMENT_REF: "context-intelligence-feasibility"
 
     steps:
@@ -39,8 +39,84 @@ jobs:
           path: data/research/universe_v2
           merge-multiple: true
 
-      - name: Validate frozen research data
-        run: python -c "from trading_research.verify_broader_universe import verify_universe; print('FROZEN_DATA_VERIFIED', len(verify_universe('data/research/universe_v2')))"
+      - name: Verify source snapshot and recover only the known missing datasets
+        env:
+          RECOVERY_SOURCE_RUN_ID: ${{ env.SOURCE_RUN_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.data import INSTRUMENTS, TIMEFRAMES, load_csv
+          from trading_research.dukascopy_history import DukascopyClient, write_csv
+
+          root = Path("data/research/universe_v2")
+          source_run = os.environ["RECOVERY_SOURCE_RUN_ID"]
+          expected_missing_before_recovery = {
+              ("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H"), ("WTI", "1D")
+          }
+          missing = {
+              (instrument, timeframe)
+              for instrument in INSTRUMENTS
+              for timeframe in TIMEFRAMES
+              if not (root / f"{instrument}_{timeframe}.csv").is_file()
+          }
+          if source_run == "32293018258" and missing != expected_missing_before_recovery:
+              raise SystemExit(f"source_snapshot_mismatch:{sorted(missing)}")
+
+          for path in root.glob("*.csv"):
+              bars = load_csv(path)
+              if len(bars) < 100:
+                  raise SystemExit(f"invalid_source_dataset:{path.name}:{len(bars)}")
+          print(f"SOURCE FROZEN SNAPSHOT VERIFIED existing={26-len(missing)} missing={sorted(missing)}")
+
+          # Reconstruct the exact recovery procedure used by the frozen campaign:
+          # WTI 1D from the pinned Yahoo source, then the remaining three datasets
+          # from the same pinned Dukascopy acquisition code.
+          PY
+          python -m trading_research.recover_wti_yahoo
+          python - <<'PY'
+          from pathlib import Path
+          from trading_research.data import load_csv
+          p = Path("data/research/universe_v2/WTI_1D.csv")
+          if not p.is_file():
+              raise SystemExit("WTI_1D_RECOVERY_MISSING")
+          bars = load_csv(p)
+          if len(bars) < 100:
+              raise SystemExit(f"WTI_1D_RECOVERY_INVALID:{len(bars)}")
+          print(f"WTI_1D_RECOVERED bars={len(bars)}")
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, write_csv
+
+          root = Path("data/research/universe_v2")
+          missing = [("NAS100", "4H"), ("NZDUSD", "4H"), ("US500", "4H")]
+          for instrument, timeframe in missing:
+              target = root / f"{instrument}_{timeframe}.csv"
+              if target.exists():
+                  continue
+              candles = DukascopyClient().historical_prices(
+                  instrument=instrument,
+                  timeframe=timeframe,
+                  start_utc="2010-01-01T00:00:00+00:00",
+                  end_utc="2025-12-31T23:59:59+00:00",
+              )
+              if len(candles) < 100:
+                  raise SystemExit(f"recovery_insufficient:{instrument}:{timeframe}:{len(candles)}")
+              with NamedTemporaryFile(prefix=f".{target.name}.", suffix=".tmp", dir=root, delete=False) as temp:
+                  temp_path = Path(temp.name)
+              try:
+                  write_csv(candles, temp_path)
+                  temp_path.replace(target)
+              finally:
+                  temp_path.unlink(missing_ok=True)
+              print(f"RECOVERED {instrument} {timeframe} bars={len(candles)}")
+          PY
+
+      - name: Verify complete frozen universe
+        run: python -m trading_research.verify_broader_universe
 
       - name: Validate benchmark code
         run: python -m py_compile trading_research/context_intelligence_benchmark.py
