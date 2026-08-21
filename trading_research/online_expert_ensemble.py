@@ -96,7 +96,9 @@ def evaluate_online_expert_ensemble(
     ):
         raise ValueError("invalid parameters")
 
-    history_start = 49
+    # The conditional-edge policy needs 99 bars of context history. The
+    # baseline therefore uses exactly the same eligible-bar universe.
+    history_start = 99
     if len(bars) <= history_start:
         return {
             "policy": "causal_online_expert_ensemble",
@@ -130,9 +132,6 @@ def evaluate_online_expert_ensemble(
     fold_values: list[list[float]] = [[] for _ in range(folds)]
     decay = exp(-1.0 / half_life)
 
-    # Historical outcomes are processed once, chronologically, and only after
-    # their horizon has fully elapsed. The same eligible-bar universe is used
-    # by both the baseline and conditional-edge experiment.
     next_completed = 0
     for index in chronological_indices:
         cutoff = index - future_bars
