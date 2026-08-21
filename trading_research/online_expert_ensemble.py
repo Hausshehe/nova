@@ -13,7 +13,6 @@ from statistics import mean
 from typing import Sequence
 
 from .data import Bar
-from .high_recall_candidate_policy import high_recall_candidate_indices
 
 EXPERTS = (
     "sma",
@@ -97,8 +96,33 @@ def evaluate_online_expert_ensemble(
     ):
         raise ValueError("invalid parameters")
 
-    candidates = sorted(high_recall_candidate_indices(bars, fast_period=20, slow_period=50))
-    evaluation_candidates = [index for index in candidates if index >= evaluation_start_index]
+    history_start = 49
+    if len(bars) <= history_start:
+        return {
+            "policy": "causal_online_expert_ensemble",
+            "experts": EXPERTS,
+            "candidate_bars": 0,
+            "decisions": 0,
+            "decision_rate": 0.0,
+            "mean_net_return_bps": 0.0,
+            "positive_net_rate": 0.0,
+            "fold_net_returns": [0.0 for _ in range(folds)],
+            "folds_positive": 0,
+            "predictions": [],
+            "parameters": {
+                "future_bars": future_bars,
+                "transaction_cost_bps": transaction_cost_bps,
+                "half_life": half_life,
+                "min_history": min_history,
+                "folds": folds,
+                "evaluation_start_index": evaluation_start_index,
+            },
+            "causal_rule": "Each completed expert outcome is incorporated once, only after its horizon completes; final-test outcomes may influence only later final-test decisions.",
+        }
+
+    chronological_indices = list(range(history_start, len(bars)))
+    evaluation_start = max(evaluation_start_index, history_start)
+    evaluation_candidates = [index for index in chronological_indices if index >= evaluation_start]
     closes = [bar.close for bar in bars]
     scores = {expert: 0.0 for expert in EXPERTS}
     observations = {expert: 0 for expert in EXPERTS}
@@ -106,14 +130,14 @@ def evaluate_online_expert_ensemble(
     fold_values: list[list[float]] = [[] for _ in range(folds)]
     decay = exp(-1.0 / half_life)
 
-    # Advance through all historical candidate outcomes exactly once. This
-    # includes development history and, causally, completed final-test outcomes
-    # that become available before later final-test decisions.
+    # Historical outcomes are processed once, chronologically, and only after
+    # their horizon has fully elapsed. The same eligible-bar universe is used
+    # by both the baseline and conditional-edge experiment.
     next_completed = 0
-    for index in candidates:
+    for index in chronological_indices:
         cutoff = index - future_bars
-        while next_completed < len(candidates) and candidates[next_completed] <= cutoff:
-            historical_index = candidates[next_completed]
+        while next_completed < len(chronological_indices) and chronological_indices[next_completed] <= cutoff:
+            historical_index = chronological_indices[next_completed]
             next_completed += 1
             if historical_index + future_bars >= len(bars):
                 continue
@@ -127,7 +151,7 @@ def evaluate_online_expert_ensemble(
                 scores[expert] = decay * scores[expert] + (1.0 - decay) * net
                 observations[expert] += 1
 
-        if index < evaluation_start_index:
+        if index < evaluation_start:
             continue
         if min(observations.values()) < min_history:
             continue
@@ -144,8 +168,8 @@ def evaluate_online_expert_ensemble(
         raw = (closes[index + future_bars] / closes[index] - 1.0) * 10_000.0
         signed = raw if direction == "LONG" else -raw
         net = signed - transaction_cost_bps
-        test_length = max(1, len(bars) - evaluation_start_index)
-        fold = min(folds - 1, (index - evaluation_start_index) * folds // test_length)
+        test_length = max(1, len(bars) - evaluation_start)
+        fold = min(folds - 1, max(0, (index - evaluation_start) * folds // test_length))
         fold_values[fold].append(net)
         predictions.append(
             EnsemblePrediction(
@@ -169,6 +193,7 @@ def evaluate_online_expert_ensemble(
         "positive_net_rate": sum(value > 0 for value in nets) / len(nets) if nets else 0.0,
         "fold_net_returns": fold_net,
         "folds_positive": sum(value > 0 for value in fold_net),
+        "predictions": [prediction.__dict__ for prediction in predictions],
         "parameters": {
             "future_bars": future_bars,
             "transaction_cost_bps": transaction_cost_bps,
