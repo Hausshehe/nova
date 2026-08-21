@@ -9,10 +9,10 @@ def _bars(n=260):
     return [
         Bar(
             timestamp=start + timedelta(hours=i),
-            open=100 + i * 0.01,
-            high=101 + i * 0.01,
-            low=99 + i * 0.01,
-            close=100 + i * 0.01,
+            open=100 + i * 2.0,
+            high=102 + i * 2.0,
+            low=98 + i * 2.0,
+            close=100 + i * 2.0,
             volume=1.0,
         )
         for i in range(n)
