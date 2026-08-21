@@ -1,0 +1,54 @@
+name: Context Intelligence Benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_RUN_ID: "32456926447"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check requests pytest
+
+      - name: Download frozen source datasets
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Validate frozen research data
+        run: python -c "from trading_research.verify_broader_universe import verify_universe; print('FROZEN_DATA_VERIFIED', len(verify_universe('data/research/universe_v2')))"
+
+      - name: Validate benchmark code
+        run: python -m py_compile trading_research/context_intelligence_benchmark.py
+
+      - name: Run causal context benchmark
+        run: python -m trading_research.context_intelligence_benchmark
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-context-intelligence-benchmark
+          path: data/research/context_intelligence_benchmark.json
+          if-no-files-found: error
+          retention-days: 30
