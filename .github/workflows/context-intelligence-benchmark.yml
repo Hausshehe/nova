@@ -6,6 +6,13 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_RUN_ID: "32456926447"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,11 +25,21 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check requests pytest
 
+      - name: Download frozen source datasets
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Validate frozen research data
+        run: python -c "from trading_research.verify_broader_universe import verify_universe; print('FROZEN_DATA_VERIFIED', len(verify_universe('data/research/universe_v2')))"
+
       - name: Validate benchmark code
         run: python -m py_compile trading_research/context_intelligence_benchmark.py
-
-      - name: Verify frozen research data
-        run: python -c "from trading_research.broader_campaign_runner import verify_manifest; verify_manifest(); print('FROZEN_DATA_VERIFIED')"
 
       - name: Run causal context benchmark
         run: python -m trading_research.context_intelligence_benchmark
