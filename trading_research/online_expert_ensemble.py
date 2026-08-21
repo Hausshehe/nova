@@ -85,11 +85,20 @@ def evaluate_online_expert_ensemble(
     half_life: float = 60.0,
     min_history: int = 120,
     folds: int = 4,
+    evaluation_start_index: int = 0,
 ) -> dict[str, object]:
-    if future_bars <= 0 or half_life <= 0 or min_history < 0 or folds <= 0:
+    if (
+        future_bars <= 0
+        or half_life <= 0
+        or min_history < 0
+        or folds <= 0
+        or evaluation_start_index < 0
+        or evaluation_start_index > len(bars)
+    ):
         raise ValueError("invalid parameters")
 
     candidates = sorted(high_recall_candidate_indices(bars, fast_period=20, slow_period=50))
+    evaluation_candidates = [index for index in candidates if index >= evaluation_start_index]
     closes = [bar.close for bar in bars]
     scores = {expert: 0.0 for expert in EXPERTS}
     observations = {expert: 0 for expert in EXPERTS}
@@ -97,9 +106,9 @@ def evaluate_online_expert_ensemble(
     fold_values: list[list[float]] = [[] for _ in range(folds)]
     decay = exp(-1.0 / half_life)
 
-    # Advance through historical candidate outcomes exactly once. A candidate
-    # at j becomes available for learning when the current decision index i is
-    # at least j + future_bars.
+    # Advance through all historical candidate outcomes exactly once. This
+    # includes development history and, causally, completed final-test outcomes
+    # that become available before later final-test decisions.
     next_completed = 0
     for index in candidates:
         cutoff = index - future_bars
@@ -118,6 +127,8 @@ def evaluate_online_expert_ensemble(
                 scores[expert] = decay * scores[expert] + (1.0 - decay) * net
                 observations[expert] += 1
 
+        if index < evaluation_start_index:
+            continue
         if min(observations.values()) < min_history:
             continue
 
@@ -133,7 +144,8 @@ def evaluate_online_expert_ensemble(
         raw = (closes[index + future_bars] / closes[index] - 1.0) * 10_000.0
         signed = raw if direction == "LONG" else -raw
         net = signed - transaction_cost_bps
-        fold = min(folds - 1, index * folds // len(bars))
+        test_length = max(1, len(bars) - evaluation_start_index)
+        fold = min(folds - 1, (index - evaluation_start_index) * folds // test_length)
         fold_values[fold].append(net)
         predictions.append(
             EnsemblePrediction(
@@ -150,9 +162,9 @@ def evaluate_online_expert_ensemble(
     return {
         "policy": "causal_online_expert_ensemble",
         "experts": EXPERTS,
-        "candidate_bars": len(candidates),
+        "candidate_bars": len(evaluation_candidates),
         "decisions": len(predictions),
-        "decision_rate": len(predictions) / len(candidates) if candidates else 0.0,
+        "decision_rate": len(predictions) / len(evaluation_candidates) if evaluation_candidates else 0.0,
         "mean_net_return_bps": mean(nets) if nets else 0.0,
         "positive_net_rate": sum(value > 0 for value in nets) / len(nets) if nets else 0.0,
         "fold_net_returns": fold_net,
@@ -163,6 +175,7 @@ def evaluate_online_expert_ensemble(
             "half_life": half_life,
             "min_history": min_history,
             "folds": folds,
+            "evaluation_start_index": evaluation_start_index,
         },
-        "causal_rule": "Each completed expert outcome is incorporated once, only after its horizon completes; future outcomes are evaluation-only.",
+        "causal_rule": "Each completed expert outcome is incorporated once, only after its horizon completes; final-test outcomes may influence only later final-test decisions.",
     }
