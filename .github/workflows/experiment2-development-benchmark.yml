@@ -150,7 +150,7 @@ jobs:
           for instrument, timeframe in sorted(expected):
               bars = load_csv(root / f'{instrument}_{timeframe}.csv')
               years = {bar.timestamp.year for bar in bars}
-              if instrument == 'US30' and timeframe == '1D':
+              if instrument == 'US30':
                   first_expected_year = 2013
               elif instrument == 'NAS100' and timeframe == '4H':
                   first_expected_year = 2011
