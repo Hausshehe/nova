@@ -1,0 +1,177 @@
+name: Context Selector Frozen Final Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  final-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check pytest requests yfinance pandas scikit-learn
+
+      - name: Run CI tests
+        run: python -m pytest -q tests/test_context_selector_development.py tests/test_contextual_online_expert_ensemble.py tests/test_context_selector_final.py
+
+      - name: Download frozen research artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 32293018258
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: frozen-*
+          path: data/research/universe_v2
+          merge-multiple: true
+
+      - name: Build WTI daily development dataset from frozen independent source rule
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          import yfinance as yf
+
+          target = Path('data/research/universe_v2/WTI_1D.csv')
+          target.parent.mkdir(parents=True, exist_ok=True)
+          frame = yf.download(
+              'CL=F',
+              start='2010-01-01',
+              end='2026-01-01',
+              interval='1d',
+              auto_adjust=False,
+              progress=False,
+              threads=False,
+          )
+          if frame is None or frame.empty:
+              raise SystemExit('yahoo_wti_daily_empty')
+          if isinstance(frame.columns, pd.MultiIndex):
+              frame.columns = frame.columns.get_level_values(0)
+          required = ['Open', 'High', 'Low', 'Close', 'Volume']
+          if any(column not in frame.columns for column in required):
+              raise SystemExit('yahoo_wti_columns_missing')
+          frame = frame[required].dropna()
+          frame.index = pd.to_datetime(frame.index, utc=True).normalize()
+          frame = frame[~frame.index.duplicated(keep='last')].sort_index()
+          expected_years = set(range(2010, 2026))
+          if set(frame.index.year) != expected_years:
+              raise SystemExit('yahoo_wti_coverage_failure')
+          out = pd.DataFrame({
+              'timestamp': frame.index.astype(str),
+              'open': frame['Open'].astype(float),
+              'high': frame['High'].astype(float),
+              'low': frame['Low'].astype(float),
+              'close': frame['Close'].astype(float),
+              'volume': frame['Volume'].fillna(0).astype(float),
+          })
+          out.to_csv(target, index=False)
+          print(f'WTI FINAL DATASET: bars={len(out)}')
+          PY
+
+      - name: Recover required missing 4H datasets
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, write_csv
+
+          root = Path('data/research/universe_v2')
+          targets = [('NAS100', '4H'), ('NZDUSD', '4H'), ('US500', '4H')]
+          for instrument, timeframe in targets:
+              target = root / f'{instrument}_{timeframe}.csv'
+              print(f'RECOVER {instrument} {timeframe}', flush=True)
+              candles = DukascopyClient().historical_prices(
+                  instrument=instrument,
+                  timeframe=timeframe,
+                  start_utc='2010-01-01T00:00:00+00:00',
+                  end_utc='2026-01-01T00:00:00+00:00',
+                  progress=lambda message: print(message, flush=True),
+              )
+              if len(candles) < 100:
+                  raise SystemExit(f'insufficient_bars:{instrument}:{timeframe}:{len(candles)}')
+              years = {int(c.timestamp_utc[:4]) for c in candles}
+              if min(years) < 2010 or max(years) != 2025:
+                  raise SystemExit(f'coverage_failure:{instrument}:{timeframe}:{min(years)}-{max(years)}')
+              temp_path = None
+              try:
+                  with NamedTemporaryFile(prefix=f'.{target.name}.', suffix='.tmp', dir=root, delete=False) as temp:
+                      temp_path = Path(temp.name)
+                  digest = write_csv(candles, temp_path)
+                  os.replace(temp_path, target)
+                  temp_path = None
+              finally:
+                  if temp_path is not None:
+                      temp_path.unlink(missing_ok=True)
+              print(f'RECOVERY COMPLETE {instrument} {timeframe} bars={len(candles)} sha256={digest}', flush=True)
+          PY
+
+      - name: Validate 26-context universe
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from trading_research.data import load_csv, Candle
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+
+          root = Path('data/research/universe_v2')
+          expected = {(instrument, timeframe) for instrument in INSTRUMENTS for timeframe in TIMEFRAMES}
+          for instrument, timeframe in sorted(expected):
+              path = root / f'{instrument}_{timeframe}.csv'
+              if not path.is_file():
+                  raise SystemExit(f'missing:{instrument}:{timeframe}')
+              bars = load_csv(path)
+              candles = [
+                  Candle(
+                      timestamp_utc=bar.timestamp.isoformat(),
+                      open=bar.open,
+                      high=bar.high,
+                      low=bar.low,
+                      close=bar.close,
+                      volume=bar.volume,
+                  )
+                  for bar in bars
+              ]
+              if _deduplicate_and_validate(candles) != candles:
+                  raise SystemExit(f'noncanonical:{instrument}:{timeframe}')
+          print('26-CONTEXT UNIVERSE PASS')
+          PY
+
+      - name: Run frozen final-test evaluation
+        run: python -m trading_research.context_selector_final
+
+      - name: Assert final-test evidence contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('data/research/context_selector_final')
+          summary = json.loads((root / 'context_selector_final_summary.json').read_text())
+          if summary.get('contexts_evaluated') != 26:
+              raise SystemExit('context_count_failure')
+          if summary.get('final_test_used') is not True:
+              raise SystemExit('FINAL_TEST_NOT_USED')
+          if summary.get('final_test_untouched_before_evaluation') is not True:
+              raise SystemExit('FINAL_TEST_TOUCH_CONTRACT_FAILURE')
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload final evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-context-selector-final-test
+          path: data/research/context_selector_final/
+          if-no-files-found: warn
+          retention-days: 30
