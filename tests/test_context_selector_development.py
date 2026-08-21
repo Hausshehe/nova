@@ -26,15 +26,30 @@ def _bars(n=520):
     return bars
 
 
+def _write_csv(path, bars):
+    import csv
+
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+        for bar in bars:
+            writer.writerow([
+                bar.timestamp,
+                bar.open,
+                bar.high,
+                bar.low,
+                bar.close,
+                bar.volume,
+            ])
+
+
 def test_context_selector_reserves_final_fraction():
     import tempfile
     from pathlib import Path
 
-    from trading_research.data import save_csv
-
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "demo.csv"
-        save_csv(path, _bars())
+        _write_csv(path, _bars())
         result = evaluate_context("DEMO", "1D", path)
 
     assert result.total_bars == 520
@@ -47,11 +62,9 @@ def test_context_selector_outputs_paired_comparison():
     import tempfile
     from pathlib import Path
 
-    from trading_research.data import save_csv
-
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "demo.csv"
-        save_csv(path, _bars())
+        _write_csv(path, _bars())
         result = evaluate_context("DEMO", "1D", path)
 
     assert result.global_decisions >= 0
