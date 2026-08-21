@@ -46,7 +46,12 @@ class EdgeResult:
     gate_decision_rate: float
     global_mean_net_bps: float
     gate_mean_net_bps: float
+    global_total_net_bps: float
+    gate_total_net_bps: float
+    global_mean_net_per_eligible_bar_bps: float
+    gate_mean_net_per_eligible_bar_bps: float
     gate_minus_global_bps: float
+    gate_minus_global_per_eligible_bar_bps: float
     global_positive_rate: float
     gate_positive_rate: float
     global_folds_positive: int
@@ -83,21 +88,36 @@ def evaluate_context(instrument: str, timeframe: str, path: Path) -> EdgeResult:
         min_margin_bps=MIN_MARGIN_BPS,
         **kwargs,
     )
+
+    eligible = int(gate_result["candidate_bars"])
+    global_decisions = int(global_result["decisions"])
+    gate_decisions = int(gate_result["decisions"])
+    global_mean = float(global_result["mean_net_return_bps"])
+    gate_mean = float(gate_result["mean_net_return_bps"])
+    global_total = global_mean * global_decisions
+    gate_total = gate_mean * gate_decisions
+    global_per_eligible = global_total / eligible if eligible else 0.0
+    gate_per_eligible = gate_total / eligible if eligible else 0.0
+
     return EdgeResult(
         instrument=instrument,
         timeframe=timeframe,
         total_bars=len(bars),
         development_bars=development_bars,
         final_reserved_bars=reserved,
-        global_decisions=int(global_result["decisions"]),
-        gate_decisions=int(gate_result["decisions"]),
+        global_decisions=global_decisions,
+        gate_decisions=gate_decisions,
         gate_abstentions=int(gate_result["abstentions"]),
         global_decision_rate=float(global_result["decision_rate"]),
         gate_decision_rate=float(gate_result["decision_rate"]),
-        global_mean_net_bps=float(global_result["mean_net_return_bps"]),
-        gate_mean_net_bps=float(gate_result["mean_net_return_bps"]),
-        gate_minus_global_bps=float(gate_result["mean_net_return_bps"])
-        - float(global_result["mean_net_return_bps"]),
+        global_mean_net_bps=global_mean,
+        gate_mean_net_bps=gate_mean,
+        global_total_net_bps=global_total,
+        gate_total_net_bps=gate_total,
+        global_mean_net_per_eligible_bar_bps=global_per_eligible,
+        gate_mean_net_per_eligible_bar_bps=gate_per_eligible,
+        gate_minus_global_bps=gate_mean - global_mean,
+        gate_minus_global_per_eligible_bar_bps=gate_per_eligible - global_per_eligible,
         global_positive_rate=float(global_result["positive_net_rate"]),
         gate_positive_rate=float(gate_result["positive_net_rate"]),
         global_folds_positive=int(global_result["folds_positive"]),
@@ -127,6 +147,7 @@ def run(root: Path, output_dir: Path) -> dict[str, object]:
         raise SystemExit(f"DEVELOPMENT_UNIVERSE_INCOMPLETE:{len(results)}/{len(expected)}")
 
     differences = [row.gate_minus_global_bps for row in results]
+    eligible_differences = [row.gate_minus_global_per_eligible_bar_bps for row in results]
     gate_better = sum(value > 0 for value in differences)
     global_better = sum(value < 0 for value in differences)
     ties = sum(value == 0 for value in differences)
@@ -151,6 +172,10 @@ def run(root: Path, output_dir: Path) -> dict[str, object]:
         "mean_global_net_bps": mean(row.global_mean_net_bps for row in results),
         "mean_gate_minus_global_bps": mean(differences),
         "median_gate_minus_global_bps": median(differences),
+        "mean_gate_net_per_eligible_bar_bps": mean(row.gate_mean_net_per_eligible_bar_bps for row in results),
+        "mean_global_net_per_eligible_bar_bps": mean(row.global_mean_net_per_eligible_bar_bps for row in results),
+        "mean_gate_minus_global_per_eligible_bar_bps": mean(eligible_differences),
+        "median_gate_minus_global_per_eligible_bar_bps": median(eligible_differences),
         "contexts_gate_better": gate_better,
         "contexts_global_better": global_better,
         "contexts_tied": ties,
@@ -177,8 +202,12 @@ def run(root: Path, output_dir: Path) -> dict[str, object]:
         f"- Contexts evaluated: {len(results)}/{len(expected)}\n"
         f"- Mean gate net return/decision: {summary['mean_gate_net_bps']:.4f} bps\n"
         f"- Mean global net return/decision: {summary['mean_global_net_bps']:.4f} bps\n"
-        f"- Mean gate advantage: {summary['mean_gate_minus_global_bps']:.4f} bps\n"
-        f"- Median gate advantage: {summary['median_gate_minus_global_bps']:.4f} bps\n"
+        f"- Mean gate advantage/decision: {summary['mean_gate_minus_global_bps']:.4f} bps\n"
+        f"- Mean gate net return per eligible bar: {summary['mean_gate_net_per_eligible_bar_bps']:.4f} bps\n"
+        f"- Mean global net return per eligible bar: {summary['mean_global_net_per_eligible_bar_bps']:.4f} bps\n"
+        f"- Mean gate advantage per eligible bar: {summary['mean_gate_minus_global_per_eligible_bar_bps']:.4f} bps\n"
+        f"- Median gate advantage/decision: {summary['median_gate_minus_global_bps']:.4f} bps\n"
+        f"- Median gate advantage per eligible bar: {summary['median_gate_minus_global_per_eligible_bar_bps']:.4f} bps\n"
         f"- Contexts where gate is better: {gate_better}/{len(results)}\n"
         f"- Contexts where global selector is better: {global_better}/{len(results)}\n"
         f"- Ties: {ties}/{len(results)}\n"
