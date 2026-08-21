@@ -34,15 +34,14 @@ jobs:
           python -m py_compile trading_research/experiment2_development_benchmark.py
           python -m py_compile trading_research/experiment2_recover_missing_4h.py
 
-      - name: Download reusable source artifacts
+      - name: Download verified frozen universe
         uses: actions/download-artifact@v4
         with:
+          name: nova-frozen-universe
           run-id: 32293018258
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          pattern: frozen-*
           path: data/research/universe_v2
-          merge-multiple: true
 
       - name: Build independent WTI daily dataset from Yahoo Finance
         run: |
