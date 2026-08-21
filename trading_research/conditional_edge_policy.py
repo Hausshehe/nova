@@ -110,8 +110,38 @@ def evaluate_conditional_edge_gate(
         raise ValueError("invalid evaluation parameters")
 
     closes = [bar.close for bar in bars]
-    start_index = max(evaluation_start_index, 99)
-    evaluation_indices = list(range(start_index, len(bars)))
+    history_start = 99
+    if len(bars) <= history_start:
+        return {
+            "policy": "causal_conditional_edge_gate",
+            "experts": EXPERTS,
+            "contexts": CONTEXTS,
+            "candidate_bars": 0,
+            "decisions": 0,
+            "abstentions": 0,
+            "decision_rate": 0.0,
+            "mean_net_return_bps": 0.0,
+            "positive_net_rate": 0.0,
+            "fold_net_returns": [0.0 for _ in range(folds)],
+            "folds_positive": 0,
+            "context_decisions": {context: 0 for context in CONTEXTS},
+            "predictions": [],
+            "parameters": {
+                "future_bars": future_bars,
+                "transaction_cost_bps": transaction_cost_bps,
+                "half_life": half_life,
+                "min_context_history": min_context_history,
+                "min_global_history": min_global_history,
+                "shrinkage_prior": shrinkage_prior,
+                "z_score": z_score,
+                "min_edge_bps": min_edge_bps,
+                "min_margin_bps": min_margin_bps,
+                "folds": folds,
+                "evaluation_start_index": evaluation_start_index,
+            },
+            "causal_rule": "Each completed outcome is incorporated only after its horizon completes; no outcome after a decision timestamp can influence that decision.",
+        }
+
     decay = exp(-1.0 / half_life)
     global_stats = {expert: _WeightedStats() for expert in EXPERTS}
     context_stats = {
@@ -123,12 +153,13 @@ def evaluate_conditional_edge_gate(
     abstentions = 0
     context_counts = {context: 0 for context in CONTEXTS}
     predictions: list[dict[str, object]] = []
+    chronological_indices = list(range(history_start, len(bars)))
     next_completed = 0
 
-    for index in evaluation_indices:
+    for index in chronological_indices:
         cutoff = index - future_bars
-        while next_completed < len(evaluation_indices) and evaluation_indices[next_completed] <= cutoff:
-            historical_index = evaluation_indices[next_completed]
+        while next_completed < len(chronological_indices) and chronological_indices[next_completed] <= cutoff:
+            historical_index = chronological_indices[next_completed]
             next_completed += 1
             historical_context = _context(closes, historical_index)
             if historical_context is None or historical_index + future_bars >= len(bars):
@@ -142,6 +173,9 @@ def evaluate_conditional_edge_gate(
                 net = signed - transaction_cost_bps
                 global_stats[expert].update(net, decay)
                 context_stats[historical_context][expert].update(net, decay)
+
+        if index < max(evaluation_start_index, history_start):
+            continue
 
         current_context = _context(closes, index)
         if current_context is None or min(stat.observations for stat in global_stats.values()) < min_global_history:
@@ -179,7 +213,7 @@ def evaluate_conditional_edge_gate(
         signed = raw if direction == "LONG" else -raw
         net = signed - transaction_cost_bps
         test_length = max(1, len(bars) - evaluation_start_index)
-        fold = min(folds - 1, (index - evaluation_start_index) * folds // test_length)
+        fold = min(folds - 1, max(0, (index - evaluation_start_index) * folds // test_length))
         fold_values[fold].append(net)
         decisions += 1
         context_counts[current_context] += 1
@@ -198,19 +232,21 @@ def evaluate_conditional_edge_gate(
 
     nets = [float(row["net_return_bps"]) for row in predictions]
     fold_net = [mean(values) if values else 0.0 for values in fold_values]
+    evaluation_count = max(0, len(bars) - max(evaluation_start_index, history_start))
     return {
         "policy": "causal_conditional_edge_gate",
         "experts": EXPERTS,
         "contexts": CONTEXTS,
-        "candidate_bars": len(evaluation_indices),
+        "candidate_bars": evaluation_count,
         "decisions": decisions,
         "abstentions": abstentions,
-        "decision_rate": decisions / len(evaluation_indices) if evaluation_indices else 0.0,
+        "decision_rate": decisions / evaluation_count if evaluation_count else 0.0,
         "mean_net_return_bps": mean(nets) if nets else 0.0,
         "positive_net_rate": sum(value > 0 for value in nets) / len(nets) if nets else 0.0,
         "fold_net_returns": fold_net,
         "folds_positive": sum(value > 0 for value in fold_net),
         "context_decisions": context_counts,
+        "predictions": predictions,
         "parameters": {
             "future_bars": future_bars,
             "transaction_cost_bps": transaction_cost_bps,
