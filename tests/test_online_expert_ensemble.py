@@ -25,7 +25,7 @@ def test_online_expert_ensemble_returns_causal_report():
     assert result["policy"] == "causal_online_expert_ensemble"
     assert tuple(result["experts"]) == EXPERTS
     assert len(result["fold_net_returns"]) == 4
-    assert result["candidate_bars"] == len(bars) - 49
+    assert result["candidate_bars"] == len(bars) - 99
     assert "after its horizon fully elapsed" in result["causal_rule"]
 
 
