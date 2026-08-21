@@ -34,14 +34,15 @@ jobs:
           python -m py_compile trading_research/experiment2_development_benchmark.py
           python -m py_compile trading_research/experiment2_recover_missing_4h.py
 
-      - name: Download verified frozen universe
+      - name: Download reusable frozen source artifacts
         uses: actions/download-artifact@v4
         with:
-          name: nova-frozen-universe
           run-id: 32293018258
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
+          pattern: frozen-*
           path: data/research/universe_v2
+          merge-multiple: true
 
       - name: Build independent WTI daily dataset from Yahoo Finance
         run: |
@@ -74,6 +75,54 @@ jobs:
 
       - name: Recover missing 4H datasets with deterministic source splices
         run: python -m trading_research.experiment2_recover_missing_4h
+
+      - name: Recover incomplete 1D datasets with deterministic Dukascopy source
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.data import load_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, DukascopyClient, write_csv
+
+          root = Path('data/research/universe_v2')
+          required_years = set(range(2010, 2026))
+          for instrument in INSTRUMENTS:
+              target = root / f'{instrument}_1D.csv'
+              if instrument == 'WTI':
+                  print('1D SOURCE OVERRIDE WTI=Yahoo independent source', flush=True)
+                  continue
+              recover = not target.is_file()
+              if not recover:
+                  bars = load_csv(target)
+                  years = {bar.timestamp.year for bar in bars}
+                  recover = not required_years.issubset(years)
+                  if not recover:
+                      print(f'1D COVERAGE PASS {instrument} years={min(years)}-{max(years)}', flush=True)
+                      continue
+              print(f'RECOVER 1D {instrument}', flush=True)
+              candles = DukascopyClient().historical_prices(
+                  instrument=instrument,
+                  timeframe='1D',
+                  start_utc='2010-01-01T00:00:00+00:00',
+                  end_utc='2026-01-01T00:00:00+00:00',
+                  progress=lambda message: print(message, flush=True),
+              )
+              years = {int(c.timestamp_utc[:4]) for c in candles}
+              if not required_years.issubset(years):
+                  raise SystemExit(f'coverage_failure:{instrument}:1D:{sorted(required_years-years)}')
+              temp_path = None
+              try:
+                  with NamedTemporaryFile(prefix=f'.{target.name}.', suffix='.tmp', dir=root, delete=False) as temp:
+                      temp_path = Path(temp.name)
+                  digest = write_csv(candles, temp_path)
+                  os.replace(temp_path, target)
+                  temp_path = None
+                  print(f'RECOVERY COMPLETE {instrument} 1D bars={len(candles)} sha256={digest}', flush=True)
+              finally:
+                  if temp_path is not None:
+                      temp_path.unlink(missing_ok=True)
+          PY
 
       - name: Validate exact 26-dataset development universe
         run: |
