@@ -46,6 +46,7 @@ def evaluate_contextual_online_expert_ensemble(
     min_context_history: int = 30,
     min_global_history: int = 120,
     folds: int = 4,
+    evaluation_start_index: int = 0,
 ) -> dict[str, object]:
     if (
         future_bars <= 0
@@ -53,10 +54,13 @@ def evaluate_contextual_online_expert_ensemble(
         or min_context_history < 0
         or min_global_history < 0
         or folds <= 0
+        or evaluation_start_index < 0
+        or evaluation_start_index > len(bars)
     ):
         raise ValueError("invalid parameters")
 
     candidates = sorted(high_recall_candidate_indices(bars, fast_period=20, slow_period=50))
+    evaluation_candidates = [index for index in candidates if index >= evaluation_start_index]
     closes = [bar.close for bar in bars]
     decay = exp(-1.0 / half_life)
     global_scores = {expert: 0.0 for expert in EXPERTS}
@@ -74,6 +78,9 @@ def evaluate_contextual_online_expert_ensemble(
     fold_values: list[list[float]] = [[] for _ in range(folds)]
     context_counts = {"uptrend": 0, "downtrend": 0, "global_fallback": 0}
 
+    # Learn from all completed outcomes in chronological order. Development
+    # history initializes the selector; final-test outcomes can only influence
+    # later final-test decisions after their four-bar horizon completes.
     for index in candidates:
         cutoff = index - future_bars
         while next_completed < len(candidates) and candidates[next_completed] <= cutoff:
@@ -99,6 +106,8 @@ def evaluate_contextual_online_expert_ensemble(
                 )
                 context_obs[historical_context][expert] += 1
 
+        if index < evaluation_start_index:
+            continue
         current_context = _context(closes, index)
         if current_context is None or min(global_obs.values()) < min_global_history:
             continue
@@ -116,7 +125,8 @@ def evaluate_contextual_online_expert_ensemble(
         raw = (closes[index + future_bars] / closes[index] - 1.0) * 10_000.0
         signed = raw if direction == "LONG" else -raw
         net = signed - transaction_cost_bps
-        fold = min(folds - 1, index * folds // len(bars))
+        test_length = max(1, len(bars) - evaluation_start_index)
+        fold = min(folds - 1, (index - evaluation_start_index) * folds // test_length)
         fold_values[fold].append(net)
         context_counts[current_context if contextual_ready else "global_fallback"] += 1
         predictions.append(
@@ -135,9 +145,9 @@ def evaluate_contextual_online_expert_ensemble(
     return {
         "policy": "causal_contextual_online_expert_ensemble",
         "experts": EXPERTS,
-        "candidate_bars": len(candidates),
+        "candidate_bars": len(evaluation_candidates),
         "decisions": len(predictions),
-        "decision_rate": len(predictions) / len(candidates) if candidates else 0.0,
+        "decision_rate": len(predictions) / len(evaluation_candidates) if evaluation_candidates else 0.0,
         "mean_net_return_bps": mean(nets) if nets else 0.0,
         "positive_net_rate": sum(value > 0 for value in nets) / len(nets) if nets else 0.0,
         "fold_net_returns": fold_net,
@@ -150,6 +160,7 @@ def evaluate_contextual_online_expert_ensemble(
             "min_context_history": min_context_history,
             "min_global_history": min_global_history,
             "folds": folds,
+            "evaluation_start_index": evaluation_start_index,
         },
-        "causal_rule": "Each completed expert outcome is incorporated once into global and regime-specific histories; future outcomes are evaluation-only.",
+        "causal_rule": "Each completed expert outcome is incorporated once into global and regime-specific histories; final-test outcomes may influence only later final-test decisions.",
     }
