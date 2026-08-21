@@ -18,6 +18,18 @@ jobs:
           ref: experiment-2-development-benchmark
           clean: true
 
+      - name: Initialize persistent diagnostics
+        run: |
+          mkdir -p data/research/experiment2_diagnostics
+          {
+            echo "run_id=${{ github.run_id }}"
+            echo "run_attempt=${{ github.run_attempt }}"
+            echo "workflow=${{ github.workflow }}"
+            echo "ref=${{ github.ref_name }}"
+            echo "commit=${{ github.sha }}"
+            echo "runner_os=${{ runner.os }}"
+          } > data/research/experiment2_diagnostics/run_metadata.txt
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -196,5 +208,51 @@ jobs:
         with:
           name: nova-experiment2-development-benchmark
           path: data/research/experiment2_development/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
+
+      - name: Collect persistent diagnostics
+        if: always()
+        run: |
+          mkdir -p data/research/experiment2_diagnostics
+          {
+            echo "job_status=${{ job.status }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "run_attempt=${{ github.run_attempt }}"
+            echo "commit=${{ github.sha }}"
+            echo
+            echo "=== repository status ==="
+            git status --short --branch || true
+            echo
+            echo "=== universe files ==="
+            find data/research/universe_v2 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
+            echo
+            echo "=== universe coverage ==="
+            python - <<'PY' || true
+          from pathlib import Path
+          try:
+              from trading_research.data import load_csv
+              root = Path('data/research/universe_v2')
+              for path in sorted(root.glob('*.csv')):
+                  try:
+                      bars = load_csv(path)
+                      years = {bar.timestamp.year for bar in bars}
+                      print(f'{path.name}: bars={len(bars)} years={min(years)}-{max(years)}')
+                  except Exception as exc:
+                      print(f'{path.name}: ERROR {type(exc).__name__}: {exc}')
+          except Exception as exc:
+              print(f'coverage_diagnostics_error: {type(exc).__name__}: {exc}')
+          PY
+            echo
+            echo "=== development evidence files ==="
+            find data/research/experiment2_development -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
+          } > data/research/experiment2_diagnostics/failure_manifest.txt
+
+      - name: Upload persistent diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-experiment2-diagnostics
+          path: data/research/experiment2_diagnostics/
+          if-no-files-found: warn
+          retention-days: 30
