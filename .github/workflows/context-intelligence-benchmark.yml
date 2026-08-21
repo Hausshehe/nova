@@ -22,7 +22,7 @@ jobs:
         run: python -m py_compile trading_research/context_intelligence_benchmark.py
 
       - name: Verify frozen research data
-        run: python -m trading_research.broader_campaign_runner --verify-only
+        run: python -c "from trading_research.broader_campaign_runner import verify_manifest; verify_manifest(); print('FROZEN_DATA_VERIFIED')"
 
       - name: Run causal context benchmark
         run: python -m trading_research.context_intelligence_benchmark
