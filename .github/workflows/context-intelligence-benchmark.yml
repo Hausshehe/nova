@@ -1,0 +1,37 @@
+name: Context Intelligence Benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check requests pytest
+
+      - name: Validate benchmark code
+        run: python -m py_compile trading_research/context_intelligence_benchmark.py
+
+      - name: Verify frozen research data
+        run: python -m trading_research.broader_campaign_runner --verify-only
+
+      - name: Run causal context benchmark
+        run: python -m trading_research.context_intelligence_benchmark
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-context-intelligence-benchmark
+          path: data/research/context_intelligence_benchmark.json
+          if-no-files-found: error
+          retention-days: 30
