@@ -1,0 +1,29 @@
+name: Conditional Edge Tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check pytest requests
+
+      - name: Compile conditional-edge modules
+        run: python -m py_compile trading_research/conditional_edge_policy.py trading_research/conditional_edge_development.py trading_research/online_expert_ensemble.py tests/test_conditional_edge_policy.py tests/test_online_expert_ensemble.py
+
+      - name: Run conditional-edge tests
+        run: python -m pytest -q tests/test_conditional_edge_policy.py tests/test_online_expert_ensemble.py
