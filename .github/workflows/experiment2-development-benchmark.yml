@@ -76,6 +76,41 @@ jobs:
       - name: Recover missing 4H datasets with deterministic source splices
         run: python -m trading_research.experiment2_recover_missing_4h
 
+      - name: Replace legacy WTI 4H artifact with deterministic Dukascopy recovery
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import NamedTemporaryFile
+          from trading_research.dukascopy_history import DukascopyClient, write_csv
+
+          root = Path('data/research/universe_v2')
+          target = root / 'WTI_4H.csv'
+          print('INVALIDATE legacy WTI 4H artifact and recover from Dukascopy', flush=True)
+          candles = DukascopyClient().historical_prices(
+              instrument='WTI',
+              timeframe='4H',
+              start_utc='2010-01-01T00:00:00+00:00',
+              end_utc='2026-01-01T00:00:00+00:00',
+              progress=lambda message: print(message, flush=True),
+          )
+          years = {int(c.timestamp_utc[:4]) for c in candles}
+          required_years = set(range(2010, 2026))
+          if not required_years.issubset(years):
+              raise SystemExit(f'coverage_failure:WTI:4H:{sorted(required_years-years)}')
+          temp_path = None
+          try:
+              with NamedTemporaryFile(prefix=f'.{target.name}.', suffix='.tmp', dir=root, delete=False) as temp:
+                  temp_path = Path(temp.name)
+              digest = write_csv(candles, temp_path)
+              os.replace(temp_path, target)
+              temp_path = None
+          finally:
+              if temp_path is not None:
+                  temp_path.unlink(missing_ok=True)
+          print(f'RECOVERY COMPLETE WTI 4H bars={len(candles)} sha256={digest}', flush=True)
+          PY
+
       - name: Recover incomplete 1D datasets with deterministic Dukascopy source
         run: |
           python - <<'PY'
@@ -83,7 +118,7 @@ jobs:
           from pathlib import Path
           from tempfile import NamedTemporaryFile
           from trading_research.data import load_csv
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, DukascopyClient, write_csv
+          from trading_research.dukascopy_history import INSTRUMENTS, DukascopyClient, write_csv
 
           root = Path('data/research/universe_v2')
           required_years = set(range(2010, 2026))
