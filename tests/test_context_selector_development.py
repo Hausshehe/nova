@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from trading_research.context_selector_development import (
     DEVELOPMENT_FRACTION,
     evaluate_context,
@@ -8,6 +10,7 @@ from trading_research.data import Bar
 def _bars(n=520):
     bars = []
     price = 100.0
+    start = datetime(2020, 1, 1, tzinfo=timezone.utc)
     for i in range(n):
         # Deterministic alternating drift plus changing range creates enough
         # structure for both global and contextual selectors to execute.
@@ -15,7 +18,7 @@ def _bars(n=520):
         price *= 1.0 + drift
         bars.append(
             Bar(
-                timestamp=f"2020-01-01T{i:04d}:00:00+00:00",
+                timestamp=(start + timedelta(hours=i)).isoformat(),
                 open=price * 0.999,
                 high=price * (1.0 + 0.002 + (i % 3) * 0.0002),
                 low=price * (0.998 - (i % 2) * 0.0002),
