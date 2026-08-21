@@ -125,7 +125,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from trading_research.data import load_csv
-          from trading_research.dukascopy_history import INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
+          from trading_research.dukascopy_history import Candle, INSTRUMENTS, TIMEFRAMES, _deduplicate_and_validate
 
           root = Path('data/research/universe_v2')
           expected = {(instrument, timeframe) for instrument in INSTRUMENTS for timeframe in TIMEFRAMES}
@@ -134,7 +134,19 @@ jobs:
               if not path.is_file():
                   raise SystemExit(f'missing:{instrument}:{timeframe}')
               bars = load_csv(path)
-              if _deduplicate_and_validate(bars) != bars:
+              candles = [
+                  Candle(
+                      timestamp_utc=bar.timestamp.isoformat(),
+                      open=bar.open,
+                      high=bar.high,
+                      low=bar.low,
+                      close=bar.close,
+                      volume=bar.volume,
+                  )
+                  for bar in bars
+              ]
+              canonical = _deduplicate_and_validate(candles)
+              if [c.timestamp_utc for c in canonical] != [c.timestamp_utc for c in candles]:
                   raise SystemExit(f'noncanonical:{instrument}:{timeframe}')
           print('26-CONTEXT UNIVERSE PASS')
           PY
