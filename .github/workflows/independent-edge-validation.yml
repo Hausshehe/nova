@@ -1,0 +1,38 @@
+name: Independent Edge Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check requests pytest
+
+      - name: Compile validator
+        run: python -m py_compile trading_research/independent_candidate_validation.py trading_research/broader_campaign_runner.py trading_research/backtest.py trading_research/data.py trading_research/dukascopy_history.py
+
+      - name: Run independent validation on untouched 2026 data
+        run: python -m trading_research.independent_candidate_validation
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-independent-edge-validation-evidence
+          path: data/research/independent_validation/
+          if-no-files-found: warn
+          retention-days: 30
