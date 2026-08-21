@@ -1,8 +1,7 @@
-"""Causal conditional-edge gate for a fixed set of directional experts.
+"""Causal conditional-edge gate for fixed directional experts.
 
-The policy asks whether an expert has enough context-specific evidence to
-justify a trade. It shrinks sparse context estimates toward a global causal
-estimate, applies an uncertainty penalty, and otherwise abstains.
+The policy evaluates every bar with enough history. It does not depend on
+live escalation, symbol names, or a hidden candidate-routing layer.
 """
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ from statistics import mean, median
 from typing import Sequence
 
 from .data import Bar
-from .high_recall_candidate_policy import high_recall_candidate_indices
 from .online_expert_ensemble import EXPERTS, _direction
 
 CONTEXTS = tuple(
@@ -108,32 +106,32 @@ def evaluate_conditional_edge_gate(
         raise ValueError("invalid parameters")
     if shrinkage_prior < 0 or z_score < 0 or min_edge_bps < 0 or min_margin_bps < 0:
         raise ValueError("invalid gate parameters")
+    if folds <= 0 or evaluation_start_index < 0 or evaluation_start_index > len(bars):
+        raise ValueError("invalid evaluation parameters")
 
-    candidates = sorted(high_recall_candidate_indices(bars, fast_period=20, slow_period=50))
-    evaluation_candidates = [index for index in candidates if index >= evaluation_start_index]
     closes = [bar.close for bar in bars]
+    start_index = max(evaluation_start_index, 99)
+    evaluation_indices = list(range(start_index, len(bars)))
     decay = exp(-1.0 / half_life)
     global_stats = {expert: _WeightedStats() for expert in EXPERTS}
     context_stats = {
         context: {expert: _WeightedStats() for expert in EXPERTS}
         for context in CONTEXTS
     }
-    next_completed = 0
     fold_values: list[list[float]] = [[] for _ in range(folds)]
     decisions = 0
     abstentions = 0
     context_counts = {context: 0 for context in CONTEXTS}
     predictions: list[dict[str, object]] = []
+    next_completed = 0
 
-    for index in candidates:
+    for index in evaluation_indices:
         cutoff = index - future_bars
-        while next_completed < len(candidates) and candidates[next_completed] <= cutoff:
-            historical_index = candidates[next_completed]
+        while next_completed < len(evaluation_indices) and evaluation_indices[next_completed] <= cutoff:
+            historical_index = evaluation_indices[next_completed]
             next_completed += 1
-            if historical_index + future_bars >= len(bars):
-                continue
             historical_context = _context(closes, historical_index)
-            if historical_context is None:
+            if historical_context is None or historical_index + future_bars >= len(bars):
                 continue
             raw = (closes[historical_index + future_bars] / closes[historical_index] - 1.0) * 10_000.0
             for expert in EXPERTS:
@@ -145,27 +143,28 @@ def evaluate_conditional_edge_gate(
                 global_stats[expert].update(net, decay)
                 context_stats[historical_context][expert].update(net, decay)
 
-        if index < evaluation_start_index:
-            continue
         current_context = _context(closes, index)
         if current_context is None or min(stat.observations for stat in global_stats.values()) < min_global_history:
+            abstentions += 1
             continue
 
-        candidates_for_context = []
-        if all(context_stats[current_context][expert].observations >= min_context_history for expert in EXPERTS):
-            for expert in EXPERTS:
+        scored: list[tuple[str, float, float, float]] = []
+        contextual_ready = all(
+            context_stats[current_context][expert].observations >= min_context_history
+            for expert in EXPERTS
+        )
+        for expert in EXPERTS:
+            if contextual_ready:
                 estimate, variance, n = _shrunken_estimate(
                     context_stats[current_context][expert], global_stats[expert], shrinkage_prior
                 )
-                uncertainty = z_score * sqrt(variance / max(n, 1.0))
-                candidates_for_context.append((expert, estimate - uncertainty, estimate, uncertainty))
-        else:
-            for expert in EXPERTS:
+            else:
                 stats = global_stats[expert]
-                uncertainty = z_score * sqrt(stats.variance / max(stats.effective_n, 1.0))
-                candidates_for_context.append((expert, stats.mean - uncertainty, stats.mean, uncertainty))
+                estimate, variance, n = stats.mean, stats.variance, stats.effective_n
+            uncertainty = z_score * sqrt(variance / max(n, 1.0))
+            scored.append((expert, estimate - uncertainty, estimate, uncertainty))
 
-        ranked = sorted(candidates_for_context, key=lambda item: item[1], reverse=True)
+        ranked = sorted(scored, key=lambda item: item[1], reverse=True)
         best, best_lcb, best_estimate, best_uncertainty = ranked[0]
         second_lcb = ranked[1][1]
         if best_lcb <= min_edge_bps or best_lcb - second_lcb <= min_margin_bps:
@@ -203,10 +202,10 @@ def evaluate_conditional_edge_gate(
         "policy": "causal_conditional_edge_gate",
         "experts": EXPERTS,
         "contexts": CONTEXTS,
-        "candidate_bars": len(evaluation_candidates),
+        "candidate_bars": len(evaluation_indices),
         "decisions": decisions,
         "abstentions": abstentions,
-        "decision_rate": decisions / len(evaluation_candidates) if evaluation_candidates else 0.0,
+        "decision_rate": decisions / len(evaluation_indices) if evaluation_indices else 0.0,
         "mean_net_return_bps": mean(nets) if nets else 0.0,
         "positive_net_rate": sum(value > 0 for value in nets) / len(nets) if nets else 0.0,
         "fold_net_returns": fold_net,
@@ -225,5 +224,5 @@ def evaluate_conditional_edge_gate(
             "folds": folds,
             "evaluation_start_index": evaluation_start_index,
         },
-        "causal_rule": "Completed outcomes are incorporated only after their horizon completes; no final-test outcome is available before its horizon completes.",
+        "causal_rule": "Each completed outcome is incorporated only after its horizon completes; no outcome after a decision timestamp can influence that decision.",
     }
