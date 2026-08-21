@@ -148,11 +148,15 @@ jobs:
           if missing:
               raise SystemExit(f'missing_datasets:{sorted(missing)}')
           for instrument, timeframe in sorted(expected):
-              bars = load_csv(root / f'{instrument}_{timeframe}.csv')
+              target = root / f'{instrument}_{timeframe}.csv'
+              bars = load_csv(target)
               years = {bar.timestamp.year for bar in bars}
               if instrument == 'US30':
                   first_expected_year = 2013
               elif instrument == 'NAS100' and timeframe == '4H':
+                  first_expected_year = 2011
+              elif instrument == 'WTI' and timeframe == '4H':
+                  # Frozen WTI 4H source begins in September 2011; do not invent 2010 coverage.
                   first_expected_year = 2011
               else:
                   first_expected_year = 2010
