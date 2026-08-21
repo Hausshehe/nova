@@ -27,7 +27,8 @@ def test_contextual_ensemble_schema_and_causality_contract():
     assert result["candidate_bars"] > 0
     assert result["decisions"] >= 0
     assert set(result["context_decisions"]) == {"uptrend", "downtrend", "global_fallback"}
-    assert "future outcomes are evaluation-only" in result["causal_rule"]
+    assert "completed expert outcome" in result["causal_rule"]
+    assert "final-test outcomes may influence only later final-test decisions" in result["causal_rule"]
 
 
 def test_invalid_parameters_rejected():
