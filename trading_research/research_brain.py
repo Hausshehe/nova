@@ -182,6 +182,8 @@ def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": "curl/8.0.0",
+                "Accept": "application/json",
             },
             method="POST",
         )
