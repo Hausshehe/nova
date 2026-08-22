@@ -103,37 +103,15 @@ class NavigationController:
                 if attempt >= self.max_activation_retries:
                     history.append(NavigationState.RECOVER)
                     return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
-
-                # Any rejected semantic activation is recoverable exactly once:
-                # refresh the live hierarchy, re-resolve the target, then retry.
                 history.append(NavigationState.RECOVER)
                 fresh = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
                 if fresh.observation_quality is not ObservationQuality.VALID:
-                    return self._bounded_observation_failure(
-                        target,
-                        history,
-                        fresh,
-                        progress,
-                        total_scrolls,
-                        direction,
-                        "Activation was rejected and the bounded recovery observation was unreliable.",
-                    )
+                    return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation was rejected and the bounded recovery observation was unreliable.")
                 fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
                 if fresh_match.resolution is not Resolution.FOUND or fresh_match.node is None:
-                    return self._result(
-                        target=target,
-                        state=NavigationState.FAILURE,
-                        history=history,
-                        snapshot=fresh,
-                        match=fresh_match,
-                        action=last_action,
-                        scroll_count=total_scrolls,
-                        direction=direction,
-                        message="Activation was rejected and the target could not be safely re-resolved for the single bounded retry.",
-                    )
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=fresh, match=fresh_match, action=last_action, scroll_count=total_scrolls, direction=direction, message="Activation was rejected and the target could not be safely re-resolved for the single bounded retry.")
                 current_snapshot, current_match, re_resolved = fresh, fresh_match, True
                 continue
-
             history.extend((NavigationState.WAIT_FOR_TRANSITION, NavigationState.VERIFY))
             last_verification = verify_transition(current_snapshot, expected_foreground_package=expected_foreground_package, expected_target=target, timeout_seconds=self.verification_timeout)
             if last_verification.success:
@@ -172,6 +150,16 @@ class NavigationController:
                 continue
         return current, resolve_target(current, target, installed_packages=installed_packages)
 
+    def _corroborate_before_search(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, TargetMatch]:
+        """Require one fresh observation before deciding that scrolling is needed."""
+        match = resolve_target(snapshot, target, installed_packages=installed_packages)
+        if match.resolution is not Resolution.NOT_FOUND_YET:
+            return snapshot, match
+        fresh = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+        if fresh.observation_quality is not ObservationQuality.VALID:
+            return fresh, TargetMatch(Resolution.INVALID_OBSERVATION, target, reason="Target was not resolved and the corroborating observation was unreliable.")
+        return fresh, resolve_target(fresh, target, installed_packages=installed_packages)
+
     def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
         history = [NavigationState.START]
         snapshot: Optional[ScreenSnapshot] = None
@@ -201,6 +189,12 @@ class NavigationController:
             if match.resolution is Resolution.FOUND and match.node is not None:
                 return self._activate_with_bounded_recovery(target, snapshot, match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
             history.append(NavigationState.SEARCH_VISIBLE)
+            snapshot, match = self._corroborate_before_search(snapshot, target, installed_packages=installed_packages)
+            if match.resolution is Resolution.FOUND and match.node is not None:
+                history.append(NavigationState.REOBSERVE)
+                return self._activate_with_bounded_recovery(target, snapshot, match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+            if match.resolution is Resolution.INVALID_OBSERVATION:
+                return self._bounded_observation_failure(target, history, snapshot, last_progress, total_scrolls, current_direction, match.reason)
             if not snapshot.scrollable:
                 snapshot, stabilized_match = self._stabilize_after_scroll(snapshot, target, installed_packages=installed_packages)
                 if stabilized_match is not None and stabilized_match.resolution is Resolution.FOUND and stabilized_match.node is not None:
