@@ -88,7 +88,13 @@ def _terminate_process_group(process: subprocess.Popen) -> None:
 
 
 def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
-    """Send one semantic command without allowing Android pipe I/O to deadlock us."""
+    """Dispatch one semantic command with a hard transport deadline.
+
+    The broadcast result code is deliberately not treated as the UI-action outcome.
+    The navigation controller must verify the resulting UI state itself. This keeps
+    transport delivery separate from semantic effect and prevents real scrolls from
+    being labelled as rejected merely because the Android broadcast result code is 0.
+    """
     command = ["am", "broadcast", "-n", "com.infoney.nova/.NovaClickReceiver", "-a", action]
     if target:
         command.extend(["--es", "target", " ".join(str(target).split())])
@@ -127,14 +133,12 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
     output = "\n".join(part.strip() for part in (stdout, stderr) if part and part.strip())
     returncode = process.returncode if process is not None and process.returncode is not None else -1
     match = _RECEIVER_RESULT_RE.search(output)
+    if returncode != 0:
+        return False, output or f"Accessibility Service broadcast exited with returncode={returncode}.", returncode, elapsed_ms
     if match:
         receiver_result = int(match.group(1))
-        if receiver_result == 1:
-            return True, output or "Accessibility Service receiver accepted the action.", returncode, elapsed_ms
-        if receiver_result == 0:
-            return False, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.", returncode, elapsed_ms
-        return False, f"Accessibility Service receiver returned unexpected result={receiver_result}.", returncode, elapsed_ms
-    return False, output or "Accessibility Service did not report a receiver result.", returncode, elapsed_ms
+        return True, f"Accessibility Service command dispatched; receiver result={receiver_result}. UI outcome requires observation verification.", returncode, elapsed_ms
+    return True, output or "Accessibility Service command dispatched; UI outcome requires observation verification.", returncode, elapsed_ms
 
 
 def _accessibility_click(label: str) -> Tuple[bool, str, int, float]:
@@ -168,7 +172,7 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
         return ActionResult(False, "TAP", "The target has no semantic label for accessibility activation.", bounds)
     success, message, returncode, duration_ms = _accessibility_click(label)
     if success:
-        return ActionResult(True, "TAP", "Semantic target activated through the Accessibility Service.", bounds, duration_ms, returncode, message)
+        return ActionResult(True, "TAP", "Semantic target command dispatched through the Accessibility Service; transition will be verified.", bounds, duration_ms, returncode, message)
     return ActionResult(False, "TAP", message, bounds, duration_ms, returncode, message)
 
 
@@ -200,5 +204,5 @@ def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionR
         return ActionResult(False, "SCROLL", "Scrollable region is too small for a safe gesture.", region.get("bounds", ""))
     success, message, returncode, duration_ms = _accessibility_scroll(direction)
     if success:
-        return ActionResult(True, "SCROLL", "Live scrollable region advanced through the Accessibility Service.", region.get("bounds", ""), duration_ms, returncode, message)
+        return ActionResult(True, "SCROLL", "Scroll command dispatched through the Accessibility Service; UI progress will be verified.", region.get("bounds", ""), duration_ms, returncode, message)
     return ActionResult(False, "SCROLL", message, region.get("bounds", ""), duration_ms, returncode, message)
