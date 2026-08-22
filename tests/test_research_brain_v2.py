@@ -35,54 +35,12 @@ def payload():
             "Apparent predictability may be compensation for volatility or costs.",
         ],
         "mechanisms": [
-            {
-                "id": "m1",
-                "mechanism": "temporary price overshoot",
-                "causal_story": "Liquidity imbalance can temporarily push price away from short-run equilibrium.",
-                "prediction": "large shocks are followed by partial reversal under suitable conditions",
-                "disconfirming_observation": "no reversal after controlling for volatility and costs",
-                "current_confidence": 0.45,
-                "status": "candidate",
-                "why_testable": "event-conditioned forward returns can distinguish it",
-            },
-            {
-                "id": "m2",
-                "mechanism": "information continuation",
-                "causal_story": "Information may diffuse over multiple bars rather than all at once.",
-                "prediction": "large directional moves are followed by continuation under suitable conditions",
-                "disconfirming_observation": "continuation disappears after controlling for event size and regime",
-                "current_confidence": 0.4,
-                "status": "candidate",
-                "why_testable": "the sign and path of forward returns differ from reversal",
-            },
+            {"id": "m1", "mechanism": "temporary price overshoot", "causal_story": "Liquidity imbalance can temporarily push price away from short-run equilibrium.", "prediction": "large shocks are followed by partial reversal under suitable conditions", "disconfirming_observation": "no reversal after controlling for volatility and costs", "current_confidence": 0.45, "status": "candidate", "why_testable": "event-conditioned forward returns can distinguish it"},
+            {"id": "m2", "mechanism": "information continuation", "causal_story": "Information may diffuse over multiple bars rather than all at once.", "prediction": "large directional moves are followed by continuation under suitable conditions", "disconfirming_observation": "continuation disappears after controlling for event size and regime", "current_confidence": 0.4, "status": "candidate", "why_testable": "the sign and path of forward returns differ from reversal"},
         ],
         "experiment_candidates": [
-            {
-                "id": "e1",
-                "name": "event-conditioned directional response",
-                "question_discriminated": "Which of m1 or m2 better predicts the next-bar response after large moves?",
-                "mechanisms_separated": ["m1", "m2"],
-                "outcome": "net forward return and sign probability",
-                "horizon": "1 bar",
-                "development_only": True,
-                "estimated_information_value": 0.9,
-                "estimated_cost": 0.2,
-                "overfitting_risk": 0.2,
-                "confounders": ["volatility regime", "spread/cost"],
-            },
-            {
-                "id": "e2",
-                "name": "unconditional indicator sweep",
-                "question_discriminated": "Whether any technical indicator appears profitable",
-                "mechanisms_separated": ["m1", "m2"],
-                "outcome": "development backtest return",
-                "horizon": "varied",
-                "development_only": True,
-                "estimated_information_value": 0.2,
-                "estimated_cost": 0.5,
-                "overfitting_risk": 0.9,
-                "confounders": ["multiple testing"],
-            },
+            {"id": "e1", "name": "event-conditioned directional response", "question_discriminated": "Which of m1 or m2 better predicts the next-bar response after large moves?", "mechanisms_separated": ["m1", "m2"], "outcome": "net forward return and sign probability", "horizon": "1 bar", "development_only": True, "estimated_information_value": 0.9, "estimated_cost": 0.2, "overfitting_risk": 0.2, "confounders": ["volatility regime", "spread/cost"]},
+            {"id": "e2", "name": "unconditional indicator sweep", "question_discriminated": "Whether any technical indicator appears profitable", "mechanisms_separated": ["m1", "m2"], "outcome": "development backtest return", "horizon": "varied", "development_only": True, "estimated_information_value": 0.2, "estimated_cost": 0.5, "overfitting_risk": 0.9, "confounders": ["multiple testing"]},
         ],
         "selected_experiment_id": "e1",
         "selection_rationale": "e1 directly discriminates the competing mechanisms with lower search risk.",
@@ -102,6 +60,7 @@ def test_v2_requires_distinct_mechanisms_and_selects_new_experiment():
     assert len(decision["mechanisms"]) >= 2
     assert transport.calls[0]["response_format"]["type"] == "json_schema"
     assert transport.calls[0]["max_completion_tokens"] == 6144
+    assert transport.calls[0]["reasoning_effort"] == "high"
 
 
 def test_v2_rejects_repeated_experiment():
