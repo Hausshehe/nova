@@ -30,10 +30,7 @@ def payload():
     return {
         "question": "Does XAGUSD contain a robust short-horizon effect?",
         "problem_interpretation": "The question is about conditional predictability, not a specific indicator strategy.",
-        "premise_challenges": [
-            "A historical pattern may be nonstationary.",
-            "Apparent predictability may be compensation for volatility or costs.",
-        ],
+        "premise_challenges": ["A historical pattern may be nonstationary.", "Apparent predictability may be compensation for volatility or costs."],
         "mechanisms": [
             {"id": "m1", "mechanism": "temporary price overshoot", "causal_story": "Liquidity imbalance can temporarily push price away from short-run equilibrium.", "prediction": "large shocks are followed by partial reversal under suitable conditions", "disconfirming_observation": "no reversal after controlling for volatility and costs", "current_confidence": 0.45, "status": "candidate", "why_testable": "event-conditioned forward returns can distinguish it"},
             {"id": "m2", "mechanism": "information continuation", "causal_story": "Information may diffuse over multiple bars rather than all at once.", "prediction": "large directional moves are followed by continuation under suitable conditions", "disconfirming_observation": "continuation disappears after controlling for event size and regime", "current_confidence": 0.4, "status": "candidate", "why_testable": "the sign and path of forward returns differ from reversal"},
@@ -98,10 +95,11 @@ def test_v2_blocks_development_after_confirmation_lock():
         validate_decision(payload(), s)
 
 
-def test_prompt_contains_information_value_and_stop_rules():
+def test_prompt_contains_information_value_and_stop_rules_without_embedded_schema():
     from trading_research.research_brain_v2 import build_prompt
     text = build_prompt(ResearchRequest("Research", "XAGUSD", "4H"), state())
     assert "information value" in text
     assert "STOP is legitimate" in text
     assert "genuinely different causal mechanisms" in text
     assert "Never repeat a prohibited" in text
+    assert '"properties"' not in text
