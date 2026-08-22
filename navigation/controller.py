@@ -91,12 +91,7 @@ class NavigationController:
         return refreshed, None
 
     def _stable_start_observation(self, history: list[NavigationState]) -> Optional[ScreenSnapshot]:
-        """Acquire a fresh, usable starting hierarchy before target resolution.
-
-        This deliberately does not pass an old snapshot to the observer. Launching
-        an Android activity can briefly expose a stale/empty accessibility tree, and
-        navigation must not interpret that transient state as the initial screen.
-        """
+        """Acquire a fresh, usable starting hierarchy before target resolution."""
         history.append(NavigationState.STABILIZE)
         time.sleep(self.settle_seconds)
         first = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
@@ -114,8 +109,6 @@ class NavigationController:
         observed = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
         if observed.observation_quality is ObservationQuality.VALID:
             return observed
-        # A second fresh attempt gets a larger retry budget but still never copies
-        # the pre-action hierarchy into the result.
         time.sleep(self.settle_seconds)
         return observe_screen(previous=None, include_nodes=True, retries=self.observation_retries + 1, settle_seconds=self.settle_seconds)
 
@@ -129,17 +122,16 @@ class NavigationController:
             history.append(NavigationState.ACTIVATE)
             last_action = activate_node(current_match.node)
             if not last_action.success:
-                geometry_mismatch = "Actionable ancestor bounds do not contain the target bounds." in last_action.message
-                if geometry_mismatch and attempt < self.max_activation_retries:
+                if attempt < self.max_activation_retries:
                     history.append(NavigationState.RECOVER)
                     fresh = self._fresh_post_action_observation(previous=current_snapshot, history=history)
                     if fresh.observation_quality is not ObservationQuality.VALID:
-                        return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation geometry was inconsistent and the fresh recovery observation was unreliable.")
+                        return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation was rejected and the fresh recovery observation was unreliable.")
                     fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
-                    if fresh_match.resolution is not Resolution.FOUND or fresh_match.node is None:
-                        return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=fresh, match=fresh_match, action=last_action, scroll_count=total_scrolls, direction=direction, message="Activation geometry was inconsistent and the target could not be safely re-resolved for the bounded retry.")
-                    current_snapshot, current_match, re_resolved = fresh, fresh_match, True
-                    continue
+                    if fresh_match.resolution is Resolution.FOUND and fresh_match.node is not None:
+                        current_snapshot, current_match, re_resolved = fresh, fresh_match, True
+                        continue
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=fresh, match=fresh_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=f"Activation was rejected ({last_action.message}) and the target was not safely re-resolved from the fresh live hierarchy: {fresh_match.reason}")
                 history.append(NavigationState.RECOVER)
                 return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
             history.extend((NavigationState.WAIT_FOR_TRANSITION, NavigationState.VERIFY))
@@ -238,9 +230,6 @@ class NavigationController:
                     continue
                 recovery_progress = compare_snapshots(snapshot, recovery_snapshot)
                 if recovery_progress.meaningful:
-                    # The transport said the action failed, but the live UI moved.
-                    # Trust the observed world over the transport error and continue
-                    # without inferring anything about scroll direction.
                     scroll_action_failures = 0
                     last_progress = recovery_progress
                     no_progress = 0
