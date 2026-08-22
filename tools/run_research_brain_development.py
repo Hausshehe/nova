@@ -10,8 +10,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Running ``python tools/<script>.py`` places ``tools/`` on sys.path rather
+# than the repository root. Add the repo root explicitly so the script works
+# identically in CI and when invoked from a clean repository checkout.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from trading_research.data import load_csv
 from trading_research.dukascopy_history import DukascopyClient, write_csv
