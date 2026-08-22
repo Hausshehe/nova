@@ -118,6 +118,20 @@ def test_v2_rejects_experiment_that_does_not_discriminate():
         validate_decision(p, state())
 
 
+def test_v2_rejects_unknown_mechanism_reference():
+    p = payload()
+    p["experiment_candidates"][0]["mechanisms_separated"] = ["m1", "unknown"]
+    with pytest.raises(ValueError, match="unknown mechanism ids"):
+        validate_decision(p, state())
+
+
+def test_v2_rejects_duplicate_ids():
+    p = payload()
+    p["mechanisms"][1]["id"] = "m1"
+    with pytest.raises(ValueError, match="mechanism ids must be unique"):
+        validate_decision(p, state())
+
+
 def test_v2_blocks_development_after_confirmation_lock():
     s = state()
     s.confirmation_locked = True
