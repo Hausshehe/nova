@@ -47,16 +47,11 @@ def _normalized_words(text: str) -> tuple[str, ...]:
 
 
 def _semantic_destination_evidence(before: ScreenSnapshot, after: ScreenSnapshot, target: str) -> bool:
-    """Require a destination label related to the activated target."""
+    """Require destination-aware semantic evidence for the activated target."""
     target_words = _normalized_words(target)
     if not target_words:
         return False
 
-    # A target such as "Apps" can legitimately lead to a destination labeled
-    # "App management" or "App info". Compare the target's lexical stems with
-    # visible destination text rather than requiring the exact source label to
-    # remain present. This stays generic and does not encode Settings-specific
-    # coordinates or screen names.
     stems = {word[:-1] if word.endswith("s") and len(word) > 3 else word for word in target_words}
     before_words = set(_normalized_words(target))
 
@@ -64,22 +59,19 @@ def _semantic_destination_evidence(before: ScreenSnapshot, after: ScreenSnapshot
         words = set(_normalized_words(text))
         if not words:
             continue
-        if any(word in words or any(candidate.startswith(stem) for candidate in words) for stem in stems for word in [stem]):
+        if any(stem in words or any(candidate.startswith(stem) for candidate in words) for stem in stems):
             if words != before_words or len(words) > len(before_words):
                 return True
     return False
 
 
-def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected_target: str) -> tuple[bool, bool]:
-    """Require destination-aware semantic evidence for the expected target."""
+def _target_destination_changed(before: ScreenSnapshot, after: ScreenSnapshot, expected_target: str) -> tuple[bool, bool]:
+    """Determine whether the target produced a plausible destination transition."""
     before_match = resolve_target(before, expected_target)
     after_match = resolve_target(after, expected_target)
 
     before_found = before_match.resolution is Resolution.FOUND and before_match.node is not None
     after_found = after_match.resolution is Resolution.FOUND and after_match.node is not None
-
-    if not before_found and after_found:
-        return True, True
 
     if before_found and after_found:
         before_label = " ".join(str(before_match.label or "").split()).lower()
@@ -101,6 +93,9 @@ def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected
             return True, False
         return _semantic_destination_evidence(before, after, expected_target), False
 
+    if not before_found and after_found:
+        return True, True
+
     return False, False
 
 
@@ -120,12 +115,13 @@ def _candidate_evidence(
     expected_target: Optional[str],
 ) -> tuple[bool, bool]:
     package_ok = not expected_foreground_package or current.foreground_package == expected_foreground_package
-    meaningful = _meaningful_transition(before, current)
     target_resolved = False
-    target_ok = True
+
     if expected_target:
-        target_ok, target_resolved = _target_transitioned(before, current, expected_target)
-    return package_ok and meaningful and (target_ok if expected_target else True), target_resolved
+        target_ok, target_resolved = _target_destination_changed(before, current, expected_target)
+        return package_ok and target_ok, target_resolved
+
+    return package_ok and _meaningful_transition(before, current), False
 
 
 def verify_transition(
@@ -136,7 +132,7 @@ def verify_transition(
     timeout_seconds: float = 3.0,
     poll_seconds: float = 0.25,
 ) -> VerificationResult:
-    """Verify a stable post-action transition using two fresh observations."""
+    """Verify a stable post-action transition without treating generic UI churn as success."""
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     last = before
 
@@ -165,7 +161,7 @@ def verify_transition(
                 )
                 if confirmed:
                     if expected_target:
-                        reason = "A stable destination-aware live UI transition was verified after activation."
+                        reason = "Stable destination-aware evidence verified the requested target transition."
                     elif expected_foreground_package:
                         reason = "Expected foreground package is active and the post-action UI remained stable."
                     else:
