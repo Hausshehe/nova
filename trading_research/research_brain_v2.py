@@ -21,9 +21,6 @@ from trading_research.research_state import ResearchState
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
-# Groq's current on-demand TPM limit is 8,000 for this organization/model.
-# Keep the requested completion budget below the limit after accounting for
-# the research prompt, while leaving enough room for structured reasoning.
 MAX_COMPLETION_TOKENS = 5000
 HTTP_USER_AGENT = "NovaResearcher/2.0"
 
@@ -34,52 +31,32 @@ SCHEMA: dict[str, Any] = {
         "problem_interpretation": {"type": "string"},
         "premise_challenges": {"type": "array", "items": {"type": "string"}, "minItems": 2},
         "mechanisms": {
-            "type": "array",
-            "minItems": 2,
-            "maxItems": 6,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "mechanism": {"type": "string"},
-                    "causal_story": {"type": "string"},
-                    "prediction": {"type": "string"},
-                    "disconfirming_observation": {"type": "string"},
-                    "current_confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                    "status": {"type": "string", "enum": ["candidate", "weakened", "rejected", "surviving"]},
-                    "why_testable": {"type": "string"},
-                },
-                "required": ["id", "mechanism", "causal_story", "prediction", "disconfirming_observation", "current_confidence", "status", "why_testable"],
-                "additionalProperties": False,
-            },
+            "type": "array", "minItems": 2, "maxItems": 6,
+            "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "mechanism": {"type": "string"},
+                "causal_story": {"type": "string"}, "prediction": {"type": "string"},
+                "disconfirming_observation": {"type": "string"},
+                "current_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "status": {"type": "string", "enum": ["candidate", "weakened", "rejected", "surviving"]},
+                "why_testable": {"type": "string"},
+            }, "required": ["id", "mechanism", "causal_story", "prediction", "disconfirming_observation", "current_confidence", "status", "why_testable"], "additionalProperties": False},
         },
         "experiment_candidates": {
-            "type": "array",
-            "minItems": 2,
-            "maxItems": 5,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "question_discriminated": {"type": "string"},
-                    "mechanisms_separated": {"type": "array", "items": {"type": "string"}, "minItems": 2},
-                    "outcome": {"type": "string"},
-                    "horizon": {"type": "string"},
-                    "development_only": {"type": "boolean"},
-                    "estimated_information_value": {"type": "number", "minimum": 0, "maximum": 1},
-                    "estimated_cost": {"type": "number", "minimum": 0, "maximum": 1},
-                    "overfitting_risk": {"type": "number", "minimum": 0, "maximum": 1},
-                    "confounders": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-                },
-                "required": ["id", "name", "question_discriminated", "mechanisms_separated", "outcome", "horizon", "development_only", "estimated_information_value", "estimated_cost", "overfitting_risk", "confounders"],
-                "additionalProperties": False,
-            },
+            "type": "array", "minItems": 2, "maxItems": 5,
+            "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "name": {"type": "string"},
+                "question_discriminated": {"type": "string"},
+                "mechanisms_separated": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+                "outcome": {"type": "string"}, "horizon": {"type": "string"},
+                "development_only": {"type": "boolean"},
+                "estimated_information_value": {"type": "number", "minimum": 0, "maximum": 1},
+                "estimated_cost": {"type": "number", "minimum": 0, "maximum": 1},
+                "overfitting_risk": {"type": "number", "minimum": 0, "maximum": 1},
+                "confounders": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            }, "required": ["id", "name", "question_discriminated", "mechanisms_separated", "outcome", "horizon", "development_only", "estimated_information_value", "estimated_cost", "overfitting_risk", "confounders"], "additionalProperties": False},
         },
-        "selected_experiment_id": {"type": "string"},
-        "selection_rationale": {"type": "string"},
-        "falsification_rule": {"type": "string"},
-        "stopping_rule": {"type": "string"},
+        "selected_experiment_id": {"type": "string"}, "selection_rationale": {"type": "string"},
+        "falsification_rule": {"type": "string"}, "stopping_rule": {"type": "string"},
         "confirmation_protection": {"type": "string"},
         "next_action": {"type": "string", "enum": ["TEST", "EXPLORE", "REJECT", "STOP", "CONFIRMATION_CANDIDATE"]},
         "state_update_expectation": {"type": "string"},
@@ -110,8 +87,7 @@ def _state_context(state: ResearchState) -> dict[str, Any]:
 def build_prompt(request_data: ResearchRequest, state: ResearchState) -> str:
     request_data.validate()
     context = json.dumps(_state_context(state), ensure_ascii=False, separators=(",", ":"))
-    return f"""
-You are Nova Researcher v2. You are a research partner, not a strategy generator.
+    return f"""You are Nova Researcher v2. You are a research partner, not a strategy generator.
 
 Research question: {request_data.question}
 Symbol: {request_data.symbol}
@@ -137,25 +113,16 @@ Research constitution:
 13. Do not alter external gates, costs, or confirmation policy.
 14. Preserve uncertainty; do not turn failed tests into false certainty.
 
-Return exactly one JSON object matching the schema. No commentary.
-{json.dumps(SCHEMA, ensure_ascii=False, separators=(',', ':'))}
-""".strip()
+Return exactly one JSON object matching the required response schema. No commentary.""".strip()
 
 
 def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport:
     def send(payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            endpoint,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": HTTP_USER_AGENT,
-            },
-            method="POST",
-        )
+        req = request.Request(endpoint, data=body, headers={
+            "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
+            "Accept": "application/json", "User-Agent": HTTP_USER_AGENT,
+        }, method="POST")
         try:
             with request.urlopen(req, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -172,8 +139,7 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
     missing = sorted(required - set(payload))
     if missing:
         raise ValueError("decision missing fields: " + ",".join(missing))
-    mechanisms = payload["mechanisms"]
-    experiments = payload["experiment_candidates"]
+    mechanisms, experiments = payload["mechanisms"], payload["experiment_candidates"]
     if not isinstance(mechanisms, list) or len(mechanisms) < 2:
         raise ValueError("at least two mechanisms are required")
     if not isinstance(experiments, list) or len(experiments) < 2:
@@ -187,8 +153,7 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
     selected = str(payload["selected_experiment_id"])
     if selected not in ids:
         raise ValueError("selected experiment is not among candidates")
-    tested = set(state.tested_experiments)
-    if selected in tested:
+    if selected in set(state.tested_experiments):
         raise ValueError("selected experiment has already been tested")
     if selected in set(state.prohibited_experiments):
         raise ValueError("selected experiment is prohibited by research state")
