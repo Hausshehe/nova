@@ -222,6 +222,7 @@ class ResearchBrainV2:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.15,
+            "reasoning_effort": "high",
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "response_format": {"type": "json_schema", "json_schema": {"name": "nova_research_decision_v2", "strict": True, "schema": SCHEMA}},
         })
