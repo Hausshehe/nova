@@ -33,7 +33,7 @@ def _brief() -> ResearchBrief:
         what_would_falsify_it="f",
         primary_test="t",
         development_only_exploration=("x",),
-        confirmation_rule="one untouched confirmation test",
+        confirmation_rule="After locking one formulation, run it once on untouched confirmation data with no parameter changes based on that result.",
         key_risks=("r",),
         research_priority="HIGH",
         next_action="TEST",
