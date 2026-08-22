@@ -67,7 +67,7 @@ def test_brief_parses_and_preserves_boundaries():
     assert transport.calls[0]["response_format"]["type"] == "json_schema"
     assert transport.calls[0]["max_completion_tokens"] == 4096
     assert transport.calls[0]["reasoning_effort"] == "low"
-    assert transport.calls[0]["reasoning_format"] == "hidden"
+    assert "reasoning_format" not in transport.calls[0]
 
 
 def test_http_403_falls_back_to_json_object_and_local_validation():
