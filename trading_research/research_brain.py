@@ -34,6 +34,38 @@ RESEARCH_BRAIN_SCHEMA: dict[str, Any] = {
         "key_risks": {"type": "array", "items": {"type": "string"}},
         "research_priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW", "REJECT"]},
         "next_action": {"type": "string", "enum": ["TEST", "EXPLORE", "REJECT", "CONFIRMATION_CANDIDATE"]},
+        "experiment_plan": {
+            "type": "object",
+            "properties": {
+                "family": {"type": "string", "enum": ["regime_conditioned_continuation"]},
+                "event_move_threshold_bps": {"type": "integer", "minimum": 10, "maximum": 200},
+                "horizon_bars": {"type": "integer", "minimum": 1, "maximum": 4},
+                "regime_method": {"type": "string", "enum": ["trend_volatility"]},
+                "trend_lookback_bars": {"type": "integer", "minimum": 8, "maximum": 100},
+                "trend_gap_threshold_bps": {"type": "integer", "minimum": 1, "maximum": 500},
+                "volatility_lookback_bars": {"type": "integer", "minimum": 8, "maximum": 100},
+                "volatility_percentile": {"type": "number", "minimum": 0.50, "maximum": 0.95},
+                "minimum_events_per_regime": {"type": "integer", "minimum": 20, "maximum": 1000},
+                "exploration_budget": {"type": "integer", "minimum": 1, "maximum": 24},
+                "selection_rule": {"type": "string", "enum": ["max_lower_95ci_effect_after_costs"]},
+                "confirmation_plan": {"type": "string", "enum": ["untouched_single_test"]},
+            },
+            "required": [
+                "family",
+                "event_move_threshold_bps",
+                "horizon_bars",
+                "regime_method",
+                "trend_lookback_bars",
+                "trend_gap_threshold_bps",
+                "volatility_lookback_bars",
+                "volatility_percentile",
+                "minimum_events_per_regime",
+                "exploration_budget",
+                "selection_rule",
+                "confirmation_plan",
+            ],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "research_question",
@@ -47,6 +79,7 @@ RESEARCH_BRAIN_SCHEMA: dict[str, Any] = {
         "key_risks",
         "research_priority",
         "next_action",
+        "experiment_plan",
     ],
     "additionalProperties": False,
 }
@@ -70,6 +103,78 @@ class ResearchQuestion:
 
 
 @dataclass(frozen=True)
+class ExperimentPlan:
+    family: str
+    event_move_threshold_bps: int
+    horizon_bars: int
+    regime_method: str
+    trend_lookback_bars: int
+    trend_gap_threshold_bps: int
+    volatility_lookback_bars: int
+    volatility_percentile: float
+    minimum_events_per_regime: int
+    exploration_budget: int
+    selection_rule: str
+    confirmation_plan: str
+
+    def validate(self) -> None:
+        if self.family != "regime_conditioned_continuation":
+            raise ValueError("unsupported experiment family")
+        if not 10 <= self.event_move_threshold_bps <= 200:
+            raise ValueError("event_move_threshold_bps outside bounded research range")
+        if not 1 <= self.horizon_bars <= 4:
+            raise ValueError("horizon_bars outside bounded research range")
+        if self.regime_method != "trend_volatility":
+            raise ValueError("unsupported regime_method")
+        if not 8 <= self.trend_lookback_bars <= 100:
+            raise ValueError("trend_lookback_bars outside bounded research range")
+        if not 1 <= self.trend_gap_threshold_bps <= 500:
+            raise ValueError("trend_gap_threshold_bps outside bounded research range")
+        if not 8 <= self.volatility_lookback_bars <= 100:
+            raise ValueError("volatility_lookback_bars outside bounded research range")
+        if not 0.50 <= self.volatility_percentile <= 0.95:
+            raise ValueError("volatility_percentile outside bounded research range")
+        if not 20 <= self.minimum_events_per_regime <= 1000:
+            raise ValueError("minimum_events_per_regime outside bounded research range")
+        if not 1 <= self.exploration_budget <= 24:
+            raise ValueError("exploration_budget outside bounded research range")
+        if self.selection_rule != "max_lower_95ci_effect_after_costs":
+            raise ValueError("selection_rule must remain predeclared")
+        if self.confirmation_plan != "untouched_single_test":
+            raise ValueError("confirmation_plan must remain untouched_single_test")
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ExperimentPlan":
+        required = (
+            "family", "event_move_threshold_bps", "horizon_bars", "regime_method",
+            "trend_lookback_bars", "trend_gap_threshold_bps", "volatility_lookback_bars",
+            "volatility_percentile", "minimum_events_per_regime", "exploration_budget",
+            "selection_rule", "confirmation_plan",
+        )
+        missing = [key for key in required if key not in payload]
+        if missing:
+            raise ValueError("experiment plan missing fields: " + ",".join(missing))
+        if not isinstance(payload["volatility_percentile"], (int, float)):
+            raise ValueError("volatility_percentile must be numeric")
+        plan = cls(
+            family=str(payload["family"]),
+            event_move_threshold_bps=int(payload["event_move_threshold_bps"]),
+            horizon_bars=int(payload["horizon_bars"]),
+            regime_method=str(payload["regime_method"]),
+            trend_lookback_bars=int(payload["trend_lookback_bars"]),
+            trend_gap_threshold_bps=int(payload["trend_gap_threshold_bps"]),
+            volatility_lookback_bars=int(payload["volatility_lookback_bars"]),
+            volatility_percentile=float(payload["volatility_percentile"]),
+            minimum_events_per_regime=int(payload["minimum_events_per_regime"]),
+            exploration_budget=int(payload["exploration_budget"]),
+            selection_rule=str(payload["selection_rule"]),
+            confirmation_plan=str(payload["confirmation_plan"]),
+        )
+        plan.validate()
+        return plan
+
+
+@dataclass(frozen=True)
 class ResearchBrief:
     research_question: str
     mechanism: str
@@ -82,21 +187,15 @@ class ResearchBrief:
     key_risks: tuple[str, ...]
     research_priority: str
     next_action: str
+    experiment_plan: ExperimentPlan
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ResearchBrief":
         required = (
-            "research_question",
-            "mechanism",
-            "hypothesis",
-            "why_it_might_work",
-            "what_would_falsify_it",
-            "primary_test",
-            "development_only_exploration",
-            "confirmation_rule",
-            "key_risks",
-            "research_priority",
-            "next_action",
+            "research_question", "mechanism", "hypothesis", "why_it_might_work",
+            "what_would_falsify_it", "primary_test", "development_only_exploration",
+            "confirmation_rule", "key_risks", "research_priority", "next_action",
+            "experiment_plan",
         )
         missing = [key for key in required if key not in payload]
         if missing:
@@ -113,7 +212,7 @@ class ResearchBrief:
             raise ValueError("invalid research_priority")
         if action not in {"TEST", "EXPLORE", "REJECT", "CONFIRMATION_CANDIDATE"}:
             raise ValueError("invalid next_action")
-        strings = [payload[key] for key in required if key not in {"development_only_exploration", "key_risks"}]
+        strings = [payload[key] for key in required if key not in {"development_only_exploration", "key_risks", "experiment_plan"}]
         if not all(isinstance(value, str) and value.strip() for value in strings):
             raise ValueError("research brief contains empty text fields")
         return cls(
@@ -128,6 +227,7 @@ class ResearchBrief:
             key_risks=tuple(risks),
             research_priority=priority,
             next_action=action,
+            experiment_plan=ExperimentPlan.from_dict(payload["experiment_plan"]),
         )
 
 
@@ -167,6 +267,11 @@ Research constitution:
 11. Prefer adaptive, regime-aware research when a fixed universal strategy
     would be implausible.
 12. Do not provide live-trading execution instructions.
+13. The experiment plan is executable metadata, not code. It must stay inside
+    the bounded schema. Never select a formulation merely because it had the
+    strongest result after looking at the development outcomes.
+14. The selection rule is fixed before results are seen. Confirmation is one
+    untouched test of the locked formulation.
 
 Return exactly one JSON object matching this schema. Do not add commentary:
 {schema_text}
@@ -200,11 +305,7 @@ def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport
 
 
 class ResearchBrain:
-    """Generate a structured, evidence-first research brief.
-
-    The brain only proposes research. It cannot run a backtest, edit gates,
-    select confirmation data, or approve a strategy.
-    """
+    """Generate a structured, evidence-first research brief."""
 
     def __init__(
         self,
@@ -230,42 +331,46 @@ class ResearchBrain:
         self.endpoint = resolved_endpoint
         self._transport = transport or _default_transport(resolved_key, resolved_endpoint, timeout)
 
-    def _request(self, *, structured: bool) -> dict[str, Any]:
+    def _request(self, question: ResearchQuestion) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": "Return exactly one structured research brief as JSON."},
-                {"role": "user", "content": build_research_brain_prompt(self._question)},
+                {"role": "user", "content": build_research_brain_prompt(question)},
             ],
             "temperature": 0.2,
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "reasoning_effort": "low",
-        }
-        if structured:
-            payload["response_format"] = {
+            "response_format": {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "nova_research_brief",
                     "strict": True,
                     "schema": RESEARCH_BRAIN_SCHEMA,
                 },
-            }
-        else:
-            payload["response_format"] = {"type": "json_object"}
+            },
+        }
         return self._transport(payload)
 
     def investigate(self, question: ResearchQuestion) -> ResearchBrief:
         question.validate()
-        self._question = question
         try:
-            response = self._request(structured=True)
+            response = self._request(question)
         except RuntimeError as exc:
-            # Some Groq environments can reject strict structured output even
-            # when the model itself is available. Fall back to JSON Object Mode,
-            # then validate the exact same schema locally.
             if "HTTP 403" not in str(exc):
                 raise
-            response = self._request(structured=False)
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "Return exactly one JSON object matching the requested research schema."},
+                    {"role": "user", "content": build_research_brain_prompt(question)},
+                ],
+                "temperature": 0.2,
+                "max_completion_tokens": MAX_COMPLETION_TOKENS,
+                "reasoning_effort": "low",
+                "response_format": {"type": "json_object"},
+            }
+            response = self._transport(payload)
 
         try:
             content = response["choices"][0]["message"].get("content", "")
