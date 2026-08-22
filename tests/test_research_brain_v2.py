@@ -55,7 +55,8 @@ def test_v2_requires_distinct_mechanisms_and_selects_new_experiment():
     decision = brain.decide(ResearchRequest("Research", "XAGUSD", "4H"), state())
     assert decision["selected_experiment_id"] == "e1"
     assert len(decision["mechanisms"]) >= 2
-    assert transport.calls[0]["response_format"]["type"] == "json_schema"
+    assert transport.calls[0]["response_format"]["type"] == "json_object"
+    assert "json_schema" not in transport.calls[0]["response_format"]
     assert transport.calls[0]["max_completion_tokens"] == 5000
     assert transport.calls[0]["reasoning_effort"] == "high"
 
@@ -103,3 +104,4 @@ def test_prompt_contains_information_value_and_stop_rules_without_embedded_schem
     assert "genuinely different causal mechanisms" in text
     assert "Never repeat a prohibited" in text
     assert '"properties"' not in text
+    assert "Return exactly one valid JSON object" in text
