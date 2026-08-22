@@ -27,6 +27,7 @@ jobs:
           import json
           from pathlib import Path
           from trading_research.research_brain_v2 import ResearchBrainV2, ResearchRequest
+          from trading_research.research_decision_auditor import audit_decision
           from trading_research.research_state import ResearchState
 
           state = ResearchState(
@@ -43,15 +44,9 @@ jobs:
                   "tested simple continuation and mean-reversion formulations; "
                   "do not repeat those formulations."
               ),
-              tested_experiments={
-                  "simple_continuation",
-                  "simple_mean_reversion",
-              },
+              tested_experiments={"simple_continuation", "simple_mean_reversion"},
               rejected_mechanisms=set(),
-              prohibited_experiments={
-                  "simple_continuation",
-                  "simple_mean_reversion",
-              },
+              prohibited_experiments={"simple_continuation", "simple_mean_reversion"},
               unresolved_questions=[
                   "Whether either directional response survives after conditioning on context.",
                   "Whether an apparently different formulation would merely repackage an already tested mechanism.",
@@ -76,10 +71,20 @@ jobs:
               ),
           )
           decision = ResearchBrainV2().decide(request, state)
-          Path("research_brain_v2_decision.json").write_text(json.dumps(decision, indent=2), encoding="utf-8")
-          print(json.dumps(decision, indent=2))
+          audit = audit_decision(decision, state)
+          output = {"decision": decision, "audit": {
+              "passed": audit.passed,
+              "score": audit.score,
+              "critical_failures": list(audit.critical_failures),
+              "warnings": list(audit.warnings),
+              "checks": audit.checks,
+          }}
+          Path("research_brain_v2_decision.json").write_text(json.dumps(output, indent=2), encoding="utf-8")
+          print(json.dumps(output, indent=2))
+          if not audit.passed:
+              raise SystemExit("deterministic research audit failed")
           PY
-      - name: Upload blind v2 decision
+      - name: Upload audited blind v2 decision
         uses: actions/upload-artifact@v4
         with:
           name: nova-research-brain-v2-decision
