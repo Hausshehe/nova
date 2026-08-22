@@ -1,14 +1,16 @@
 """Exercise Nova's adaptive navigation controller with explicit state boundaries.
 
 Sequence:
-1. Launch Settings.
-2. Establish a fresh Settings-root observation.
-3. Let NavigationController reach Bluetooth.
-4. Send Back and establish a fresh Settings-root observation.
-5. Let NavigationController reach Apps.
+1. Force-stop Settings to remove prior task/process state.
+2. Launch Settings.
+3. Establish a fresh Settings-root observation.
+4. Let NavigationController reach Bluetooth.
+5. Send Back and establish a fresh Settings-root observation.
+6. Let NavigationController reach Apps.
 
-This diagnostic separates Android launch/back stabilization from target navigation
-and never verifies a post-action state using the pre-action snapshot.
+This diagnostic separates Android launch/back stabilization from target navigation,
+starts every trial from a clean Settings task, and never verifies a post-action
+state using the pre-action snapshot.
 """
 from __future__ import annotations
 
@@ -63,6 +65,14 @@ def fresh_settings_root(max_observations: int = 4):
 
 def main() -> int:
     events: list[dict] = []
+
+    reset = run(["am", "force-stop", SETTINGS])
+    events.append({"event": "reset_settings_task", **reset})
+    if reset["returncode"] != 0:
+        events.append({"event": "FAILURE", "stage": "reset_settings_task"})
+        print(json.dumps({"events": events}, indent=2, ensure_ascii=False))
+        return 1
+
     launch = run(["am", "start", "-a", "android.settings.SETTINGS"])
     events.append({"event": "launch_settings", **launch})
 
