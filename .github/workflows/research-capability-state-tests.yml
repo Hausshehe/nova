@@ -1,0 +1,33 @@
+name: Research Capability State Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research-capability-baseline
+
+jobs:
+  state-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: research-capability-baseline
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Compile state module
+        run: python -m py_compile trading_research/research_state.py
+
+      - name: Run state tests
+        run: pytest -q tests/test_research_state.py
