@@ -15,6 +15,18 @@ class FakeTransport:
         return {"choices": [{"message": {"content": json.dumps(self.payload)}}]}
 
 
+class FallbackTransport:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def __call__(self, request_payload):
+        self.calls.append(request_payload)
+        if len(self.calls) == 1:
+            raise RuntimeError("Groq API HTTP 403: error code: 1010")
+        return {"choices": [{"message": {"content": json.dumps(self.payload)}}]}
+
+
 def valid_payload():
     return {
         "research_question": "Does a volatility-conditioned reversal effect exist?",
@@ -53,6 +65,25 @@ def test_brief_parses_and_preserves_boundaries():
     assert len(brief.development_only_exploration) == 2
     assert "untouched confirmation" in brief.confirmation_rule.lower()
     assert transport.calls[0]["response_format"]["type"] == "json_schema"
+    assert transport.calls[0]["max_completion_tokens"] == 4096
+    assert transport.calls[0]["reasoning_effort"] == "low"
+    assert transport.calls[0]["reasoning_format"] == "hidden"
+
+
+def test_http_403_falls_back_to_json_object_and_local_validation():
+    transport = FallbackTransport(valid_payload())
+    brain = ResearchBrain(api_key="test", transport=transport)
+    brief = brain.investigate(
+        ResearchQuestion(
+            question="Find evidence of a regime-conditioned effect.",
+            symbol="XAGUSD",
+            timeframe="4H",
+        )
+    )
+    assert brief.next_action == "TEST"
+    assert len(transport.calls) == 2
+    assert transport.calls[0]["response_format"]["type"] == "json_schema"
+    assert transport.calls[1]["response_format"] == {"type": "json_object"}
 
 
 def test_question_requires_core_fields():
@@ -72,6 +103,7 @@ def test_prompt_contains_the_non_negotiable_research_rules():
     assert "confirmation data must" in prompt.lower()
     assert "No edge found" in prompt
     assert "Do not claim that a candidate is a real edge" in prompt
+    assert "Return exactly one JSON object matching this schema" in prompt
 
 
 def test_invalid_action_is_rejected():
