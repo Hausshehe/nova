@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -10,7 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 
 
 ACCESSIBILITY_CLICK_TIMEOUT_SECONDS = 5.0
-ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS = 5.0
+ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -65,13 +67,33 @@ def _semantic_label(node: Dict[str, Any]) -> str:
     )
 
 
-def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
-    """Send one bounded semantic command and expose its transport metadata.
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    """Stop a stuck shell transport without taking down the Python agent."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
 
-    Android's ``am broadcast`` shell exit code is not the Accessibility receiver's
-    result code. In particular, a receiver returning result=1 can make ``am`` exit
-    with code 1. The receiver result is therefore the authoritative action result;
-    the shell return code remains diagnostic metadata.
+
+def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
+    """Send one semantic command with a real hard transport deadline.
+
+    ``subprocess.run(..., timeout=...)`` proved insufficient on the Android/Termux
+    path because the broadcast invocation can remain stuck in pipe communication.
+    We therefore own the process lifecycle and kill the whole process group when
+    the deadline is exceeded. A transport stall becomes an ordinary failed action
+    that the controller can observe and recover from.
     """
     command = [
         "am",
@@ -86,35 +108,51 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
     if direction:
         command.extend(["--es", "direction", direction])
 
+    timeout_seconds = (
+        ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS
+        if "SCROLL" in action
+        else ACCESSIBILITY_CLICK_TIMEOUT_SECONDS
+    )
     started = time.monotonic()
+    process: Optional[subprocess.Popen[str]] = None
+
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=(
-                ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS
-                if "SCROLL" in action
-                else ACCESSIBILITY_CLICK_TIMEOUT_SECONDS
-            ),
-            check=False,
+            start_new_session=True,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return False, f"Accessibility Service command transport unavailable: {exc}", -1, round((time.monotonic() - started) * 1000, 1)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process)
+            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+            return (
+                False,
+                f"Accessibility Service command transport timed out after {timeout_seconds:.1f}s; process group terminated.",
+                -1,
+                elapsed_ms,
+            )
+    except (FileNotFoundError, OSError) as exc:
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        return False, f"Accessibility Service command transport unavailable: {exc}", -1, elapsed_ms
 
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    output = "\n".join(part.strip() for part in (stdout, stderr) if part and part.strip())
+    returncode = process.returncode if process is not None and process.returncode is not None else -1
     match = _RECEIVER_RESULT_RE.search(output)
 
     if match:
         receiver_result = int(match.group(1))
         if receiver_result == 1:
-            return True, output or "Accessibility Service receiver accepted the action.", result.returncode, elapsed_ms
+            return True, output or "Accessibility Service receiver accepted the action.", returncode, elapsed_ms
         if receiver_result == 0:
-            return False, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.", result.returncode, elapsed_ms
-        return False, f"Accessibility Service receiver returned unexpected result={receiver_result}.", result.returncode, elapsed_ms
+            return False, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.", returncode, elapsed_ms
+        return False, f"Accessibility Service receiver returned unexpected result={receiver_result}.", returncode, elapsed_ms
 
-    return False, output or "Accessibility Service did not report a receiver result.", result.returncode, elapsed_ms
+    return False, output or "Accessibility Service did not report a receiver result.", returncode, elapsed_ms
 
 
 def _accessibility_click(label: str) -> Tuple[bool, str, int, float]:
