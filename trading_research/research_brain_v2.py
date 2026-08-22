@@ -22,6 +22,7 @@ from trading_research.research_state import ResearchState
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 MAX_COMPLETION_TOKENS = 6144
+HTTP_USER_AGENT = "NovaResearcher/2.0"
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -141,7 +142,17 @@ Return exactly one JSON object matching the schema. No commentary.
 def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport:
     def send(payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
-        req = request.Request(endpoint, data=body, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+        req = request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": HTTP_USER_AGENT,
+            },
+            method="POST",
+        )
         try:
             with request.urlopen(req, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -164,7 +175,12 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
         raise ValueError("at least two mechanisms are required")
     if not isinstance(experiments, list) or len(experiments) < 2:
         raise ValueError("at least two experiment candidates are required")
+    mechanism_ids = {str(item["id"]) for item in mechanisms}
+    if len(mechanism_ids) != len(mechanisms):
+        raise ValueError("mechanism ids must be unique")
     ids = {str(item["id"]) for item in experiments}
+    if len(ids) != len(experiments):
+        raise ValueError("experiment ids must be unique")
     selected = str(payload["selected_experiment_id"])
     if selected not in ids:
         raise ValueError("selected experiment is not among candidates")
@@ -176,8 +192,11 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
     if state.confirmation_locked and payload["next_action"] not in {"STOP", "CONFIRMATION_CANDIDATE"}:
         raise ValueError("confirmation is locked; development research cannot continue")
     for experiment in experiments:
-        if len(experiment["mechanisms_separated"]) < 2:
+        separated = {str(x) for x in experiment["mechanisms_separated"]}
+        if len(separated) < 2:
             raise ValueError("each experiment must separate at least two mechanisms")
+        if not separated.issubset(mechanism_ids):
+            raise ValueError("experiment references unknown mechanism ids")
         if not experiment["development_only"] and payload["next_action"] not in {"CONFIRMATION_CANDIDATE", "STOP"}:
             raise ValueError("non-development experiments require confirmation state")
     return payload
@@ -188,7 +207,7 @@ class ResearchBrainV2:
         key = (api_key if api_key is not None else os.environ.get("GROQ_API_KEY", "")).strip()
         self.model = (model or os.environ.get("GROQ_MODEL", DEFAULT_MODEL)).strip()
         self.endpoint = (endpoint or os.environ.get("GROQ_URL", DEFAULT_ENDPOINT)).strip()
-        if not key:
+        if not key and transport is None:
             raise ValueError("GROQ_API_KEY is required")
         if not self.model or not self.endpoint or timeout <= 0:
             raise ValueError("invalid model, endpoint, or timeout")
