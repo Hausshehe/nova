@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from trading_research.research_brain import ResearchBrain, ResearchQuestion, ResearchBrief, build_research_brain_prompt
+from trading_research.research_brain import (
+    ResearchBrain,
+    ResearchQuestion,
+    ResearchBrief,
+    ExperimentPlan,
+    build_research_brain_prompt,
+)
 
 
 class FakeTransport:
@@ -27,17 +33,34 @@ class FallbackTransport:
         return {"choices": [{"message": {"content": json.dumps(self.payload)}}]}
 
 
+def valid_plan():
+    return {
+        "family": "regime_conditioned_continuation",
+        "event_move_threshold_bps": 50,
+        "horizon_bars": 1,
+        "regime_method": "trend_volatility",
+        "trend_lookback_bars": 20,
+        "trend_gap_threshold_bps": 50,
+        "volatility_lookback_bars": 20,
+        "volatility_percentile": 0.75,
+        "minimum_events_per_regime": 50,
+        "exploration_budget": 12,
+        "selection_rule": "max_lower_95ci_effect_after_costs",
+        "confirmation_plan": "untouched_single_test",
+    }
+
+
 def valid_payload():
     return {
         "research_question": "Does a volatility-conditioned reversal effect exist?",
         "mechanism": "Overshoot may be followed by short-term correction when volatility is unusually high.",
-        "hypothesis": "After an unusually large standardized move, the next 4 bars mean-revert more often in the high-volatility regime.",
+        "hypothesis": "After an unusually large standardized move, the next bar mean-reverts more often in a high-volatility regime.",
         "why_it_might_work": "Liquidity shocks and temporary inventory imbalance can create short-lived overshoots.",
-        "what_would_falsify_it": "The effect disappears after realistic costs or is absent in all preregistered high-volatility development folds.",
-        "primary_test": "Measure forward 4-bar return after the signal on the frozen development dataset with costs specified before testing.",
+        "what_would_falsify_it": "The effect disappears after realistic costs or is absent in all preregistered development folds.",
+        "primary_test": "Measure forward continuation probability after the signal on development data with costs specified before testing.",
         "development_only_exploration": [
-            "Compare a small preregistered set of lookbacks on development data.",
-            "Test the effect separately by volatility regime on development data only.",
+            "Compare a bounded preregistered set of event thresholds on development data.",
+            "Test the effect separately by the deterministic trend/volatility regime on development data only.",
         ],
         "confirmation_rule": "After locking one formulation, run it once on untouched confirmation data with no parameter changes based on that result.",
         "key_risks": [
@@ -46,6 +69,7 @@ def valid_payload():
         ],
         "research_priority": "HIGH",
         "next_action": "TEST",
+        "experiment_plan": valid_plan(),
     }
 
 
@@ -63,6 +87,8 @@ def test_brief_parses_and_preserves_boundaries():
     assert brief.next_action == "TEST"
     assert brief.research_priority == "HIGH"
     assert len(brief.development_only_exploration) == 2
+    assert brief.experiment_plan.exploration_budget == 12
+    assert brief.experiment_plan.selection_rule == "max_lower_95ci_effect_after_costs"
     assert "untouched confirmation" in brief.confirmation_rule.lower()
     assert transport.calls[0]["response_format"]["type"] == "json_schema"
     assert transport.calls[0]["max_completion_tokens"] == 4096
@@ -104,6 +130,7 @@ def test_prompt_contains_the_non_negotiable_research_rules():
     assert "No edge found" in prompt
     assert "Do not claim that a candidate is a real edge" in prompt
     assert "Return exactly one JSON object matching this schema" in prompt
+    assert "selection rule is fixed before results are seen" in prompt
 
 
 def test_invalid_action_is_rejected():
@@ -111,3 +138,10 @@ def test_invalid_action_is_rejected():
     payload["next_action"] = "BUY_EVERYTHING"
     with pytest.raises(ValueError):
         ResearchBrief.from_dict(payload)
+
+
+def test_experiment_plan_rejects_adaptive_selection_rule():
+    payload = valid_plan()
+    payload["selection_rule"] = "pick_the_best_backtest"
+    with pytest.raises(ValueError):
+        ExperimentPlan.from_dict(payload)
