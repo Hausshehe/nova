@@ -1,0 +1,33 @@
+name: Researcher v1 Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research-brain-v1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout research-brain-v1
+        uses: actions/checkout@v4
+        with:
+          ref: research-brain-v1
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Compile Researcher v1
+        run: python -m py_compile trading_research/research_brain.py
+
+      - name: Run Researcher v1 tests
+        run: python -m pytest -q tests/test_research_brain.py

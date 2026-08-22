@@ -1,0 +1,83 @@
+name: Research Brain First Assignment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research-brain-v1
+
+jobs:
+  assignment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout research-brain-v1
+        uses: actions/checkout@v4
+        with:
+          ref: research-brain-v1
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate researcher modules
+        run: |
+          python -m py_compile trading_research/research_brain.py
+          python -m py_compile trading_research/groq_hypothesis.py
+          python -m py_compile trading_research/researcher.py
+
+      - name: Generate Nova research brief
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from trading_research.research_brain import ResearchBrain, ResearchQuestion
+
+          question = ResearchQuestion(
+              question=(
+                  "Investigate whether short-horizon continuation or reversal "
+                  "in XAGUSD on 4H data is meaningfully conditioned on the "
+                  "current market regime. Choose the mechanism yourself; do "
+                  "not assume momentum, mean reversion, volatility, or a "
+                  "specific indicator family in advance."
+              ),
+              symbol="XAGUSD",
+              timeframe="4H",
+              constraints=(
+                  "Development data only for discovery and exploration. "
+                  "Do not use confirmation data, do not change gates, include "
+                  "realistic costs, and do not claim a real edge."
+              ),
+          )
+
+          brain = ResearchBrain()
+          brief = brain.investigate(question)
+          payload = {
+              "research_question": brief.research_question,
+              "mechanism": brief.mechanism,
+              "hypothesis": brief.hypothesis,
+              "why_it_might_work": brief.why_it_might_work,
+              "what_would_falsify_it": brief.what_would_falsify_it,
+              "primary_test": brief.primary_test,
+              "development_only_exploration": list(brief.development_only_exploration),
+              "confirmation_rule": brief.confirmation_rule,
+              "key_risks": list(brief.key_risks),
+              "research_priority": brief.research_priority,
+              "next_action": brief.next_action,
+          }
+          Path("research_brief.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+          print(json.dumps(payload, indent=2))
+          PY
+
+      - name: Upload research brief
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-first-research-brief
+          path: research_brief.json
+          retention-days: 14
