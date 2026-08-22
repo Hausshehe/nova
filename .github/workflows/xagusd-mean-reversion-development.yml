@@ -1,0 +1,48 @@
+name: XAGUSD Mean Reversion Development
+
+on:
+  push:
+    branches:
+      - xagusd-mean-reversion-development
+  workflow_dispatch:
+
+concurrency:
+  group: xagusd-mean-reversion-development
+  cancel-in-progress: true
+
+jobs:
+  development:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout proposed revision
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-trading-research.txt pytest
+
+      - name: Run focused causality tests
+        run: python -m pytest -q tests/test_xagusd_mean_reversion_development.py tests/test_trading_research_backtest.py
+
+      - name: Run development-only mean-reversion research
+        run: |
+          python tools/run_xagusd_mean_reversion_development.py \
+            --output-dir research_artifacts/xagusd_mean_reversion_development
+
+      - name: Upload development artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xagusd-mean-reversion-development
+          path: research_artifacts/xagusd_mean_reversion_development/
+          retention-days: 30
+
+# Development-only: no confirmation dataset is loaded or referenced.
