@@ -20,8 +20,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Generate blind v2 decision
+        id: generate
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        continue-on-error: true
         run: |
           python - <<'PY'
           import json
@@ -70,23 +72,45 @@ jobs:
                   "predeclared falsification and stopping rules, and protect confirmation data."
               ),
           )
-          decision = ResearchBrainV2().decide(request, state)
-          audit = audit_decision(decision, state)
-          output = {"decision": decision, "audit": {
-              "passed": audit.passed,
-              "score": audit.score,
-              "critical_failures": list(audit.critical_failures),
-              "warnings": list(audit.warnings),
-              "checks": audit.checks,
-          }}
-          Path("research_brain_v2_decision.json").write_text(json.dumps(output, indent=2), encoding="utf-8")
-          print(json.dumps(output, indent=2))
-          if not audit.passed:
-              raise SystemExit("deterministic research audit failed")
+
+          brain = ResearchBrainV2()
+          result = {"ok": False}
+          try:
+              decision = brain.decide(request, state)
+              audit = audit_decision(decision, state)
+              result = {"ok": audit.passed, "decision": decision, "audit": {
+                  "passed": audit.passed,
+                  "score": audit.score,
+                  "critical_failures": list(audit.critical_failures),
+                  "warnings": list(audit.warnings),
+                  "checks": audit.checks,
+              }}
+              if not audit.passed:
+                  raise RuntimeError("deterministic research audit failed")
+          except Exception as exc:
+              result = {
+                  "ok": False,
+                  "error_type": type(exc).__name__,
+                  "error": str(exc),
+                  "raw_model_content": brain.last_raw_content,
+              }
+              Path("research_brain_v2_failure.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+              print(json.dumps(result, indent=2))
+              raise
+          else:
+              Path("research_brain_v2_decision.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+              print(json.dumps(result, indent=2))
           PY
-      - name: Upload audited blind v2 decision
+      - name: Upload blind v2 diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nova-research-brain-v2-decision
-          path: research_brain_v2_decision.json
+          name: nova-research-brain-v2-diagnostics
+          path: |
+            research_brain_v2_decision.json
+            research_brain_v2_failure.json
+          if-no-files-found: warn
           retention-days: 14
+      - name: Fail if generation failed
+        if: steps.generate.outcome != 'success'
+        run: exit 1
