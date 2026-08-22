@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+    env:
+      PYTHONPATH: .
     steps:
       - name: Checkout proposed revision
         uses: actions/checkout@v4
