@@ -100,19 +100,40 @@ class NavigationController:
             history.append(NavigationState.ACTIVATE)
             last_action = activate_node(current_match.node)
             if not last_action.success:
-                geometry_mismatch = "Actionable ancestor bounds do not contain the target bounds." in last_action.message
-                if geometry_mismatch and attempt < self.max_activation_retries:
+                if attempt >= self.max_activation_retries:
                     history.append(NavigationState.RECOVER)
-                    fresh = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
-                    if fresh.observation_quality is not ObservationQuality.VALID:
-                        return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation geometry was inconsistent and the fresh recovery observation was unreliable.")
-                    fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
-                    if fresh_match.resolution is not Resolution.FOUND or fresh_match.node is None:
-                        return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=fresh, match=fresh_match, action=last_action, scroll_count=total_scrolls, direction=direction, message="Activation geometry was inconsistent and the target could not be safely re-resolved for the bounded retry.")
-                    current_snapshot, current_match, re_resolved = fresh, fresh_match, True
-                    continue
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
+
+                # Any rejected semantic activation is recoverable exactly once:
+                # refresh the live hierarchy, re-resolve the target, then retry.
                 history.append(NavigationState.RECOVER)
-                return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=current_snapshot, match=current_match, action=last_action, scroll_count=total_scrolls, direction=direction, message=last_action.message)
+                fresh = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+                if fresh.observation_quality is not ObservationQuality.VALID:
+                    return self._bounded_observation_failure(
+                        target,
+                        history,
+                        fresh,
+                        progress,
+                        total_scrolls,
+                        direction,
+                        "Activation was rejected and the bounded recovery observation was unreliable.",
+                    )
+                fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
+                if fresh_match.resolution is not Resolution.FOUND or fresh_match.node is None:
+                    return self._result(
+                        target=target,
+                        state=NavigationState.FAILURE,
+                        history=history,
+                        snapshot=fresh,
+                        match=fresh_match,
+                        action=last_action,
+                        scroll_count=total_scrolls,
+                        direction=direction,
+                        message="Activation was rejected and the target could not be safely re-resolved for the single bounded retry.",
+                    )
+                current_snapshot, current_match, re_resolved = fresh, fresh_match, True
+                continue
+
             history.extend((NavigationState.WAIT_FOR_TRANSITION, NavigationState.VERIFY))
             last_verification = verify_transition(current_snapshot, expected_foreground_package=expected_foreground_package, expected_target=target, timeout_seconds=self.verification_timeout)
             if last_verification.success:
