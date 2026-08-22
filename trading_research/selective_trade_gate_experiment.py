@@ -98,6 +98,7 @@ def _evaluate_context(bars):
     gated_returns = [obs.base_return_bps for obs in gated]
     gated_indexes = {obs.index for obs in gated}
 
+    # Economic contribution per eligible test bar. A skipped base trade contributes zero.
     baseline_total = sum(baseline_returns)
     gated_total = sum(obs.base_return_bps for obs in gated)
     eligible_bars = max(1, len(bars) - split - FUTURE_BARS)
@@ -105,12 +106,12 @@ def _evaluate_context(bars):
     gated_per_bar = gated_total / eligible_bars
     improvement_per_bar = gated_per_bar - baseline_per_bar
 
+    # Paired block bootstrap over the eligible test bars' contributions.
     contributions = []
     baseline_by_index = {obs.index: obs.base_return_bps for obs in test}
-    gated_by_index = {obs.index: obs.base_return_bps for obs in gated}
     for i in range(split, len(bars) - FUTURE_BARS):
         base = baseline_by_index.get(i, 0.0)
-        gate = gated_by_index.get(i, 0.0)
+        gate = next((obs.base_return_bps for obs in gated if obs.index == i), 0.0)
         contributions.append(gate - base)
     low, high = _bootstrap_mean_ci(contributions)
 
@@ -137,6 +138,7 @@ def _evaluate_context(bars):
 def _bootstrap_mean_ci(values: list[float], samples: int = 2000) -> tuple[float, float]:
     if not values:
         return 0.0, 0.0
+    # Deterministic LCG: no external dependency and reproducible evidence.
     seed = 42
     n = len(values)
     means = []
@@ -172,6 +174,7 @@ def run() -> dict[str, object]:
         bars = load_csv(path)
         metrics = _evaluate_context(bars)
         results.append({"instrument": instrument, "timeframe": timeframe, **metrics})
+        # Reconstruct per-bar totals from aggregate counts for the summary only.
         aggregate_base.append(metrics["baseline_total_net_bps"])
         aggregate_gate.append(metrics["gated_total_net_bps"])
 
@@ -184,6 +187,8 @@ def run() -> dict[str, object]:
     retention = total_trades_gate / total_trades_base if total_trades_base else 0.0
     aggregate_improvement = total_gate - total_base
 
+    # PASS requires positive gating contribution, positive total improvement,
+    # adequate retention, and majority context-level improvement.
     passed = bool(
         contexts_eligible
         and total_gate > 0
