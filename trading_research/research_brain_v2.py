@@ -1,12 +1,8 @@
 """Mechanism-first Research Brain v2.
 
-This module separates research-space generation from experiment selection.
-It deliberately avoids hard-coding a trading strategy family. The model must
-propose competing mechanisms, predict how they differ, identify confounders,
-and select a high-information experiment while respecting ResearchState.
-
-Deterministic state rules remain authoritative; this layer only proposes
-research decisions for external assessment and downstream validation.
+The model performs research reasoning and emits JSON. Nova itself enforces the
+full research contract locally so provider-side constrained decoding cannot
+become the bottleneck for complex research decisions.
 """
 
 from __future__ import annotations
@@ -24,48 +20,31 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 MAX_COMPLETION_TOKENS = 5000
 HTTP_USER_AGENT = "NovaResearcher/2.0"
 
-# Keep the provider schema deliberately within the strict Structured Outputs
-# subset. Cardinality and numeric-range constraints are enforced locally in
-# validate_decision(); they do not need to burden constrained decoding.
+# Internal contract. This is intentionally not sent as a provider-side JSON
+# schema. Provider JSON mode guarantees valid JSON; Nova enforces the complete
+# research contract locally in validate_decision().
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "question": {"type": "string"},
         "problem_interpretation": {"type": "string"},
         "premise_challenges": {"type": "array", "items": {"type": "string"}},
-        "mechanisms": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "id": {"type": "string"}, "mechanism": {"type": "string"},
-                "causal_story": {"type": "string"}, "prediction": {"type": "string"},
-                "disconfirming_observation": {"type": "string"},
-                "current_confidence": {"type": "number"},
-                "status": {"type": "string", "enum": ["candidate", "weakened", "rejected", "surviving"]},
-                "why_testable": {"type": "string"},
-            }, "required": ["id", "mechanism", "causal_story", "prediction", "disconfirming_observation", "current_confidence", "status", "why_testable"], "additionalProperties": False},
-        },
-        "experiment_candidates": {
-            "type": "array",
-            "items": {"type": "object", "properties": {
-                "id": {"type": "string"}, "name": {"type": "string"},
-                "question_discriminated": {"type": "string"},
-                "mechanisms_separated": {"type": "array", "items": {"type": "string"}},
-                "outcome": {"type": "string"}, "horizon": {"type": "string"},
-                "development_only": {"type": "boolean"},
-                "estimated_information_value": {"type": "number"},
-                "estimated_cost": {"type": "number"},
-                "overfitting_risk": {"type": "number"},
-                "confounders": {"type": "array", "items": {"type": "string"}},
-            }, "required": ["id", "name", "question_discriminated", "mechanisms_separated", "outcome", "horizon", "development_only", "estimated_information_value", "estimated_cost", "overfitting_risk", "confounders"], "additionalProperties": False},
-        },
-        "selected_experiment_id": {"type": "string"}, "selection_rationale": {"type": "string"},
-        "falsification_rule": {"type": "string"}, "stopping_rule": {"type": "string"},
+        "mechanisms": {"type": "array"},
+        "experiment_candidates": {"type": "array"},
+        "selected_experiment_id": {"type": "string"},
+        "selection_rationale": {"type": "string"},
+        "falsification_rule": {"type": "string"},
+        "stopping_rule": {"type": "string"},
         "confirmation_protection": {"type": "string"},
-        "next_action": {"type": "string", "enum": ["TEST", "EXPLORE", "REJECT", "STOP", "CONFIRMATION_CANDIDATE"]},
+        "next_action": {"type": "string"},
         "state_update_expectation": {"type": "string"},
     },
-    "required": ["question", "problem_interpretation", "premise_challenges", "mechanisms", "experiment_candidates", "selected_experiment_id", "selection_rationale", "falsification_rule", "stopping_rule", "confirmation_protection", "next_action", "state_update_expectation"],
-    "additionalProperties": False,
+    "required": [
+        "question", "problem_interpretation", "premise_challenges", "mechanisms",
+        "experiment_candidates", "selected_experiment_id", "selection_rationale",
+        "falsification_rule", "stopping_rule", "confirmation_protection",
+        "next_action", "state_update_expectation",
+    ],
 }
 
 @dataclass(frozen=True)
@@ -116,7 +95,11 @@ Research constitution:
 13. Do not alter external gates, costs, or confirmation policy.
 14. Preserve uncertainty; do not turn failed tests into false certainty.
 
-Return exactly one JSON object matching the required response schema. No commentary.""".strip()
+Return exactly one valid JSON object. Use these top-level fields exactly:
+question, problem_interpretation, premise_challenges, mechanisms, experiment_candidates,
+selected_experiment_id, selection_rationale, falsification_rule, stopping_rule,
+confirmation_protection, next_action, state_update_expectation.
+Do not output markdown, commentary, or any text outside the JSON object.""".strip()
 
 
 def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport:
@@ -149,14 +132,50 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
         raise ValueError("between 2 and 5 experiment candidates are required")
     if not isinstance(payload["premise_challenges"], list) or len(payload["premise_challenges"]) < 2:
         raise ValueError("at least two premise challenges are required")
-    mechanism_ids = {str(item["id"]) for item in mechanisms}
+    mechanism_ids = set()
+    for mechanism in mechanisms:
+        if not isinstance(mechanism, dict):
+            raise ValueError("each mechanism must be an object")
+        for key in ("id", "mechanism", "causal_story", "prediction", "disconfirming_observation", "current_confidence", "status", "why_testable"):
+            if key not in mechanism:
+                raise ValueError(f"mechanism missing field: {key}")
+        mid = str(mechanism["id"])
+        mechanism_ids.add(mid)
+        confidence = mechanism["current_confidence"]
+        if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise ValueError("mechanism confidence must be between 0 and 1")
+        if mechanism["status"] not in {"candidate", "weakened", "rejected", "surviving"}:
+            raise ValueError("invalid mechanism status")
     if len(mechanism_ids) != len(mechanisms):
         raise ValueError("mechanism ids must be unique")
-    ids = {str(item["id"]) for item in experiments}
-    if len(ids) != len(experiments):
+
+    experiment_ids = set()
+    for experiment in experiments:
+        if not isinstance(experiment, dict):
+            raise ValueError("each experiment must be an object")
+        for key in ("id", "name", "question_discriminated", "mechanisms_separated", "outcome", "horizon", "development_only", "estimated_information_value", "estimated_cost", "overfitting_risk", "confounders"):
+            if key not in experiment:
+                raise ValueError(f"experiment missing field: {key}")
+        eid = str(experiment["id"])
+        experiment_ids.add(eid)
+        separated = {str(x) for x in experiment["mechanisms_separated"]}
+        if len(separated) < 2:
+            raise ValueError("each experiment must separate at least two mechanisms")
+        if not separated.issubset(mechanism_ids):
+            raise ValueError("experiment references unknown mechanism ids")
+        if not isinstance(experiment["confounders"], list) or len(experiment["confounders"]) < 1:
+            raise ValueError("each experiment must identify at least one confounder")
+        for field in ("estimated_information_value", "estimated_cost", "overfitting_risk"):
+            value = experiment[field]
+            if not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                raise ValueError(f"{field} must be between 0 and 1")
+        if not isinstance(experiment["development_only"], bool):
+            raise ValueError("development_only must be boolean")
+    if len(experiment_ids) != len(experiments):
         raise ValueError("experiment ids must be unique")
+
     selected = str(payload["selected_experiment_id"])
-    if selected not in ids:
+    if selected not in experiment_ids:
         raise ValueError("selected experiment is not among candidates")
     if selected in set(state.tested_experiments):
         raise ValueError("selected experiment has already been tested")
@@ -164,24 +183,11 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
         raise ValueError("selected experiment is prohibited by research state")
     if state.confirmation_locked and payload["next_action"] not in {"STOP", "CONFIRMATION_CANDIDATE"}:
         raise ValueError("confirmation is locked; development research cannot continue")
-    for mechanism in mechanisms:
-        confidence = mechanism["current_confidence"]
-        if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
-            raise ValueError("mechanism confidence must be between 0 and 1")
+    if payload["next_action"] not in {"TEST", "EXPLORE", "REJECT", "STOP", "CONFIRMATION_CANDIDATE"}:
+        raise ValueError("invalid next_action")
     for experiment in experiments:
-        separated = {str(x) for x in experiment["mechanisms_separated"]}
-        if len(separated) < 2:
-            raise ValueError("each experiment must separate at least two mechanisms")
-        if not separated.issubset(mechanism_ids):
-            raise ValueError("experiment references unknown mechanism ids")
         if not experiment["development_only"] and payload["next_action"] not in {"CONFIRMATION_CANDIDATE", "STOP"}:
             raise ValueError("non-development experiments require confirmation state")
-        for field in ("estimated_information_value", "estimated_cost", "overfitting_risk"):
-            value = experiment[field]
-            if not isinstance(value, (int, float)) or not 0 <= value <= 1:
-                raise ValueError(f"{field} must be between 0 and 1")
-        if not isinstance(experiment["confounders"], list) or len(experiment["confounders"]) < 1:
-            raise ValueError("each experiment must identify at least one confounder")
     return payload
 
 
@@ -201,14 +207,21 @@ class ResearchBrainV2:
         response = self._transport({
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "Return exactly one JSON research decision."},
+                {"role": "system", "content": "Return exactly one valid JSON object and nothing else."},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.15,
             "reasoning_effort": "high",
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
-            "response_format": {"type": "json_schema", "json_schema": {"name": "nova_research_decision_v2", "strict": True, "schema": SCHEMA}},
+            "response_format": {"type": "json_object"},
         })
         content = response["choices"][0]["message"]["content"]
-        payload = json.loads(content) if isinstance(content, str) else content
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("Groq returned empty JSON content")
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Groq returned malformed JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Groq returned a non-object JSON value")
         return validate_decision(payload, state)
