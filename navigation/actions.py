@@ -90,10 +90,11 @@ def _terminate_process_group(process: subprocess.Popen) -> None:
 def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
     """Dispatch one semantic command with a hard transport deadline.
 
-    The broadcast result code is deliberately not treated as the UI-action outcome.
-    The navigation controller must verify the resulting UI state itself. This keeps
-    transport delivery separate from semantic effect and prevents real scrolls from
-    being labelled as rejected merely because the Android broadcast result code is 0.
+    Broadcast transport status and receiver/action outcome are separate signals.
+    In particular, Android's ``am broadcast`` output can report a successful
+    receiver result even when the shell command's exit status is non-zero. The
+    receiver result is therefore authoritative when ``Broadcast completed`` is
+    present; UI state remains the final semantic authority at controller level.
     """
     command = ["am", "broadcast", "-n", "com.infoney.nova/.NovaClickReceiver", "-a", action]
     if target:
@@ -133,11 +134,20 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
     output = "\n".join(part.strip() for part in (stdout, stderr) if part and part.strip())
     returncode = process.returncode if process is not None and process.returncode is not None else -1
     match = _RECEIVER_RESULT_RE.search(output)
-    if returncode != 0:
-        return False, output or f"Accessibility Service broadcast exited with returncode={returncode}.", returncode, elapsed_ms
+
+    # ``Broadcast completed: result=1`` means the receiver reported success.
+    # Do not let the shell's exit status override that semantic result. This is
+    # especially important on the Termux/Android combination used by Nova.
     if match:
         receiver_result = int(match.group(1))
-        return True, f"Accessibility Service command dispatched; receiver result={receiver_result}. UI outcome requires observation verification.", returncode, elapsed_ms
+        if receiver_result == 1:
+            return True, f"Accessibility Service command completed successfully; receiver result=1. UI outcome requires observation verification.", returncode, elapsed_ms
+        if receiver_result == 0:
+            return False, output or "Accessibility Service broadcast completed without a responding receiver (result=0).", returncode, elapsed_ms
+        return False, output or f"Accessibility Service receiver reported failure result={receiver_result}.", returncode, elapsed_ms
+
+    if returncode != 0:
+        return False, output or f"Accessibility Service broadcast exited with returncode={returncode}.", returncode, elapsed_ms
     return True, output or "Accessibility Service command dispatched; UI outcome requires observation verification.", returncode, elapsed_ms
 
 
