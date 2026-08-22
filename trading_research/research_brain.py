@@ -238,7 +238,6 @@ class ResearchBrain:
             "temperature": 0.2,
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "reasoning_effort": "low",
-            "reasoning_format": "hidden",
         }
         if structured:
             payload["response_format"] = {
