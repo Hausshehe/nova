@@ -130,7 +130,7 @@ def _evaluate_context(bars):
         "improvement_mean_net_bps_per_eligible_bar": improvement_per_bar,
         "paired_bootstrap_low": low,
         "paired_bootstrap_high": high,
-        "contexts": sorted({list(obs.state) for obs in test}),
+        "contexts": sorted({obs.state for obs in test}),
         "gated_indexes": sorted(gated_indexes),
     }
 
