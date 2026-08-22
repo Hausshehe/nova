@@ -74,28 +74,23 @@ def observe_screen(
 ) -> ScreenSnapshot:
     """Capture a live screen using accessibility first and UIAutomator as fallback.
 
-    The accessibility service provides low-latency live hierarchy snapshots.
-    UIAutomator remains the fallback when the service has no fresh snapshot.
-    Foreground-package information alone is never sufficient for navigation.
+    A failed fresh observation is never represented by copying the previous live
+    hierarchy. That distinction is important after actions: retaining old nodes
+    can make the controller believe that the UI is unchanged when the observation
+    itself simply failed.
     """
     attempts = max(1, int(retries))
     last_snapshot: Optional[ScreenSnapshot] = None
 
     for attempt in range(attempts):
         observed = _accessibility_observation()
-        source = "accessibility"
         if observed is None:
             observed = observe_android(include_nodes=include_nodes)
-            source = "uiautomator"
 
         snapshot = snapshot_from_observation(observed)
         last_snapshot = snapshot
 
         if snapshot.valid and _has_navigation_state(snapshot):
-            if source == "accessibility":
-                return snapshot
-            # A valid UIAutomator snapshot remains authoritative when the
-            # accessibility service has no fresh data.
             return snapshot
 
         if snapshot.valid:
@@ -119,18 +114,6 @@ def observe_screen(
             foreground_package="",
             observation_quality=ObservationQuality.FAILED,
             message="No Android observation was produced.",
-        )
-
-    if previous is not None and last_snapshot.failed:
-        return ScreenSnapshot(
-            foreground_package=last_snapshot.foreground_package or previous.foreground_package,
-            visible_nodes=previous.visible_nodes,
-            actionable_nodes=previous.actionable_nodes,
-            scrollable_regions=previous.scrollable_regions,
-            visible_text=previous.visible_text,
-            timestamp=last_snapshot.timestamp,
-            observation_quality=ObservationQuality.TRANSIENT,
-            message="Current observation failed; retaining the last valid snapshot for recovery.",
         )
 
     return last_snapshot
