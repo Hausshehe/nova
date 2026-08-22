@@ -17,6 +17,7 @@ from urllib import error, request
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
+MAX_COMPLETION_TOKENS = 4096
 
 
 RESEARCH_BRAIN_SCHEMA: dict[str, Any] = {
@@ -137,6 +138,7 @@ def build_research_brain_prompt(question: ResearchQuestion) -> str:
     question.validate()
     prior = question.prior_findings.strip() or "No prior findings."
     constraints = question.constraints.strip() or "None."
+    schema_text = json.dumps(RESEARCH_BRAIN_SCHEMA, ensure_ascii=False, separators=(",", ":"))
     return f"""
 You are Nova Researcher v1. Your job is to design serious market research, not
 manufacture a profitable backtest.
@@ -166,10 +168,8 @@ Research constitution:
     would be implausible.
 12. Do not provide live-trading execution instructions.
 
-Return exactly one structured research brief. The primary test must be precise
-about the measurement and horizon. Development-only exploration must contain
-only research choices that are allowed before confirmation. The confirmation
-rule must describe what must remain untouched after locking.
+Return exactly one JSON object matching this schema. Do not add commentary:
+{schema_text}
 """.strip()
 
 
@@ -228,27 +228,49 @@ class ResearchBrain:
         self.endpoint = resolved_endpoint
         self._transport = transport or _default_transport(resolved_key, resolved_endpoint, timeout)
 
-    def investigate(self, question: ResearchQuestion) -> ResearchBrief:
-        payload = {
+    def _request(self, *, structured: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": "Return exactly one structured research brief as JSON."},
-                {"role": "user", "content": build_research_brain_prompt(question)},
+                {"role": "user", "content": build_research_brain_prompt(self._question)},
             ],
             "temperature": 0.2,
-            "response_format": {
+            "max_completion_tokens": MAX_COMPLETION_TOKENS,
+            "reasoning_effort": "low",
+            "reasoning_format": "hidden",
+        }
+        if structured:
+            payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "nova_research_brief",
                     "strict": True,
                     "schema": RESEARCH_BRAIN_SCHEMA,
                 },
-            },
-        }
-        response = self._transport(payload)
+            }
+        else:
+            payload["response_format"] = {"type": "json_object"}
+        return self._transport(payload)
+
+    def investigate(self, question: ResearchQuestion) -> ResearchBrief:
+        question.validate()
+        self._question = question
         try:
-            content = response["choices"][0]["message"]["content"]
+            response = self._request(structured=True)
+        except RuntimeError as exc:
+            # Some Groq environments can reject strict structured output even
+            # when the model itself is available. Fall back to JSON Object Mode,
+            # then validate the exact same schema locally.
+            if "HTTP 403" not in str(exc):
+                raise
+            response = self._request(structured=False)
+
+        try:
+            content = response["choices"][0]["message"].get("content", "")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("Groq response contained no visible JSON content")
             data = json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError("Groq response did not contain valid structured research JSON") from exc
         return ResearchBrief.from_dict(data)
