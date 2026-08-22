@@ -20,9 +20,8 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 MAX_COMPLETION_TOKENS = 5000
 HTTP_USER_AGENT = "NovaResearcher/2.0"
 
-# Internal contract. This is intentionally not sent as a provider-side JSON
-# schema. Provider JSON mode guarantees valid JSON; Nova enforces the complete
-# research contract locally in validate_decision().
+# Internal contract. Provider JSON mode guarantees valid JSON; Nova enforces
+# the complete research contract locally in validate_decision().
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -95,11 +94,19 @@ Research constitution:
 13. Do not alter external gates, costs, or confirmation policy.
 14. Preserve uncertainty; do not turn failed tests into false certainty.
 
-Return exactly one valid JSON object. Use these top-level fields exactly:
+Your JSON must contain ALL of these top-level fields exactly:
 question, problem_interpretation, premise_challenges, mechanisms, experiment_candidates,
 selected_experiment_id, selection_rationale, falsification_rule, stopping_rule,
 confirmation_protection, next_action, state_update_expectation.
-Do not output markdown, commentary, or any text outside the JSON object.""".strip()
+
+Critical output requirements:
+- mechanisms: an array containing 2 to 6 objects, each with id, mechanism, causal_story, prediction, disconfirming_observation, current_confidence, status, why_testable.
+- experiment_candidates: an array containing 2 to 5 objects, each with id, name, question_discriminated, mechanisms_separated, outcome, horizon, development_only, estimated_information_value, estimated_cost, overfitting_risk, confounders.
+- premise_challenges: at least 2 items.
+- mechanisms_separated must reference declared mechanism ids only.
+- Do not omit required fields even when uncertainty is high; express uncertainty in the field values.
+
+Return exactly one valid JSON object. Do not output markdown, commentary, or any text outside the JSON object.""".strip()
 
 
 def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport:
@@ -201,6 +208,7 @@ class ResearchBrainV2:
         if not self.model or not self.endpoint or timeout <= 0:
             raise ValueError("invalid model, endpoint, or timeout")
         self._transport = transport or _default_transport(key, self.endpoint, timeout)
+        self.last_raw_content: str | None = None
 
     def decide(self, request_data: ResearchRequest, state: ResearchState) -> dict[str, Any]:
         prompt = build_prompt(request_data, state)
@@ -216,6 +224,7 @@ class ResearchBrainV2:
             "response_format": {"type": "json_object"},
         })
         content = response["choices"][0]["message"]["content"]
+        self.last_raw_content = content if isinstance(content, str) else json.dumps(content)
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("Groq returned empty JSON content")
         try:
