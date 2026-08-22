@@ -46,32 +46,34 @@ def _normalized_words(text: str) -> tuple[str, ...]:
     return tuple(words)
 
 
-def _semantic_destination_evidence(before: ScreenSnapshot, after: ScreenSnapshot, target: str) -> bool:
-    """Require a destination label related to the activated target."""
+def _has_target_semantics(snapshot: ScreenSnapshot, target: str) -> bool:
     target_words = _normalized_words(target)
     if not target_words:
         return False
-
-    # A target such as "Apps" can legitimately lead to a destination labeled
-    # "App management" or "App info". Compare the target's lexical stems with
-    # visible destination text rather than requiring the exact source label to
-    # remain present. This stays generic and does not encode Settings-specific
-    # coordinates or screen names.
     stems = {word[:-1] if word.endswith("s") and len(word) > 3 else word for word in target_words}
-    before_words = set(_normalized_words(target))
-
-    for text in after.visible_text:
+    for text in snapshot.visible_text:
         words = set(_normalized_words(text))
-        if not words:
-            continue
-        if any(word in words or any(candidate.startswith(stem) for candidate in words) for stem in stems for word in [stem]):
-            if words != before_words or len(words) > len(before_words):
-                return True
+        if any(stem in words or any(candidate.startswith(stem) for candidate in words) for stem in stems):
+            return True
     return False
 
 
+def _semantic_destination_evidence(before: ScreenSnapshot, after: ScreenSnapshot, target: str) -> bool:
+    """Accept a changed destination when target semantics remain visible as a title/control."""
+    if not _has_target_semantics(after, target):
+        return False
+    return _text_change_ratio(before, after) >= MIN_TEXT_CHANGE_RATIO
+
+
 def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected_target: str) -> tuple[bool, bool]:
-    """Require destination-aware semantic evidence for the expected target."""
+    """Require either target disappearance or strong changed-screen evidence.
+
+    A navigation target can legitimately remain visible after activation (for example
+    a page title plus a switch/control bearing the same label). Re-resolving the label
+    can then become ambiguous even though the UI has already transitioned. In that
+    case, meaningful live screen change plus preserved target semantics is stronger
+    evidence than resolver uniqueness and should be accepted.
+    """
     before_match = resolve_target(before, expected_target)
     after_match = resolve_target(after, expected_target)
 
@@ -86,15 +88,18 @@ def _target_transitioned(before: ScreenSnapshot, after: ScreenSnapshot, expected
         after_label = " ".join(str(after_match.label or "").split()).lower()
         before_bounds = _bounds_tuple(before_match.node.get("bounds", ""))
         after_bounds = _bounds_tuple(after_match.node.get("bounds", ""))
-        if before_bounds is None or after_bounds is None:
-            return False, True
-        motion = max(
-            abs(before_bounds[0] - after_bounds[0]),
-            abs(before_bounds[1] - after_bounds[1]),
-            abs(before_bounds[2] - after_bounds[2]),
-            abs(before_bounds[3] - after_bounds[3]),
-        )
-        return motion >= 40 or before_label != after_label, True
+        if before_bounds is not None and after_bounds is not None:
+            motion = max(
+                abs(before_bounds[0] - after_bounds[0]),
+                abs(before_bounds[1] - after_bounds[1]),
+                abs(before_bounds[2] - after_bounds[2]),
+                abs(before_bounds[3] - after_bounds[3]),
+            )
+            if motion >= 40 or before_label != after_label:
+                return True, True
+        if _semantic_destination_evidence(before, after, expected_target):
+            return True, True
+        return False, True
 
     if before_found and not after_found:
         if before.foreground_package != after.foreground_package:
