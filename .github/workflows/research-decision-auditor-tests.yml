@@ -1,0 +1,29 @@
+name: Research Decision Auditor Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research-capability-baseline
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research-capability-baseline
+          clean: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install -U pytest
+      - name: Compile auditor and research state
+        run: |
+          python -m py_compile trading_research/research_decision_auditor.py
+          python -m py_compile trading_research/research_state.py
+      - name: Run auditor tests
+        run: python -m pytest -q tests/test_research_decision_auditor.py
