@@ -29,6 +29,7 @@ jobs:
           python -m py_compile trading_research/research_brain.py
           python -m py_compile trading_research/groq_hypothesis.py
           python -m py_compile trading_research/researcher.py
+          python -m py_compile trading_research/regime_conditioned_research.py
 
       - name: Generate Nova research brief
         env:
@@ -70,6 +71,7 @@ jobs:
               "key_risks": list(brief.key_risks),
               "research_priority": brief.research_priority,
               "next_action": brief.next_action,
+              "experiment_plan": brief.experiment_plan.__dict__,
           }
           Path("research_brief.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
           print(json.dumps(payload, indent=2))
