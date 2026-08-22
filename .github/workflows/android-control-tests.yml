@@ -1,0 +1,20 @@
+name: Android Control Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - android-control-v2
+
+jobs:
+  android-control-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run bounded recovery unit test
+        run: python -m unittest tests.test_navigation_recovery_bounded -v
