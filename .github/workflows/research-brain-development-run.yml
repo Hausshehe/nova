@@ -49,3 +49,5 @@ jobs:
           name: nova-research-brain-development
           path: research_artifacts/research_brain_development/
           retention-days: 30
+
+# Development-only run: confirmation data is never passed to this workflow.
