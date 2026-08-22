@@ -75,6 +75,60 @@ class NavigationController:
                 return True
         return False
 
+    def _cheap_exact_target(self, snapshot: ScreenSnapshot, target: str) -> Optional[TargetMatch]:
+        wanted = " ".join(str(target or "").split()).lower()
+        if not wanted:
+            return None
+        for node in snapshot.visible_nodes:
+            if not isinstance(node, dict) or not node.get("enabled", True):
+                continue
+            label = str(node.get("text") or "").strip() or str(node.get("content_description") or "").strip() or str(node.get("resource_id") or "").strip()
+            if " ".join(label.split()).lower() == wanted:
+                return TargetMatch(
+                    Resolution.FOUND,
+                    target,
+                    node=node,
+                    label=label,
+                    score=100.0,
+                    reason="Exact visible semantic match found without fuzzy resolution.",
+                )
+        return None
+
+    def _corroborate_before_search(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, TargetMatch]:
+        """Freshen the hierarchy once before deciding that navigation is needed.
+
+        This phase intentionally avoids the expensive fuzzy resolver when the target
+        is simply absent. Exact visible matching is enough to decide whether the
+        controller should activate or continue navigating; fuzzy matching remains
+        available when a target is actually present but imperfectly labelled.
+        """
+        exact = self._cheap_exact_target(snapshot, target)
+        if exact is not None:
+            return snapshot, exact
+
+        fresh = observe_screen(
+            previous=None,
+            include_nodes=True,
+            retries=self.observation_retries,
+            settle_seconds=self.settle_seconds,
+        )
+        if fresh.observation_quality is not ObservationQuality.VALID:
+            return fresh, TargetMatch(
+                Resolution.INVALID_OBSERVATION,
+                target,
+                reason="Target was not resolved and the corroborating observation was unreliable.",
+            )
+
+        exact_fresh = self._cheap_exact_target(fresh, target)
+        if exact_fresh is not None:
+            return fresh, exact_fresh
+
+        return fresh, TargetMatch(
+            Resolution.NOT_FOUND_YET,
+            target,
+            reason="No exact visible target match is present; navigation can reason from the live scrollable state.",
+        )
+
     def _refresh_activation_target(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, Optional[TargetMatch]]:
         time.sleep(self.settle_seconds)
         refreshed = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
@@ -120,18 +174,12 @@ class NavigationController:
                     fresh = self._fresh_post_action_observation(previous=current_snapshot, history=history)
                     if fresh.observation_quality is not ObservationQuality.VALID:
                         return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation was rejected and the fresh recovery observation was unreliable.")
-
-                    # A transport-level rejection is not proof that the UI failed to
-                    # transition. Accessibility actions can report result=0 after the
-                    # live hierarchy has already changed. Prefer corroborated world
-                    # state over the transport return code.
                     recovery_progress = compare_snapshots(current_snapshot, fresh)
                     source_target_present = self._source_target_label_present(fresh, current_match)
                     if recovery_progress.meaningful and not source_target_present:
                         recovered_verification = VerificationResult(True, fresh, "The activation transport reported rejection, but a fresh live observation showed a meaningful transition and the activated source control disappeared.")
                         history.extend((NavigationState.VERIFY, NavigationState.SUCCESS))
                         return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=fresh, match=current_match, action=last_action, verification=recovered_verification, progress=recovery_progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activation was verified from the live UI despite an accessibility transport rejection.")
-
                     fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
                     if fresh_match.resolution is Resolution.FOUND and fresh_match.node is not None:
                         current_snapshot, current_match, re_resolved = fresh, fresh_match, True
@@ -167,15 +215,15 @@ class NavigationController:
     def _stabilize_after_scroll(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, Optional[TargetMatch]]:
         current = snapshot
         for _ in range(2):
-            match = resolve_target(current, target, installed_packages=installed_packages)
-            if match.resolution is Resolution.FOUND:
-                return current, match
+            exact = self._cheap_exact_target(current, target)
+            if exact is not None:
+                return current, exact
             if current.scrollable:
-                return current, match
+                return current, None
             current = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
             if current.observation_quality is not ObservationQuality.VALID:
                 continue
-        return current, resolve_target(current, target, installed_packages=installed_packages)
+        return current, self._cheap_exact_target(current, target)
 
     def navigate_target(self, target: str, *, installed_packages: Optional[Iterable[str]] = None, expected_foreground_package: Optional[str] = None, initial_direction: str = "down") -> NavigationResult:
         history = [NavigationState.START]
@@ -195,11 +243,10 @@ class NavigationController:
             return self._bounded_observation_failure(target, history, snapshot, last_progress, total_scrolls, current_direction, "Unable to establish a valid starting UI observation.")
         while total_scrolls <= self.max_scrolls:
             history.append(NavigationState.RESOLVE_TARGET)
-            match = resolve_target(snapshot, target, installed_packages=installed_packages)
-            if match.resolution is Resolution.AMBIGUOUS:
-                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message=match.reason)
-            if match.resolution is Resolution.FOUND and match.node is not None:
-                return self._activate_with_bounded_recovery(target, snapshot, match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+            exact = self._cheap_exact_target(snapshot, target)
+            if exact is not None:
+                return self._activate_with_bounded_recovery(target, snapshot, exact, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+
             history.append(NavigationState.SEARCH_VISIBLE)
             snapshot, match = self._corroborate_before_search(snapshot, target, installed_packages=installed_packages)
             if match.resolution is Resolution.FOUND and match.node is not None:
@@ -210,14 +257,24 @@ class NavigationController:
                     return self._bounded_observation_failure(target, history, snapshot, last_progress, total_scrolls, current_direction, "Repeated unreliable observations prevented safe navigation.")
                 continue
             transient_observations = 0
+
             if not snapshot.scrollable:
                 snapshot, stabilized_match = self._stabilize_after_scroll(snapshot, target, installed_packages=installed_packages)
-                if stabilized_match is not None and stabilized_match.resolution is Resolution.FOUND and stabilized_match.node is not None:
+                if stabilized_match is not None and stabilized_match.node is not None:
                     return self._activate_with_bounded_recovery(target, snapshot, stabilized_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history + [NavigationState.REOBSERVE], total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
                 if not snapshot.scrollable:
-                    return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=stabilized_match or match, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Target is not visible and the current screen exposes no live scrollable region after bounded stabilization.")
+                    # One fuzzy attempt is useful only after the cheap path says the
+                    # screen is not navigable by scrolling. This prevents the resolver
+                    # from becoming the bottleneck while a scrollable screen is waiting
+                    # for an action.
+                    fuzzy = resolve_target(snapshot, target, installed_packages=installed_packages)
+                    if fuzzy.resolution is Resolution.FOUND and fuzzy.node is not None:
+                        return self._activate_with_bounded_recovery(target, snapshot, fuzzy, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, match=fuzzy, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Target is not visible and the current screen exposes no live scrollable region after bounded stabilization.")
+
             if total_scrolls >= self.max_scrolls:
                 break
+
             history.append(NavigationState.SCROLL)
             action = scroll(snapshot, current_direction, distance_ratio=scroll_distance_ratio)
             if not action.success:
@@ -243,6 +300,7 @@ class NavigationController:
                 snapshot = recovery_snapshot
                 history.append(NavigationState.REOBSERVE)
                 continue
+
             scroll_action_failures = 0
             total_scrolls += 1
             history.append(NavigationState.WAIT_AFTER_SCROLL)
@@ -255,24 +313,25 @@ class NavigationController:
                 snapshot = None
                 continue
             transient_observations = 0
-            post_scroll_match = resolve_target(after, target, installed_packages=installed_packages)
-            if post_scroll_match.resolution is Resolution.AMBIGUOUS:
-                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=after, match=post_scroll_match, action=action, scroll_count=total_scrolls, direction=current_direction, message=post_scroll_match.reason)
-            if post_scroll_match.resolution is Resolution.FOUND and post_scroll_match.node is not None:
+
+            post_exact = self._cheap_exact_target(after, target)
+            if post_exact is not None:
                 refreshed_after, refreshed_match = self._refresh_activation_target(after, target, installed_packages=installed_packages)
                 if refreshed_match is not None and refreshed_match.node is not None:
                     history.append(NavigationState.REOBSERVE)
                     return self._activate_with_bounded_recovery(target, refreshed_after, refreshed_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
                 history.append(NavigationState.REOBSERVE)
-                return self._activate_with_bounded_recovery(target, after, post_scroll_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+                return self._activate_with_bounded_recovery(target, after, post_exact, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+
             stabilized_after, stabilized_match = self._stabilize_after_scroll(after, target, installed_packages=installed_packages)
-            if stabilized_match is not None and stabilized_match.resolution is Resolution.FOUND and stabilized_match.node is not None:
+            if stabilized_match is not None and stabilized_match.node is not None:
                 refreshed_stable, refreshed_match = self._refresh_activation_target(stabilized_after, target, installed_packages=installed_packages)
                 if refreshed_match is not None and refreshed_match.node is not None:
                     history.append(NavigationState.REOBSERVE)
                     return self._activate_with_bounded_recovery(target, refreshed_stable, refreshed_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
                 history.append(NavigationState.REOBSERVE)
                 return self._activate_with_bounded_recovery(target, stabilized_after, stabilized_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
+
             after = stabilized_after
             progress = compare_snapshots(snapshot, after)
             last_progress = progress
@@ -285,4 +344,5 @@ class NavigationController:
                 no_progress = 0
                 scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.70)
             snapshot = after
+
         return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Target was not reached within the bounded navigation budget.")
