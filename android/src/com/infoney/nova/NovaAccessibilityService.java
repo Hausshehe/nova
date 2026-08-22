@@ -31,9 +31,6 @@ public class NovaAccessibilityService extends AccessibilityService {
         if (event == null) return;
         String packageName = event.getPackageName() != null ? event.getPackageName().toString() : "unknown";
         Log.i(TAG, "SCREEN: " + packageName);
-        // Keep the accessibility callback lightweight. AccessibilitySnapshotPublisher
-        // owns hierarchy capture so BroadcastReceiver actions are not starved by a
-        // synchronous recursive tree walk on the service main thread.
         AccessibilitySnapshotPublisher.publish(this, "event:" + event.getEventType());
     }
 
@@ -91,13 +88,13 @@ public class NovaAccessibilityService extends AccessibilityService {
         boolean backward = "up".equalsIgnoreCase(direction);
         if (!forward && !backward) return false;
 
+        int action = forward ? AccessibilityNodeInfo.ACTION_SCROLL_FORWARD : AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD;
+
         AccessibilityNodeInfo root = null;
         try {
             root = getRootInActiveWindow();
             if (root != null) {
-                boolean moved = scrollNode(root, forward ?
-                        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD :
-                        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD);
+                boolean moved = scrollNode(root, action);
                 if (moved) return true;
             }
         } catch (Exception e) {
@@ -114,11 +111,7 @@ public class NovaAccessibilityService extends AccessibilityService {
                     AccessibilityNodeInfo windowRoot = window.getRoot();
                     if (windowRoot == null) continue;
                     try {
-                        if (scrollNode(windowRoot, forward ?
-                                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD :
-                                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)) {
-                            return true;
-                        }
+                        if (scrollNode(windowRoot, action)) return true;
                     } finally {
                         windowRoot.recycle();
                     }
@@ -127,7 +120,13 @@ public class NovaAccessibilityService extends AccessibilityService {
         } catch (Exception e) {
             Log.e(TAG, "SCROLL_WINDOW: window search failed", e);
         }
-        return false;
+
+        // Some Android/OEM Settings hierarchies expose no actionable scrollable
+        // AccessibilityNodeInfo even though the UI visibly scrolls. In that case,
+        // use the same generic capability through AccessibilityService gestures.
+        // This is not a Settings-specific coordinate hack: the gesture is derived
+        // from the current display size and the requested direction.
+        return gestureScrollFallback(forward);
     }
 
     private boolean scrollNode(AccessibilityNodeInfo node, int action) {
@@ -146,6 +145,48 @@ public class NovaAccessibilityService extends AccessibilityService {
             }
         }
         return false;
+    }
+
+    private boolean gestureScrollFallback(boolean forward) {
+        try {
+            android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+            float width = metrics.widthPixels;
+            float height = metrics.heightPixels;
+            if (width < 200 || height < 300) return false;
+
+            float x = width * 0.50f;
+            float startY = forward ? height * 0.78f : height * 0.32f;
+            float endY = forward ? height * 0.32f : height * 0.78f;
+
+            android.graphics.Path path = new android.graphics.Path();
+            path.moveTo(x, startY);
+            path.lineTo(x, endY);
+
+            android.accessibilityservice.GestureDescription.StrokeDescription stroke =
+                    new android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 450);
+            android.accessibilityservice.GestureDescription gesture =
+                    new android.accessibilityservice.GestureDescription.Builder()
+                            .addStroke(stroke)
+                            .build();
+
+            boolean dispatched = dispatchGesture(gesture, new GestureResultCallback() {
+                @Override
+                public void onCompleted(android.accessibilityservice.GestureDescription gestureDescription) {
+                    Log.i(TAG, "SCROLL_WINDOW: generic gesture completed direction=" + (forward ? "down" : "up"));
+                }
+
+                @Override
+                public void onCancelled(android.accessibilityservice.GestureDescription gestureDescription) {
+                    Log.w(TAG, "SCROLL_WINDOW: generic gesture cancelled direction=" + (forward ? "down" : "up"));
+                }
+            }, null);
+
+            Log.i(TAG, "SCROLL_WINDOW: generic gesture dispatched=" + dispatched + " direction=" + (forward ? "down" : "up"));
+            return dispatched;
+        } catch (Exception e) {
+            Log.e(TAG, "SCROLL_WINDOW: generic gesture fallback failed", e);
+            return false;
+        }
     }
 
     private AccessibilityNodeInfo findSwitchNodeInAllWindows() {
