@@ -40,6 +40,7 @@ jobs:
           tests.test_accessibility_snapshot
           tests.test_navigation_recovery_bounded
           tests.test_navigation_recovery_regression
+          tests.test_navigation_rejected_activation_recovery
           tests.test_navigation_diagnostic_probe
           tests.test_navigation_activation_diagnostic
           tests.test_navigation_app_management_integration
