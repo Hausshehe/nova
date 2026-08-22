@@ -1,12 +1,11 @@
 """Exercise Nova's adaptive navigation controller with explicit state boundaries.
 
 Sequence:
-1. Force-stop Settings to remove prior task/process state.
-2. Launch Settings.
-3. Establish a fresh Settings-root observation.
-4. Let NavigationController reach Bluetooth.
-5. Send Back and establish a fresh Settings-root observation.
-6. Let NavigationController reach Apps.
+1. Start Settings with Android's force-stop-before-launch flag.
+2. Establish a fresh Settings-root observation.
+3. Let NavigationController reach Bluetooth.
+4. Send Back and establish a fresh Settings-root observation.
+5. Let NavigationController reach Apps.
 
 This diagnostic separates Android launch/back stabilization from target navigation,
 starts every trial from a clean Settings task, and never verifies a post-action
@@ -66,15 +65,15 @@ def fresh_settings_root(max_observations: int = 4):
 def main() -> int:
     events: list[dict] = []
 
-    reset = run(["am", "force-stop", SETTINGS])
-    events.append({"event": "reset_settings_task", **reset})
-    if reset["returncode"] != 0:
-        events.append({"event": "FAILURE", "stage": "reset_settings_task"})
+    # Termux's `am` implementation does not expose the platform `force-stop`
+    # subcommand. `am start -S` is the supported equivalent: force-stop the
+    # target package before launching the Settings activity.
+    launch = run(["am", "start", "-S", "-a", "android.settings.SETTINGS"])
+    events.append({"event": "launch_settings_clean", **launch})
+    if launch["returncode"] != 0:
+        events.append({"event": "FAILURE", "stage": "launch_settings_clean"})
         print(json.dumps({"events": events}, indent=2, ensure_ascii=False))
         return 1
-
-    launch = run(["am", "start", "-a", "android.settings.SETTINGS"])
-    events.append({"event": "launch_settings", **launch})
 
     root, root_attempts = fresh_settings_root()
     events.append({
