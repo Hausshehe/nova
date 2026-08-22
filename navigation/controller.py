@@ -17,6 +17,7 @@ from .verifier import VerificationResult, verify_transition
 
 class NavigationState(str, Enum):
     START = "START"
+    STABILIZE = "STABILIZE"
     OBSERVE = "OBSERVE"
     RESOLVE_TARGET = "RESOLVE_TARGET"
     ACTIVATE = "ACTIVATE"
@@ -80,15 +81,43 @@ class NavigationController:
         return False
 
     def _refresh_activation_target(self, snapshot: ScreenSnapshot, target: str, *, installed_packages: Optional[Iterable[str]]) -> tuple[ScreenSnapshot, Optional[TargetMatch]]:
-        history_snapshot = snapshot
         time.sleep(self.settle_seconds)
-        refreshed = observe_screen(previous=history_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+        refreshed = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
         if refreshed.observation_quality is not ObservationQuality.VALID:
             return refreshed, None
         refreshed_match = resolve_target(refreshed, target, installed_packages=installed_packages)
         if refreshed_match.resolution is Resolution.FOUND and refreshed_match.node is not None:
             return refreshed, refreshed_match
         return refreshed, None
+
+    def _stable_start_observation(self, history: list[NavigationState]) -> Optional[ScreenSnapshot]:
+        """Acquire a fresh, usable starting hierarchy before target resolution.
+
+        This deliberately does not pass an old snapshot to the observer. Launching
+        an Android activity can briefly expose a stale/empty accessibility tree, and
+        navigation must not interpret that transient state as the initial screen.
+        """
+        history.append(NavigationState.STABILIZE)
+        time.sleep(self.settle_seconds)
+        first = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+        if first.observation_quality is ObservationQuality.VALID:
+            return first
+        time.sleep(self.settle_seconds)
+        second = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries + 1, settle_seconds=self.settle_seconds)
+        if second.observation_quality is ObservationQuality.VALID:
+            return second
+        return None
+
+    def _fresh_post_action_observation(self, *, previous: ScreenSnapshot, history: list[NavigationState]) -> ScreenSnapshot:
+        """Observe the live UI after an action without reusing stale node data."""
+        history.append(NavigationState.REOBSERVE)
+        observed = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+        if observed.observation_quality is ObservationQuality.VALID:
+            return observed
+        # A second fresh attempt gets a larger retry budget but still never copies
+        # the pre-action hierarchy into the result.
+        time.sleep(self.settle_seconds)
+        return observe_screen(previous=None, include_nodes=True, retries=self.observation_retries + 1, settle_seconds=self.settle_seconds)
 
     def _activate_with_bounded_recovery(self, target: str, snapshot: ScreenSnapshot, match: TargetMatch, *, installed_packages: Optional[Iterable[str]], expected_foreground_package: Optional[str], history: list[NavigationState], total_scrolls: int, direction: str, progress: Optional[Progress]) -> NavigationResult:
         current_snapshot = snapshot
@@ -103,7 +132,7 @@ class NavigationController:
                 geometry_mismatch = "Actionable ancestor bounds do not contain the target bounds." in last_action.message
                 if geometry_mismatch and attempt < self.max_activation_retries:
                     history.append(NavigationState.RECOVER)
-                    fresh = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+                    fresh = self._fresh_post_action_observation(previous=current_snapshot, history=history)
                     if fresh.observation_quality is not ObservationQuality.VALID:
                         return self._bounded_observation_failure(target, history, fresh, progress, total_scrolls, direction, "Activation geometry was inconsistent and the fresh recovery observation was unreliable.")
                     fresh_match = resolve_target(fresh, target, installed_packages=installed_packages)
@@ -121,7 +150,7 @@ class NavigationController:
             if attempt >= self.max_activation_retries:
                 break
             history.append(NavigationState.RECOVER)
-            recovery_snapshot = observe_screen(previous=current_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            recovery_snapshot = self._fresh_post_action_observation(previous=current_snapshot, history=history)
             if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
                 return self._bounded_observation_failure(target, history, recovery_snapshot, progress, total_scrolls, direction, "Activation verification failed and the recovery observation was unreliable.")
             recovery_progress = compare_snapshots(current_snapshot, recovery_snapshot)
@@ -132,7 +161,7 @@ class NavigationController:
                 return self._result(target=target, state=NavigationState.SUCCESS, history=history, snapshot=recovery_snapshot, match=current_match, action=last_action, verification=recovered_verification, progress=progress, scroll_count=total_scrolls, direction=direction, success=True, message="Target activated and the resulting UI transition was verified during bounded recovery.")
             recovery_match = resolve_target(recovery_snapshot, target, installed_packages=installed_packages)
             if recovery_match.resolution is not Resolution.FOUND or recovery_match.node is None:
-                return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, match=recovery_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message="Activation verification failed and the target was not safely re-resolved for a bounded retry.")
+                return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, match=recovery_match, action=last_action, verification=last_verification, scroll_count=total_scrolls, direction=direction, message="Activation verification failed and the target was not safely re-resolved for a bounded retry.")
             current_snapshot, current_match, re_resolved = recovery_snapshot, recovery_match, True
         failure_message = "Activation verification failed after the target was safely re-resolved for the bounded retry." if re_resolved else (last_verification.reason if last_verification else "Activation verification failed.")
         return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=last_verification.snapshot if last_verification else current_snapshot, match=current_match, action=last_action, verification=last_verification, progress=progress, scroll_count=total_scrolls, direction=direction, message=failure_message)
@@ -145,8 +174,7 @@ class NavigationController:
                 return current, match
             if current.scrollable:
                 return current, match
-            history_snapshot = current
-            current = observe_screen(previous=history_snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            current = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
             if current.observation_quality is not ObservationQuality.VALID:
                 continue
         return current, resolve_target(current, target, installed_packages=installed_packages)
@@ -163,14 +191,24 @@ class NavigationController:
         scroll_action_failures = 0
         scroll_distance_ratio = 0.35
         last_progress: Optional[Progress] = None
+
+        snapshot = self._stable_start_observation(history)
+        if snapshot is None:
+            return self._bounded_observation_failure(target, history, None, last_progress, total_scrolls, current_direction, "Android UI did not expose a fresh usable hierarchy after bounded startup stabilization.")
+
         while total_scrolls <= self.max_scrolls:
             history.append(NavigationState.OBSERVE)
-            snapshot = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            if total_scrolls == 0 and snapshot is not None:
+                observed = snapshot
+            else:
+                observed = observe_screen(previous=None, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            snapshot = observed
             if snapshot.observation_quality is not ObservationQuality.VALID:
                 transient_observations += 1
                 history.append(NavigationState.REOBSERVE)
                 if transient_observations >= self.max_transient_observations:
                     return self._bounded_observation_failure(target, history, snapshot, last_progress, total_scrolls, current_direction, "Android UI observations remained unreliable within the bounded recovery budget.")
+                snapshot = None
                 continue
             transient_observations = 0
             history.append(NavigationState.RESOLVE_TARGET)
@@ -191,44 +229,52 @@ class NavigationController:
             history.append(NavigationState.SCROLL)
             action = scroll(snapshot, current_direction, distance_ratio=scroll_distance_ratio)
             if not action.success:
-                scroll_action_failures += 1
-                history.append(NavigationState.REOBSERVE)
-                recovery_snapshot = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+                history.append(NavigationState.RECOVER)
+                recovery_snapshot = self._fresh_post_action_observation(previous=snapshot, history=history)
                 if recovery_snapshot.observation_quality is not ObservationQuality.VALID:
                     transient_observations += 1
                     if transient_observations >= self.max_transient_observations:
                         return self._bounded_observation_failure(target, history, recovery_snapshot, last_progress, total_scrolls, current_direction, "Repeated transient observations prevented safe scroll recovery.")
                     continue
+                recovery_progress = compare_snapshots(snapshot, recovery_snapshot)
+                if recovery_progress.meaningful:
+                    # The transport said the action failed, but the live UI moved.
+                    # Trust the observed world over the transport error and continue
+                    # without inferring anything about scroll direction.
+                    scroll_action_failures = 0
+                    last_progress = recovery_progress
+                    no_progress = 0
+                    snapshot = recovery_snapshot
+                    history.append(NavigationState.REOBSERVE)
+                    continue
+                scroll_action_failures += 1
                 scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.70)
                 if scroll_action_failures >= 2:
-                    return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=recovery_snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Repeated scroll actions failed after bounded recovery attempts; refusing to reverse direction without evidence of UI progress or boundary state.")
+                    return self._result(target=target, state=NavigationState.FAILURE, history=history, snapshot=recovery_snapshot, action=action, progress=recovery_progress, scroll_count=total_scrolls, direction=current_direction, message="Scroll command was rejected twice and fresh observations show no UI progress; refusing to reverse direction without boundary evidence.")
                 snapshot = recovery_snapshot
+                history.append(NavigationState.REOBSERVE)
                 continue
+
             scroll_action_failures = 0
             total_scrolls += 1
             history.append(NavigationState.WAIT_AFTER_SCROLL)
             time.sleep(self.settle_seconds)
-            history.append(NavigationState.REOBSERVE)
-            after = observe_screen(previous=snapshot, include_nodes=True, retries=self.observation_retries, settle_seconds=self.settle_seconds)
+            after = self._fresh_post_action_observation(previous=snapshot, history=history)
             if after.observation_quality is not ObservationQuality.VALID:
                 transient_observations += 1
                 if transient_observations >= self.max_transient_observations:
                     return self._bounded_observation_failure(target, history, after, last_progress, total_scrolls, current_direction, "Repeated transient observations prevented safe scroll recovery.")
-                snapshot = after
+                snapshot = None
                 continue
+            transient_observations = 0
             post_scroll_match = resolve_target(after, target, installed_packages=installed_packages)
             if post_scroll_match.resolution is Resolution.AMBIGUOUS:
-                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=after, match=post_scroll_match, scroll_count=total_scrolls, direction=current_direction, message=post_scroll_match.reason)
+                return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=after, match=post_scroll_match, action=action, scroll_count=total_scrolls, direction=current_direction, message=post_scroll_match.reason)
             if post_scroll_match.resolution is Resolution.FOUND and post_scroll_match.node is not None:
                 refreshed_after, refreshed_match = self._refresh_activation_target(after, target, installed_packages=installed_packages)
                 if refreshed_match is not None and refreshed_match.node is not None:
                     history.append(NavigationState.REOBSERVE)
                     return self._activate_with_bounded_recovery(target, refreshed_after, refreshed_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
-                if refreshed_after.observation_quality is ObservationQuality.VALID:
-                    refreshed_fallback_match = resolve_target(refreshed_after, target, installed_packages=installed_packages)
-                    if refreshed_fallback_match.resolution is Resolution.FOUND and refreshed_fallback_match.node is not None:
-                        history.append(NavigationState.REOBSERVE)
-                        return self._activate_with_bounded_recovery(target, refreshed_after, refreshed_fallback_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
                 history.append(NavigationState.REOBSERVE)
                 return self._activate_with_bounded_recovery(target, after, post_scroll_match, installed_packages=installed_packages, expected_foreground_package=expected_foreground_package, history=history, total_scrolls=total_scrolls, direction=current_direction, progress=last_progress)
             stabilized_after, stabilized_match = self._stabilize_after_scroll(after, target, installed_packages=installed_packages)
@@ -251,4 +297,5 @@ class NavigationController:
                 no_progress = 0
                 scroll_distance_ratio = max(0.20, scroll_distance_ratio * 0.70)
             snapshot = after
+
         return self._result(target=target, state=NavigationState.FAILURE, history=history + [NavigationState.RECOVER], snapshot=snapshot, progress=last_progress, scroll_count=total_scrolls, direction=current_direction, message="Target was not reached within the bounded navigation budget.")
