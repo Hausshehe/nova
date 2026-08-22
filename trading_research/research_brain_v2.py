@@ -17,11 +17,12 @@ from trading_research.research_state import ResearchState
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
-MAX_COMPLETION_TOKENS = 5000
+# Keep the request comfortably below the 8k TPM organization limit. The prior
+# 5k cap caused 4.9k-token requests and frequent 429s when another workflow
+# had consumed tokens in the same minute.
+MAX_COMPLETION_TOKENS = 2800
 HTTP_USER_AGENT = "NovaResearcher/2.0"
 
-# Internal contract. Provider JSON mode guarantees valid JSON; Nova enforces
-# the complete research contract locally in validate_decision().
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -68,45 +69,40 @@ def _state_context(state: ResearchState) -> dict[str, Any]:
 def build_prompt(request_data: ResearchRequest, state: ResearchState) -> str:
     request_data.validate()
     context = json.dumps(_state_context(state), ensure_ascii=False, separators=(",", ":"))
-    return f"""You are Nova Researcher v2. You are a research partner, not a strategy generator.
+    return f"""You are Nova Researcher v2. Make ONE disciplined research decision, not a long essay.
 
-Research question: {request_data.question}
+Question: {request_data.question}
 Symbol: {request_data.symbol}
 Timeframe: {request_data.timeframe}
 Constraints: {request_data.constraints or 'None'}
 
-Current structured research state:
+Research state:
 {context}
 
-Research constitution:
-1. Determine what the question actually asks and challenge its premise before proposing trades.
-2. Generate at least two genuinely different causal mechanisms. Do not use cosmetic indicator variants as mechanisms.
-3. Use prior evidence. A failed implementation weakens an implementation, not automatically the mechanism; repeated independent failures should reduce confidence and narrow the search space.
-4. Never repeat a prohibited or already-tested experiment, even with renamed parameters.
-5. Separate mechanism tests from implementation optimization.
-6. Prefer experiments whose outcomes distinguish competing explanations, not merely experiments likely to produce high returns.
-7. Estimate information value, research cost, and overfitting risk.
-8. Consider alternatives before selecting one next experiment.
-9. State what observation would falsify the selected hypothesis or make further work unjustified.
-10. Define a stopping rule. STOP is legitimate.
-11. Development evidence is not confirmation. Confirmation data remain untouched until a formulation is locked.
-12. Do not claim a real edge. This is a research decision, not a trading recommendation.
-13. Do not alter external gates, costs, or confirmation policy.
-14. Preserve uncertainty; do not turn failed tests into false certainty.
+Rules:
+- Challenge the premise before proposing trades.
+- Produce 2-4 genuinely different causal mechanisms; cosmetic indicator variants do not count.
+- Use prior evidence and never repeat tested/prohibited experiments.
+- Prefer experiments that distinguish competing explanations and maximize information value.
+- Separate mechanism testing from implementation optimization.
+- Include realistic costs, confounders, overfitting risk, falsification, stopping, and confirmation protection.
+- Development evidence is not confirmation. Never inspect or claim confirmation evidence.
+- A failed implementation weakens that implementation; repeated independent failures should narrow the search space.
+- STOP is legitimate. Do not claim a real edge.
 
-Your JSON must contain ALL of these top-level fields exactly:
+Return exactly one JSON object with these fields:
 question, problem_interpretation, premise_challenges, mechanisms, experiment_candidates,
 selected_experiment_id, selection_rationale, falsification_rule, stopping_rule,
 confirmation_protection, next_action, state_update_expectation.
 
-Critical output requirements:
-- mechanisms: an array containing 2 to 6 objects, each with id, mechanism, causal_story, prediction, disconfirming_observation, current_confidence, status, why_testable.
-- experiment_candidates: an array containing 2 to 5 objects, each with id, name, question_discriminated, mechanisms_separated, outcome, horizon, development_only, estimated_information_value, estimated_cost, overfitting_risk, confounders.
-- premise_challenges: at least 2 items.
-- mechanisms_separated must reference declared mechanism ids only.
-- Do not omit required fields even when uncertainty is high; express uncertainty in the field values.
+Required structure:
+- premise_challenges: >=2 short strings.
+- mechanisms: 2-4 objects. Each has id, mechanism, causal_story, prediction, disconfirming_observation, current_confidence (0..1), status (candidate|weakened|rejected|surviving), why_testable.
+- experiment_candidates: 2-3 objects. Each has id, name, question_discriminated, mechanisms_separated (declared ids only), outcome, horizon, development_only, estimated_information_value (0..1), estimated_cost (0..1), overfitting_risk (0..1), confounders (>=1 item).
+- selected_experiment_id must be one candidate and must not be tested/prohibited.
+- next_action must be TEST, EXPLORE, REJECT, STOP, or CONFIRMATION_CANDIDATE.
 
-Return exactly one valid JSON object. Do not output markdown, commentary, or any text outside the JSON object.""".strip()
+Keep every string concise. Output JSON only; no markdown or commentary.""".strip()
 
 
 def _default_transport(api_key: str, endpoint: str, timeout: float) -> Transport:
@@ -219,7 +215,7 @@ class ResearchBrainV2:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.15,
-            "reasoning_effort": "high",
+            "reasoning_effort": "medium",
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "response_format": {"type": "json_object"},
         })
