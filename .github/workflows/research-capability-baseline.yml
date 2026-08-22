@@ -1,0 +1,97 @@
+name: Research Capability Baseline
+
+on:
+  push:
+    branches:
+      - research-capability-baseline
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: research-capability-baseline
+          clean: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile research brain
+        run: python -m py_compile trading_research/research_brain.py
+
+      - name: Generate baseline decision
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from trading_research.research_brain import ResearchBrain, ResearchQuestion
+
+          q = ResearchQuestion(
+              question=(
+                  "Investigate whether short-horizon predictability in XAGUSD 4H returns is genuinely "
+                  "conditional on market context, or whether apparent context effects are artifacts of "
+                  "threshold selection, regime definition, or short-lived sample structure. Choose the "
+                  "mechanism yourself and do not assume momentum, mean reversion, volatility, RSI, moving "
+                  "averages, or any named indicator family in advance."
+              ),
+              symbol="XAGUSD",
+              timeframe="4H",
+              constraints=(
+                  "Two broad development avenues have already failed to establish a robust unconditional "
+                  "short-horizon edge: continuation and mean reversion. No confirmation-data inspection. "
+                  "No post-result parameter rescue. Exploration must be bounded and costs and sample size "
+                  "must be considered. Rejection or stopping is valid."
+              ),
+              prior_findings=(
+                  "Continuation failure and mean-reversion failure are prior evidence. They eliminate those "
+                  "specific formulations but do not automatically eliminate every context-conditioned mechanism."
+              ),
+          )
+          brief = ResearchBrain().investigate(q)
+          result = {
+              "research_question": brief.research_question,
+              "mechanism": brief.mechanism,
+              "hypothesis": brief.hypothesis,
+              "why_it_might_work": brief.why_it_might_work,
+              "what_would_falsify_it": brief.what_would_falsify_it,
+              "primary_test": brief.primary_test,
+              "development_only_exploration": list(brief.development_only_exploration),
+              "confirmation_rule": brief.confirmation_rule,
+              "key_risks": list(brief.key_risks),
+              "research_priority": brief.research_priority,
+              "next_action": brief.next_action,
+              "experiment_plan": {
+                  "family": brief.experiment_plan.family,
+                  "event_move_threshold_bps": brief.experiment_plan.event_move_threshold_bps,
+                  "horizon_bars": brief.experiment_plan.horizon_bars,
+                  "regime_method": brief.experiment_plan.regime_method,
+                  "trend_lookback_bars": brief.experiment_plan.trend_lookback_bars,
+                  "trend_gap_threshold_bps": brief.experiment_plan.trend_gap_threshold_bps,
+                  "volatility_lookback_bars": brief.experiment_plan.volatility_lookback_bars,
+                  "volatility_percentile": brief.experiment_plan.volatility_percentile,
+                  "minimum_events_per_regime": brief.experiment_plan.minimum_events_per_regime,
+                  "exploration_budget": brief.experiment_plan.exploration_budget,
+                  "selection_rule": brief.experiment_plan.selection_rule,
+                  "confirmation_plan": brief.experiment_plan.confirmation_plan,
+              },
+          }
+          Path("research_capability_baseline.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Upload baseline decision
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-research-capability-baseline
+          path: research_capability_baseline.json
+          retention-days: 14
