@@ -21,7 +21,10 @@ from trading_research.research_state import ResearchState
 
 DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
-MAX_COMPLETION_TOKENS = 6144
+# Groq's current on-demand TPM limit is 8,000 for this organization/model.
+# Keep the requested completion budget below the limit after accounting for
+# the research prompt, while leaving enough room for structured reasoning.
+MAX_COMPLETION_TOKENS = 5000
 HTTP_USER_AGENT = "NovaResearcher/2.0"
 
 SCHEMA: dict[str, Any] = {
@@ -106,7 +109,7 @@ def _state_context(state: ResearchState) -> dict[str, Any]:
 
 def build_prompt(request_data: ResearchRequest, state: ResearchState) -> str:
     request_data.validate()
-    context = json.dumps(_state_context(state), ensure_ascii=False, indent=2)
+    context = json.dumps(_state_context(state), ensure_ascii=False, separators=(",", ":"))
     return f"""
 You are Nova Researcher v2. You are a research partner, not a strategy generator.
 
@@ -119,20 +122,20 @@ Current structured research state:
 {context}
 
 Research constitution:
-1. First determine what the question actually asks. Challenge the premise before proposing trades.
-2. Generate at least two genuinely different causal mechanisms. Do not create cosmetic indicator variants and call them mechanisms.
-3. Use prior evidence in the state. A failed implementation weakens an implementation, not automatically the causal mechanism; repeated independent failures should reduce confidence and narrow the search space.
-4. Never repeat a prohibited or already-tested experiment merely with renamed parameters.
+1. Determine what the question actually asks and challenge its premise before proposing trades.
+2. Generate at least two genuinely different causal mechanisms. Do not use cosmetic indicator variants as mechanisms.
+3. Use prior evidence. A failed implementation weakens an implementation, not automatically the mechanism; repeated independent failures should reduce confidence and narrow the search space.
+4. Never repeat a prohibited or already-tested experiment, even with renamed parameters.
 5. Separate mechanism tests from implementation optimization.
-6. An experiment is valuable when its outcome meaningfully distinguishes competing explanations, not merely because it may produce a high backtest return.
-7. Estimate information value, research cost, and overfitting risk for candidate experiments.
-8. Pick one next experiment only after considering alternatives.
-9. State exactly what observation would falsify the selected hypothesis or make further work unjustified.
+6. Prefer experiments whose outcomes distinguish competing explanations, not merely experiments likely to produce high returns.
+7. Estimate information value, research cost, and overfitting risk.
+8. Consider alternatives before selecting one next experiment.
+9. State what observation would falsify the selected hypothesis or make further work unjustified.
 10. Define a stopping rule. STOP is legitimate.
-11. Development evidence cannot be treated as confirmation. Confirmation data remain untouched until a formulation is locked.
-12. Do not claim a real edge. The output is a research decision, not a trading recommendation.
-13. The model cannot alter external gates, costs, or confirmation policy.
-14. Preserve uncertainty; do not turn a failed test into false certainty about a mechanism.
+11. Development evidence is not confirmation. Confirmation data remain untouched until a formulation is locked.
+12. Do not claim a real edge. This is a research decision, not a trading recommendation.
+13. Do not alter external gates, costs, or confirmation policy.
+14. Preserve uncertainty; do not turn failed tests into false certainty.
 
 Return exactly one JSON object matching the schema. No commentary.
 {json.dumps(SCHEMA, ensure_ascii=False, separators=(',', ':'))}
