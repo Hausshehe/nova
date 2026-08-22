@@ -21,9 +21,10 @@ jobs:
           python-version: "3.11"
       - name: Install test dependencies
         run: python -m pip install -U pytest
-      - name: Compile research brain and state
+      - name: Compile research modules
         run: |
           python -m py_compile trading_research/research_brain_v2.py
+          python -m py_compile trading_research/research_decision_auditor.py
           python -m py_compile trading_research/research_state.py
-      - name: Run capability tests
-        run: python -m pytest -q tests/test_research_brain_v2.py
+      - name: Run capability and auditor tests
+        run: python -m pytest -q tests/test_research_brain_v2.py tests/test_research_decision_auditor.py
