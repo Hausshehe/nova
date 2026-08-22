@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - xagusd-mean-reversion-development
+  pull_request:
+    branches:
+      - xagusd-mean-reversion-development
   workflow_dispatch:
 
 concurrency:
