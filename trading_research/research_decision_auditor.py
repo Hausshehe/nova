@@ -96,7 +96,7 @@ def audit_decision(decision: dict[str, Any], state: ResearchState) -> AuditResul
         checks["selected_experiment_discriminates"] = len(separated) >= 2
         if not checks["selected_experiment_discriminates"]:
             critical.append("selected_experiment_does_not_discriminate")
-        elif not separated.intersection(mechanism_ids):
+        elif not separated.issubset(mechanism_ids):
             critical.append("selected_experiment_separates_unknown_mechanisms")
         checks["selected_experiment_development"] = bool(selected.get("development_only", False))
         if state.confirmation_locked and checks["selected_experiment_development"]:
