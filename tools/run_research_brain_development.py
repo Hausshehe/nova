@@ -10,10 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 
-from trading_research.data import Bar, load_csv
+from trading_research.data import load_csv
 from trading_research.dukascopy_history import DukascopyClient, write_csv
 from trading_research.regime_conditioned_research import run_development_regime_research
 from trading_research.research_brain import ResearchBrain, ResearchQuestion
@@ -23,20 +22,6 @@ DEVELOPMENT_END_UTC = "2023-01-01T00:00:00+00:00"
 SYMBOL = "XAGUSD"
 TIMEFRAME = "4H"
 TRANSACTION_COST_BPS = 4.0
-
-
-def _bars_from_candles(candles) -> list[Bar]:
-    return [
-        Bar(
-            timestamp=datetime.fromisoformat(candle.timestamp_utc),
-            open=candle.open,
-            high=candle.high,
-            low=candle.low,
-            close=candle.close,
-            volume=candle.volume,
-        )
-        for candle in candles
-    ]
 
 
 def _brief_payload(brief) -> dict[str, object]:
