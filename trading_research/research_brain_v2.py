@@ -24,35 +24,38 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 MAX_COMPLETION_TOKENS = 5000
 HTTP_USER_AGENT = "NovaResearcher/2.0"
 
+# Keep the provider schema deliberately within the strict Structured Outputs
+# subset. Cardinality and numeric-range constraints are enforced locally in
+# validate_decision(); they do not need to burden constrained decoding.
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "question": {"type": "string"},
         "problem_interpretation": {"type": "string"},
-        "premise_challenges": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "premise_challenges": {"type": "array", "items": {"type": "string"}},
         "mechanisms": {
-            "type": "array", "minItems": 2, "maxItems": 6,
+            "type": "array",
             "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "mechanism": {"type": "string"},
                 "causal_story": {"type": "string"}, "prediction": {"type": "string"},
                 "disconfirming_observation": {"type": "string"},
-                "current_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "current_confidence": {"type": "number"},
                 "status": {"type": "string", "enum": ["candidate", "weakened", "rejected", "surviving"]},
                 "why_testable": {"type": "string"},
             }, "required": ["id", "mechanism", "causal_story", "prediction", "disconfirming_observation", "current_confidence", "status", "why_testable"], "additionalProperties": False},
         },
         "experiment_candidates": {
-            "type": "array", "minItems": 2, "maxItems": 5,
+            "type": "array",
             "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "name": {"type": "string"},
                 "question_discriminated": {"type": "string"},
-                "mechanisms_separated": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+                "mechanisms_separated": {"type": "array", "items": {"type": "string"}},
                 "outcome": {"type": "string"}, "horizon": {"type": "string"},
                 "development_only": {"type": "boolean"},
-                "estimated_information_value": {"type": "number", "minimum": 0, "maximum": 1},
-                "estimated_cost": {"type": "number", "minimum": 0, "maximum": 1},
-                "overfitting_risk": {"type": "number", "minimum": 0, "maximum": 1},
-                "confounders": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "estimated_information_value": {"type": "number"},
+                "estimated_cost": {"type": "number"},
+                "overfitting_risk": {"type": "number"},
+                "confounders": {"type": "array", "items": {"type": "string"}},
             }, "required": ["id", "name", "question_discriminated", "mechanisms_separated", "outcome", "horizon", "development_only", "estimated_information_value", "estimated_cost", "overfitting_risk", "confounders"], "additionalProperties": False},
         },
         "selected_experiment_id": {"type": "string"}, "selection_rationale": {"type": "string"},
@@ -140,10 +143,12 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
     if missing:
         raise ValueError("decision missing fields: " + ",".join(missing))
     mechanisms, experiments = payload["mechanisms"], payload["experiment_candidates"]
-    if not isinstance(mechanisms, list) or len(mechanisms) < 2:
-        raise ValueError("at least two mechanisms are required")
-    if not isinstance(experiments, list) or len(experiments) < 2:
-        raise ValueError("at least two experiment candidates are required")
+    if not isinstance(mechanisms, list) or len(mechanisms) < 2 or len(mechanisms) > 6:
+        raise ValueError("between 2 and 6 mechanisms are required")
+    if not isinstance(experiments, list) or len(experiments) < 2 or len(experiments) > 5:
+        raise ValueError("between 2 and 5 experiment candidates are required")
+    if not isinstance(payload["premise_challenges"], list) or len(payload["premise_challenges"]) < 2:
+        raise ValueError("at least two premise challenges are required")
     mechanism_ids = {str(item["id"]) for item in mechanisms}
     if len(mechanism_ids) != len(mechanisms):
         raise ValueError("mechanism ids must be unique")
@@ -159,6 +164,10 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
         raise ValueError("selected experiment is prohibited by research state")
     if state.confirmation_locked and payload["next_action"] not in {"STOP", "CONFIRMATION_CANDIDATE"}:
         raise ValueError("confirmation is locked; development research cannot continue")
+    for mechanism in mechanisms:
+        confidence = mechanism["current_confidence"]
+        if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise ValueError("mechanism confidence must be between 0 and 1")
     for experiment in experiments:
         separated = {str(x) for x in experiment["mechanisms_separated"]}
         if len(separated) < 2:
@@ -167,6 +176,12 @@ def validate_decision(payload: dict[str, Any], state: ResearchState) -> dict[str
             raise ValueError("experiment references unknown mechanism ids")
         if not experiment["development_only"] and payload["next_action"] not in {"CONFIRMATION_CANDIDATE", "STOP"}:
             raise ValueError("non-development experiments require confirmation state")
+        for field in ("estimated_information_value", "estimated_cost", "overfitting_risk"):
+            value = experiment[field]
+            if not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                raise ValueError(f"{field} must be between 0 and 1")
+        if not isinstance(experiment["confounders"], list) or len(experiment["confounders"]) < 1:
+            raise ValueError("each experiment must identify at least one confounder")
     return payload
 
 
