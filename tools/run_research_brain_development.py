@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from trading_research.data import load_csv
@@ -80,6 +81,11 @@ def run(output_dir: str | Path) -> dict[str, object]:
     )
     if len(candles) < 250:
         raise ValueError(f"insufficient development bars: {len(candles)}")
+
+    development_end = datetime.fromisoformat(DEVELOPMENT_END_UTC)
+    last_candle = datetime.fromisoformat(candles[-1].timestamp_utc)
+    if last_candle >= development_end:
+        raise ValueError("development dataset crosses confirmation cutoff")
 
     dataset_path = output / f"{SYMBOL}_{TIMEFRAME}_development.csv"
     dataset_sha256 = write_csv(candles, dataset_path)
