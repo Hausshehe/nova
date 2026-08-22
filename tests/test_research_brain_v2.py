@@ -59,7 +59,7 @@ def test_v2_requires_distinct_mechanisms_and_selects_new_experiment():
     assert decision["selected_experiment_id"] == "e1"
     assert len(decision["mechanisms"]) >= 2
     assert transport.calls[0]["response_format"]["type"] == "json_schema"
-    assert transport.calls[0]["max_completion_tokens"] == 6144
+    assert transport.calls[0]["max_completion_tokens"] == 5000
     assert transport.calls[0]["reasoning_effort"] == "high"
 
 
