@@ -82,13 +82,20 @@ Research state:
 Rules:
 - Challenge the premise before proposing trades.
 - Produce 2-4 genuinely different causal mechanisms; cosmetic indicator variants do not count.
-- Use prior evidence and never repeat tested/prohibited experiments.
+- Use prior evidence and Never repeat a prohibited or already-tested experiment.
 - Prefer experiments that distinguish competing explanations and maximize information value.
 - Separate mechanism testing from implementation optimization.
 - Include realistic costs, confounders, overfitting risk, falsification, stopping, and confirmation protection.
 - Development evidence is not confirmation. Never inspect or claim confirmation evidence.
 - A failed implementation weakens that implementation; repeated independent failures should narrow the search space.
 - STOP is legitimate. Do not claim a real edge.
+
+Critical experiment rule:
+Every experiment MUST discriminate between at least TWO declared mechanisms.
+The mechanisms_separated array MUST contain at least two distinct declared mechanism ids.
+An experiment that merely tests one mechanism against a null/baseline is INVALID.
+If a candidate only tests one mechanism, redesign it to compare that mechanism against
+its strongest competing mechanism. Never output a one-id mechanisms_separated array.
 
 Return exactly one JSON object with these fields:
 question, problem_interpretation, premise_challenges, mechanisms, experiment_candidates,
@@ -98,7 +105,7 @@ confirmation_protection, next_action, state_update_expectation.
 Required structure:
 - premise_challenges: >=2 short strings.
 - mechanisms: 2-4 objects. Each has id, mechanism, causal_story, prediction, disconfirming_observation, current_confidence (0..1), status (candidate|weakened|rejected|surviving), why_testable.
-- experiment_candidates: 2-3 objects. Each has id, name, question_discriminated, mechanisms_separated (declared ids only), outcome, horizon, development_only, estimated_information_value (0..1), estimated_cost (0..1), overfitting_risk (0..1), confounders (>=1 item).
+- experiment_candidates: 2-3 objects. Each has id, name, question_discriminated, mechanisms_separated (2+ declared ids only), outcome, horizon, development_only, estimated_information_value (0..1), estimated_cost (0..1), overfitting_risk (0..1), confounders (>=1 item).
 - selected_experiment_id must be one candidate and must not be tested/prohibited.
 - next_action must be TEST, EXPLORE, REJECT, STOP, or CONFIRMATION_CANDIDATE.
 
