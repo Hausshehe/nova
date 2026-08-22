@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -87,63 +88,45 @@ def _terminate_process_group(process: subprocess.Popen) -> None:
 
 
 def _accessibility_broadcast(action: str, *, target: str = "", direction: str = "") -> Tuple[bool, str, int, float]:
-    """Send one semantic command with a real hard transport deadline.
-
-    ``subprocess.run(..., timeout=...)`` proved insufficient on the Android/Termux
-    path because the broadcast invocation can remain stuck in pipe communication.
-    We therefore own the process lifecycle and kill the whole process group when
-    the deadline is exceeded. A transport stall becomes an ordinary failed action
-    that the controller can observe and recover from.
-    """
-    command = [
-        "am",
-        "broadcast",
-        "-n",
-        "com.infoney.nova/.NovaClickReceiver",
-        "-a",
-        action,
-    ]
+    """Send one semantic command without allowing Android pipe I/O to deadlock us."""
+    command = ["am", "broadcast", "-n", "com.infoney.nova/.NovaClickReceiver", "-a", action]
     if target:
         command.extend(["--es", "target", " ".join(str(target).split())])
     if direction:
         command.extend(["--es", "direction", direction])
 
-    timeout_seconds = (
-        ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS
-        if "SCROLL" in action
-        else ACCESSIBILITY_CLICK_TIMEOUT_SECONDS
-    )
+    timeout_seconds = ACCESSIBILITY_SCROLL_TIMEOUT_SECONDS if "SCROLL" in action else ACCESSIBILITY_CLICK_TIMEOUT_SECONDS
     started = time.monotonic()
-    process: Optional[subprocess.Popen[str]] = None
+    process: Optional[subprocess.Popen] = None
 
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
+    with tempfile.TemporaryFile(mode="w+t") as stdout_file, tempfile.TemporaryFile(mode="w+t") as stderr_file:
         try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            _terminate_process_group(process)
-            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-            return (
-                False,
-                f"Accessibility Service command transport timed out after {timeout_seconds:.1f}s; process group terminated.",
-                -1,
-                elapsed_ms,
+            process = subprocess.Popen(
+                command,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                start_new_session=True,
             )
-    except (FileNotFoundError, OSError) as exc:
-        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-        return False, f"Accessibility Service command transport unavailable: {exc}", -1, elapsed_ms
+            try:
+                process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                _terminate_process_group(process)
+                elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+                return False, f"Accessibility Service command transport timed out after {timeout_seconds:.1f}s; process group terminated.", -1, elapsed_ms
+        except (FileNotFoundError, OSError) as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+            return False, f"Accessibility Service command transport unavailable: {exc}", -1, elapsed_ms
+
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read()
+        stderr = stderr_file.read()
 
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     output = "\n".join(part.strip() for part in (stdout, stderr) if part and part.strip())
     returncode = process.returncode if process is not None and process.returncode is not None else -1
     match = _RECEIVER_RESULT_RE.search(output)
-
     if match:
         receiver_result = int(match.group(1))
         if receiver_result == 1:
@@ -151,12 +134,10 @@ def _accessibility_broadcast(action: str, *, target: str = "", direction: str = 
         if receiver_result == 0:
             return False, "Accessibility Service receiver rejected the requested action (result=0); no root fallback was attempted.", returncode, elapsed_ms
         return False, f"Accessibility Service receiver returned unexpected result={receiver_result}.", returncode, elapsed_ms
-
     return False, output or "Accessibility Service did not report a receiver result.", returncode, elapsed_ms
 
 
 def _accessibility_click(label: str) -> Tuple[bool, str, int, float]:
-    """Ask Nova's Accessibility Service to click a semantic live target."""
     label = " ".join(str(label or "").split())
     if not label:
         return False, "The target has no semantic label for accessibility activation.", -1, 0.0
@@ -164,12 +145,10 @@ def _accessibility_click(label: str) -> Tuple[bool, str, int, float]:
 
 
 def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
-    """Activate a live semantic node exclusively through Accessibility Service."""
     if not isinstance(node, dict):
         return ActionResult(False, "TAP", "No target node was supplied.")
     if not node.get("enabled", True):
         return ActionResult(False, "TAP", "Target node is disabled.")
-
     candidate = node
     if not node.get("clickable"):
         ancestor = node.get("actionable_ancestor")
@@ -181,15 +160,12 @@ def activate_node(node: Optional[Dict[str, Any]]) -> ActionResult:
             if not _contains(ancestor_bounds, node_bounds):
                 return ActionResult(False, "TAP", "Actionable ancestor bounds do not contain the target bounds.")
             candidate = ancestor
-
     bounds = str(candidate.get("bounds", ""))
     if _bounds_center(bounds) is None:
         return ActionResult(False, "TAP", "Target has no valid live bounds.", bounds)
-
     label = _semantic_label(node)
     if not label:
         return ActionResult(False, "TAP", "The target has no semantic label for accessibility activation.", bounds)
-
     success, message, returncode, duration_ms = _accessibility_click(label)
     if success:
         return ActionResult(True, "TAP", "Semantic target activated through the Accessibility Service.", bounds, duration_ms, returncode, message)
@@ -200,36 +176,28 @@ def _accessibility_scroll(direction: str) -> Tuple[bool, str, int, float]:
     direction = str(direction or "down").strip().lower()
     if direction not in {"down", "up"}:
         return False, f"Unsupported scroll direction: {direction}.", -1, 0.0
-    return _accessibility_broadcast(
-        "com.infoney.nova.SCROLL_WINDOW",
-        direction=direction,
-    )
+    return _accessibility_broadcast("com.infoney.nova.SCROLL_WINDOW", direction=direction)
 
 
 def scroll(snapshot, direction: str, *, distance_ratio: float = 0.35) -> ActionResult:
-    """Scroll the currently observed live region through Accessibility Service."""
     regions = [item for item in snapshot.scrollable_regions if isinstance(item, dict)]
     if not regions:
         return ActionResult(False, "SCROLL", "No live scrollable region is available.")
-
     def area(item: Dict[str, Any]) -> int:
         parsed = _parse_bounds(item.get("bounds", ""))
         if parsed is None:
             return 0
         left, top, right, bottom = parsed
         return (right - left) * (bottom - top)
-
     region = max(regions, key=area)
     parsed = _parse_bounds(region.get("bounds", ""))
     if parsed is None:
         return ActionResult(False, "SCROLL", "Scrollable region has invalid live bounds.")
-
     left, top, right, bottom = parsed
     width = right - left
     height = bottom - top
     if width < 80 or height < 160:
         return ActionResult(False, "SCROLL", "Scrollable region is too small for a safe gesture.", region.get("bounds", ""))
-
     success, message, returncode, duration_ms = _accessibility_scroll(direction)
     if success:
         return ActionResult(True, "SCROLL", "Live scrollable region advanced through the Accessibility Service.", region.get("bounds", ""), duration_ms, returncode, message)
