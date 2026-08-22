@@ -6,9 +6,11 @@ on:
     branches:
       - rebuild-navigation-engine
       - diagnostic-one-scroll
+      - android-control-v2
   pull_request:
     branches:
       - rebuild-navigation-engine
+      - diagnostic-one-scroll
       - fix-adaptive-app-list-handoff
       - main
 
@@ -36,6 +38,7 @@ jobs:
           tests.test_navigation_path_integration
           tests.test_navigation_observer
           tests.test_accessibility_snapshot
+          tests.test_navigation_recovery_bounded
           tests.test_navigation_recovery_regression
           tests.test_navigation_diagnostic_probe
           tests.test_navigation_activation_diagnostic
