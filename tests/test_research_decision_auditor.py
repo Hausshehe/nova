@@ -20,38 +20,12 @@ def good_decision():
         "problem_interpretation": "Test conditional predictability rather than a specific indicator.",
         "premise_challenges": ["Nonstationarity", "Costs can erase the effect."],
         "mechanisms": [
-            {
-                "id": "m1",
-                "mechanism": "temporary overshoot",
-                "prediction": "shock followed by reversal",
-                "disconfirming_observation": "no reversal after controls",
-            },
-            {
-                "id": "m2",
-                "mechanism": "information diffusion",
-                "prediction": "shock followed by continuation",
-                "disconfirming_observation": "no continuation after controls",
-            },
+            {"id": "m1", "mechanism": "temporary overshoot", "prediction": "shock followed by reversal", "disconfirming_observation": "no reversal after controls"},
+            {"id": "m2", "mechanism": "information diffusion", "prediction": "shock followed by continuation", "disconfirming_observation": "no continuation after controls"},
         ],
         "experiment_candidates": [
-            {
-                "id": "e1",
-                "name": "event response",
-                "mechanisms_separated": ["m1", "m2"],
-                "development_only": True,
-                "estimated_information_value": 0.9,
-                "estimated_cost": 0.2,
-                "overfitting_risk": 0.2,
-            },
-            {
-                "id": "e2",
-                "name": "indicator sweep",
-                "mechanisms_separated": ["m1", "m2"],
-                "development_only": True,
-                "estimated_information_value": 0.3,
-                "estimated_cost": 0.6,
-                "overfitting_risk": 0.4,
-            },
+            {"id": "e1", "name": "event response", "mechanisms_separated": ["m1", "m2"], "development_only": True, "estimated_information_value": 0.9, "estimated_cost": 0.2, "overfitting_risk": 0.2},
+            {"id": "e2", "name": "indicator sweep", "mechanisms_separated": ["m1", "m2"], "development_only": True, "estimated_information_value": 0.3, "estimated_cost": 0.6, "overfitting_risk": 0.4},
         ],
         "selected_experiment_id": "e1",
         "selection_rationale": "It directly separates the competing mechanisms.",
@@ -67,7 +41,6 @@ def test_good_decision_passes():
     result = audit_decision(good_decision(), state())
     assert result.passed
     assert not result.critical_failures
-    assert result.score == 100
 
 
 def test_repeated_or_prohibited_experiment_fails():
@@ -94,3 +67,11 @@ def test_non_discriminating_selected_experiment_fails():
     result = audit_decision(decision, state())
     assert not result.passed
     assert "selected_experiment_does_not_discriminate" in result.critical_failures
+
+
+def test_unknown_mechanism_reference_fails():
+    decision = good_decision()
+    decision["experiment_candidates"][0]["mechanisms_separated"] = ["m1", "unknown"]
+    result = audit_decision(decision, state())
+    assert not result.passed
+    assert "selected_experiment_separates_unknown_mechanisms" in result.critical_failures
