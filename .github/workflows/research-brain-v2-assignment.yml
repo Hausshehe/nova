@@ -1,0 +1,87 @@
+name: Research Brain v2 Assignment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research-capability-baseline
+
+jobs:
+  assignment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research-capability-baseline
+          clean: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Generate blind v2 decision
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from trading_research.research_brain_v2 import ResearchBrainV2, ResearchRequest
+          from trading_research.research_state import ResearchState
+
+          state = ResearchState(
+              research_question=(
+                  "Investigate whether short-horizon continuation or reversal in "
+                  "XAGUSD on 4H data is meaningfully conditioned on the current "
+                  "market regime."
+              ),
+              asset="XAGUSD",
+              timeframe="4H",
+              data_boundaries=(
+                  "Development data only for discovery and exploration. "
+                  "Do not inspect confirmation data. Existing research has already "
+                  "tested simple continuation and mean-reversion formulations; "
+                  "do not repeat those formulations."
+              ),
+              tested_experiments={
+                  "simple_continuation",
+                  "simple_mean_reversion",
+              },
+              rejected_mechanisms=set(),
+              prohibited_experiments={
+                  "simple_continuation",
+                  "simple_mean_reversion",
+              },
+              unresolved_questions=[
+                  "Whether either directional response survives after conditioning on context.",
+                  "Whether an apparently different formulation would merely repackage an already tested mechanism.",
+              ],
+              unused_research_directions=[
+                  "regime transitions",
+                  "shock response",
+                  "session/liquidity effects",
+                  "cross-market context",
+              ],
+              exploration_budget_remaining=8,
+          )
+
+          request = ResearchRequest(
+              question=state.research_question,
+              symbol="XAGUSD",
+              timeframe="4H",
+              constraints=(
+                  "Choose the mechanism yourself. Do not assume momentum, mean reversion, "
+                  "volatility, or any indicator family. Include realistic transaction costs, "
+                  "predeclared falsification and stopping rules, and protect confirmation data."
+              ),
+          )
+          decision = ResearchBrainV2().decide(request, state)
+          Path("research_brain_v2_decision.json").write_text(json.dumps(decision, indent=2), encoding="utf-8")
+          print(json.dumps(decision, indent=2))
+          PY
+      - name: Upload blind v2 decision
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-research-brain-v2-decision
+          path: research_brain_v2_decision.json
+          retention-days: 14
